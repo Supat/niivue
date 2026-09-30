@@ -83,5 +83,12 @@ let lab = try NIfTI.parseLabels(makeSyntheticNifti(flipXSwapYZ: true))
 assert(lab.maxLabel == 7, "max label = \(lab.maxLabel)")
 assert(lab.data[1 + 2 * (0 + 2 * 0)] == 0, "RAS(1,0,0) holds raw 0")
 assert(lab.data[0 + 2 * (1 + 2 * 1)] == 7, "RAS(0,1,1) holds raw 7")
+// Labels above 255 (FreeSurfer-style ids) become 0, not 255: scl_slope=2/inter=10 is ignored
+// for labels, so scale the raw values up through a wider synthetic: reuse the int16 file with
+// raw 0...7 → values are the raw ints; craft one voxel at 300 by patching the bytes.
+var big = makeSyntheticNifti()
+big[352 + 2 * 7] = UInt8(300 & 0xff); big[352 + 2 * 7 + 1] = UInt8(300 >> 8)
+let labBig = try NIfTI.parseLabels(big)
+assert(labBig.data[7] == 0 && labBig.maxLabel == 6, "label 300 → 0, max label \(labBig.maxLabel)")
 
 print("ALL CHECKS PASSED")

@@ -181,7 +181,8 @@ enum TissueClassifier {
         let bins = 4096
         var hist = [Int](repeating: 0, count: bins), n = 0
         for i in 0..<a.count where include(i) {
-            hist[min(bins - 1, Int((a[i] + (b?[i] ?? 0)) / hi * Float(bins - 1)))] += 1; n += 1
+            let v = max(0, a[i] + (b?[i] ?? 0)) // negative values (offsets, ringing) count in bin 0
+            hist[min(bins - 1, Int(v / hi * Float(bins - 1)))] += 1; n += 1
         }
         var acc = 0
         for (k, c) in hist.enumerated() { acc += c; if acc >= Int(Double(n) * 0.99) { return Float(k + 1) / Float(bins) * hi } }
@@ -305,8 +306,10 @@ enum TissueClassifier {
                 } else if a.y == b.y && a.y == y { xs.append(Double(a.x)); xs.append(Double(b.x)) }
             }
             guard let lo = xs.min(), let hi = xs.max() else { continue }
+            let xl = max(0, Int(lo.rounded(.up))), xh = min(nx - 1, Int(hi.rounded(.down)))
+            guard xl <= xh else { continue } // hull thinner than a voxel on this scanline
             let row = z * nx * ny + y * nx
-            for x in max(0, Int(lo.rounded(.up)))...min(nx - 1, Int(hi.rounded(.down))) { out[row + x] = 1 }
+            for x in xl...xh { out[row + x] = 1 }
         }
     }
 }

@@ -96,7 +96,10 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         td.pixelFormat = .r16Unorm
         td.width = nx; td.height = ny; td.depth = nz
         td.usage = .shaderRead
-        let tex = device.makeTexture(descriptor: td)!
+        // Apple GPUs cap 3D textures at 2048 per axis; makeTexture returns nil beyond that.
+        guard let tex = device.makeTexture(descriptor: td) else {
+            fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
+        }
         volumeTex = tex
         // Float → UInt16 with vDSP, one z-slice at a time: a plain Swift loop over a
         // whole-body volume (60M+ voxels) blocks the main thread for seconds in Debug,

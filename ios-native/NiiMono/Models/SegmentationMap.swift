@@ -15,7 +15,8 @@ struct SegmentationMap: Identifiable, @unchecked Sendable {
     let unlabelledBodyVoxels: Int
     let voxelML: Double
 
-    var labelRange: ClosedRange<Int> { 1...max(labels.maxLabel, 1) }
+    /// Labels a file may carry; empty for a map with nothing labelled.
+    var labelRange: Range<Int> { 1..<(labels.maxLabel + 1) }
 
     /// `volume` is the scan the labels sit on; counting is one pass, do it off the main thread.
     init(labels: LabelVolume, name: String, volume: NiftiVolume) {

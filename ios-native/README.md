@@ -68,7 +68,7 @@ inference chain (1.5 mm resampling, crop, z-score, 0.8-step sliding window with 
 blending, argmax; accumulation on the GPU via `Accumulate.metal`, which also holds the
 morphology kernel). Checked against the Python pipeline on a whole-body Dixon scan: mean
 Dice 0.992 over the 49 structures present and ≥ 0.98 on every tissue class (muscle and both
-fat classes 0.999–1.000); about 80 s in all on an M1 Mac, ~1.7 GB peak. Needs a real device:
+fat classes 0.999–1.000); about 70 s in all on an M1 Mac (29 + 29 s for the networks on the Neural Engine, 12 s for the tissue classes), ~1.7 GB peak. Needs a real device:
 the simulator's CPU-only Core ML path allocates ~19 GB and dies. Models are regenerated with
 `tools/convert_organ_model.py <out> organs|muscles` (TotalSegmentator weights, Python 3.11
 with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-commercial licence.
@@ -108,4 +108,4 @@ swiftc NiiMono/Models/NIfTI.swift /tmp/ncheck/main.swift -O -o /tmp/ncheck/nchec
   gradient lighting.
 - Any `.gz` is openable in the browser (`.nii.gz` has no file type of its own);
   non-NIfTI files fail with an alert.
-- Debug builds take a few seconds to parse a volume (unoptimized loop); Release is ~0.1 s.
+- Loading is vectorised (vDSP), so even Debug builds open a 64-million-voxel whole-body scan in about a second; the segmentation models and the tissue classifier are GPU/Neural Engine work and don't care much about the build configuration, but the remaining CPU passes (flood fills, hull) are several times slower in Debug.

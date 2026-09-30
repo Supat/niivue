@@ -24,15 +24,18 @@ import Observation
     /// (`<tag>_F.nii.gz`) or chosen by hand.
     private(set) var fat: NiftiVolume?
     private(set) var fatURL: URL?
-    private var cancel: CancelFlag?
+    @ObservationIgnored nonisolated(unsafe) private var cancel: CancelFlag? // touched from deinit
 
     init(volume: NiftiVolume) { self.volume = volume }
+
+    /// Closing the document must not leave a minutes-long model run going.
+    deinit { cancel?.set() }
 
     /// What the renderers draw, or nil when no map is loaded.
     var overlay: SegmentationOverlay? {
         guard let map else { return nil }
         var lut = [SIMD4<UInt8>](repeating: .zero, count: 256)
-        for l in map.labelRange where visible.indices.contains(l) && visible[l] {
+        for l in map.labelRange where isVisible(l) {
             let c = map.table.color(l) * 255
             lut[l] = SIMD4(UInt8(c.x), UInt8(c.y), UInt8(c.z), 255)
         }
@@ -41,8 +44,12 @@ import Observation
 
     func show(_ new: SegmentationMap?) {
         map = new
-        visible = [Bool](repeating: true, count: (new?.labels.maxLabel ?? 0) + 1)
+        visible = [Bool](repeating: true, count: (new?.labelRange.upperBound ?? 0))
     }
+
+    /// Safe against rows still on screen after the map shrank.
+    func isVisible(_ label: Int) -> Bool { visible.indices.contains(label) && visible[label] }
+    func setVisible(_ label: Int, _ on: Bool) { if visible.indices.contains(label) { visible[label] = on } }
 
     func remove() { show(nil); kept = nil }
 

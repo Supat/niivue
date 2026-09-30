@@ -55,6 +55,9 @@ struct SliceView: UIViewRepresentable {
         view.crosshair = crosshair
         view.onZoom = onZoom
         if let zoom, abs(zoom - view.zoomScale) > 0.001, !view.isZooming, !view.isTracking {
+            // Following another pane: don't echo the zoom back into the model mid-update.
+            view.applyingSharedZoom = true
+            defer { view.applyingSharedZoom = false }
             if zoomAnimated {
                 UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
                     view.setZoomScale(zoom, keepingCentre: true)
@@ -102,6 +105,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onLocate: ((CGPoint) -> Void)?
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)?
     var imageKey: SliceView.ImageKey?
+    var applyingSharedZoom = false
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()
@@ -158,7 +162,9 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             if refit {
                 // Aspect-fit at zoom 1. Resets zoom on rotation / inspector / plane change.
                 fitted = (bounds.size, extent, fitExtent)
+                applyingSharedZoom = true // a refit is layout, not a zoom to broadcast
                 zoomScale = 1
+                applyingSharedZoom = false
                 let ref = fitExtent ?? extent
                 let k = min(bounds.width / ref.width, bounds.height / ref.height)
                 imageView.frame = CGRect(x: 0, y: 0, width: extent.width * k, height: extent.height * k)
@@ -183,7 +189,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         setNeedsLayout()
-        onZoom?(zoomScale, animatingZoom)
+        if !applyingSharedZoom { onZoom?(zoomScale, animatingZoom) }
     }
 
     /// Zoom about the middle of the viewport (setZoomScale alone keeps the top-left corner).

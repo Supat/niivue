@@ -65,7 +65,7 @@ struct SegmentationSection: View {
         }
         .buttonStyle(.borderless)
         ForEach(Array(map.labelRange), id: \.self) { label in
-            Toggle(isOn: $model.visible[label]) {
+            Toggle(isOn: Binding(get: { model.isVisible(label) }, set: { model.setVisible(label, $0) })) {
                 HStack(spacing: 8) {
                     Circle().fill(Color(map.table.color(label))).frame(width: 12, height: 12)
                     Text(map.table.name(label))

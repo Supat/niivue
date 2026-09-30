@@ -271,7 +271,7 @@ enum NIfTI {
         var winLo = lo, winHi = hi
         if L.calMax > L.calMin, L.calMin.isFinite, L.calMax.isFinite {
             (winLo, winHi) = (L.calMin, L.calMax)
-        } else if hi > lo {
+        } else if hi > lo, (Float(1023) / (hi - lo)).isFinite {
             let bins = 1024, s = Float(bins - 1) / (hi - lo)
             // Every 7th voxel is plenty for a display window (and 7× faster in Debug builds).
             var hist = [Int](repeating: 0, count: bins), sampled = 0
@@ -292,6 +292,9 @@ enum NIfTI {
             if b > a { (winLo, winHi) = (a, min(b, hi)) }
         }
 
+        // cal_min/cal_max may lie outside the data; the window sliders span the data range.
+        winLo = min(max(winLo, lo), hi); winHi = min(max(winHi, lo), hi)
+        if winHi <= winLo { (winLo, winHi) = (lo, hi) }
         return NiftiVolume(
             dims: (L.od[0], L.od[1], L.od[2]),
             voxelSize: (L.pix[0], L.pix[1], L.pix[2]),
@@ -313,17 +316,20 @@ enum NIfTI {
             let n = vDSP_Length(L.od[0])
             out.withUnsafeMutableBufferPointer { dst in
                 L.forEachRow(in: d, scratch: &scratch) { o, row in
-                    // Clip to 0...255 (NaN clips to 0 through the comparisons), round, narrow.
-                    vDSP_vclip(row.baseAddress!, 1, &zero, &top, row.baseAddress!, 1, n)
-                    vDSP_vfixru8(row.baseAddress!, 1, dst.baseAddress!.advanced(by: o), 1, n)
+                    let p = row.baseAddress!
+                    // Labels outside 0...255 (e.g. FreeSurfer's 1000+ ids) become 0 rather than
+                    // a false 255; NaN too. Rare, so only rows that need it take the scalar pass.
                     var rhi: Float = 0
-                    vDSP_maxv(row.baseAddress!, 1, &rhi, n)
+                    vDSP_maxv(p, 1, &rhi, n)
+                    if !(rhi <= 255.5) { for i in 0..<Int(n) where !(p[i] <= 255.5) { p[i] = 0 }; vDSP_maxv(p, 1, &rhi, n) }
+                    vDSP_vclip(p, 1, &zero, &top, p, 1, n) // negatives / NaN → 0
+                    vDSP_vfixru8(p, 1, dst.baseAddress!.advanced(by: o), 1, n)
                     maxLabel = max(maxLabel, UInt8(min(255, max(0, rhi.rounded()))))
                 }
             }
         } else {
             L.forEachVoxel(in: d) { o, raw in
-                let v: UInt8 = raw.isFinite && raw >= 0 ? UInt8(min(raw.rounded(), 255)) : 0
+                let v: UInt8 = raw.isFinite && raw >= 0 && raw <= 255.5 ? UInt8(raw.rounded()) : 0
                 out[o] = v
                 if v > maxLabel { maxLabel = v }
             }

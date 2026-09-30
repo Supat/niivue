@@ -46,7 +46,7 @@ struct BodyCompositionEstimate {
         let fLimb = whole.filter(\.isLimb).reduce(fThigh) { $0 + $1.massFraction }
         let limbScale = 1 + fLimb / max(1 - missingFraction, 0.01)
         func kg(_ l: Int) -> Double { Double(map.counts[l]) * map.voxelML * Double(map.table.density(l)) / 1000 }
-        rows = map.labelRange.filter { map.counts[$0] > 0 }.map { l in
+        rows = map.labelRange.filter { map.counts[$0] > 0 }.map { l -> Row in
             let limbTissue = map.table.isTissueMap && (1...3).contains(l) // muscle and the fat classes
             return Row(label: l, name: map.table.name(l), litres: Double(map.counts[l]) * map.voxelML / 1000, kg: kg(l),
                        wholeBodyKg: limbTissue && weightKg > 0 ? kg(l) * limbScale : nil)

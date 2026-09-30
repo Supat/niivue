@@ -85,7 +85,7 @@ final class OrganSegmenter {
         var mean: Float = 0, meanSq: Float = 0
         vDSP_meanv(cropped, 1, &mean, vDSP_Length(cropped.count))
         vDSP_measqv(cropped, 1, &meanSq, vDSP_Length(cropped.count))
-        var negMean = -mean, invSd = 1 / max((meanSq - mean * mean).squareRoot(), 1e-8) // population std, like np.std
+        var negMean = -mean, invSd = 1 / max(max(meanSq - mean * mean, 0).squareRoot(), 1e-8) // population std, like np.std; rounding can push the variance below 0
         vDSP_vsadd(cropped, 1, &negMean, &cropped, 1, vDSP_Length(cropped.count))
         vDSP_vsmul(cropped, 1, &invSd, &cropped, 1, vDSP_Length(cropped.count))
         // 4. Pad to at least the patch (centred, zeros), like nnU-Net's pad_nd_image.
