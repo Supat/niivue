@@ -198,6 +198,9 @@ struct ViewerView: View {
                             }
                         }
                     }
+                    Button("Snapshot", systemImage: "camera") {
+                        SnapshotPanes.captureAndShare(documentName: fileURL?.deletingPathExtension().deletingPathExtension().lastPathComponent ?? "Snapshot")
+                    }
                     if let fileURL { ShareLink(item: fileURL) }
                     Button("Inspector", systemImage: "info.circle") { showInspector.toggle() }
                 }

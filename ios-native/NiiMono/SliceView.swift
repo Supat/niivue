@@ -60,7 +60,18 @@ struct SliceView: UIViewRepresentable {
     }
 }
 
-final class ZoomView: UIScrollView, UIScrollViewDelegate {
+final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        SnapshotPanes.register(self)
+    }
+
+    func snapshotImage() -> UIImage? {
+        UIGraphicsImageRenderer(bounds: bounds, format: .init(for: traitCollection)).image { _ in
+            drawHierarchy(in: bounds, afterScreenUpdates: false) // image + crosshair, current zoom/pan
+        }
+    }
+
     let imageView = UIImageView()
     var onTap: () -> Void = {}
     var onScrub: (Int) -> Void = { _ in }

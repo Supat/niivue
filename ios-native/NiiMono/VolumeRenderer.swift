@@ -196,12 +196,15 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let rpd = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
-              let cmd = queue.makeCommandBuffer(),
-              let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
+              let cmd = queue.makeCommandBuffer() else { return }
+        encode(into: rpd, size: view.drawableSize, on: cmd)
+        cmd.present(drawable)
+        cmd.commit()
+    }
 
-        let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
-        var u = makeUniforms(aspect: aspect)
-
+    private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, on cmd: MTLCommandBuffer) {
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
+        var u = makeUniforms(aspect: Float(size.width / max(size.height, 1)))
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         enc.setFragmentTexture(volumeTex, index: 0)
@@ -209,8 +212,30 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentSamplerState(sampler, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
-        cmd.present(drawable)
+    }
+
+    /// The current view rendered offscreen at `size` pixels (same camera, window, clips).
+    func snapshot(size: CGSize) -> CGImage? {
+        let w = Int(size.width), h = Int(size.height)
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+        td.usage = [.renderTarget, .shaderRead]
+        td.storageMode = .shared
+        guard w > 0, h > 0, let tex = device.makeTexture(descriptor: td), let cmd = queue.makeCommandBuffer() else { return nil }
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture = tex
+        rpd.colorAttachments[0].loadAction = .clear
+        rpd.colorAttachments[0].storeAction = .store
+        rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        encode(into: rpd, size: size, on: cmd)
         cmd.commit()
+        cmd.waitUntilCompleted()
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        tex.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 
     private func makeUniforms(aspect: Float) -> Uniforms {
@@ -507,10 +532,20 @@ struct RenderView: UIViewRepresentable {
 /// Holds the MTKView. When SwiftUI narrows this view (inspector opening), the MTKView keeps
 /// its old size until the renderer has glided into the narrower layout, so the picture is
 /// never cut off at the new edge before the panel has slid over it. Growing is immediate.
-final class RenderHost: UIView {
+final class RenderHost: UIView, SnapshotPane {
     let mtk = MTKView()
     var renderer: VolumeRenderer?
     private var pendingSize: CGSize?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        SnapshotPanes.register(self)
+    }
+
+    func snapshotImage() -> UIImage? {
+        guard let cg = renderer?.snapshot(size: mtk.drawableSize) else { return nil }
+        return UIImage(cgImage: cg, scale: mtk.contentScaleFactor, orientation: .up)
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
