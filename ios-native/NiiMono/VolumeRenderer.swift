@@ -22,6 +22,8 @@ struct Uniforms {
     var clipCount: Int32
     var clipCutaway: Int32
     var clipHighlight: Int32
+    var crosshairOn: Int32
+    var crosshair: simd_float3
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -31,7 +33,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let sampler: MTLSamplerState
     private let volumeTex: MTLTexture
     private let cmapTex: MTLTexture
-    private let boxHalf: simd_float3
+    let boxHalf: simd_float3
 
     // Display window, normalized to the volume's full intensity range (0...1).
     var windowLo: Float = 0
@@ -40,6 +42,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var clips: [ClipSetting] = [] // at most ClipSetting.maxCount are used
     var clipCutaway = false
     var clipHighlight = false
+    var crosshair: simd_float3? // box-space point, or nil for none
 
     // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
@@ -238,7 +241,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         clips: (planes[0], planes[1], planes[2], planes[3], planes[4], planes[5]),
                         dataMin: windowLo, dataMax: windowHi, steps: steps, mode: mode,
                         clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0,
-                        clipHighlight: clipHighlight ? 1 : 0)
+                        clipHighlight: clipHighlight ? 1 : 0,
+                        crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero)
     }
 }
 
@@ -358,6 +362,8 @@ struct RenderView: UIViewRepresentable {
     let clips: [ClipSetting]
     let clipCutaway: Bool
     let clipHighlight: Bool
+    /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
+    var crosshair: SIMD3<Float>? = nil
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
     let presetTick: Int
@@ -489,6 +495,7 @@ struct RenderView: UIViewRepresentable {
         renderer.clips = clips
         renderer.clipCutaway = clipCutaway
         renderer.clipHighlight = clipHighlight
+        renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }

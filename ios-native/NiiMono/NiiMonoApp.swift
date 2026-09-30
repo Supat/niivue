@@ -76,9 +76,9 @@ struct DocumentView: View {
 }
 
 enum Plane: String, CaseIterable, Identifiable {
-    case render = "3D", axial = "Axial", coronal = "Coronal", sagittal = "Sagittal" // picker order
+    case render = "3D", multi = "Multi", axial = "Axial", coronal = "Coronal", sagittal = "Sagittal" // picker order
     var id: Self { self }
-    /// Volume axis the plane is perpendicular to; nil for the 3D render.
+    /// Volume axis the plane is perpendicular to; nil for the 3D render and multiplanar grid.
     var axis: Int? { [.sagittal: 0, .coronal: 1, .axial: 2][self] }
 }
 
@@ -94,6 +94,8 @@ enum RenderMode: String, CaseIterable, Identifiable {
     // Opens in 3D. Launch argument `-plane Axial` (etc.) picks another view, for simulator checks.
     var plane = Plane(rawValue: UserDefaults.standard.string(forKey: "plane") ?? "") ?? .render
     var slices: [Int]
+    var multiZoom: CGFloat = 1 // zoom shared by the multiplanar slice panes
+    var multiZoomAnimated = false // whether the last change came from an animated (double-tap) zoom
     var lo: Float
     var hi: Float
     // Remembered across documents and launches.
@@ -149,7 +151,11 @@ struct ViewerView: View {
             .ignoresSafeArea(edges: .vertical)
             .background(.black)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { canvasWidth = $0 }
-            .overlay { DirectionLabels(state: state, bottomInset: chromeHidden ? 0 : 64) }
+            .overlay {
+                if let axis = state.plane.axis {
+                    DirectionLabels(axis: axis, mirrored: state.mirrored, bottomInset: chromeHidden ? 0 : 64)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if !chromeHidden, let axis = state.plane.axis, volume.count(axis: axis) > 1 {
                     SliceScrubber(state: state, axis: axis, count: volume.count(axis: axis))
@@ -168,11 +174,11 @@ struct ViewerView: View {
                 .sharedBackgroundVisibility(.hidden) // the segmented control is already glass
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if state.plane.axis != nil {
+                    if state.plane != .render {
                         Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                                isOn: $state.mirrored)
                     }
-                    if state.plane == .render {
+                    if state.plane.axis == nil { // 3D and multiplanar
                         Menu("View", systemImage: "cube") {
                             ForEach(ViewPreset.allCases) { preset in
                                 Button(preset.rawValue) { state.preset = preset; state.presetTick += 1 }
@@ -216,40 +222,79 @@ private struct VolumeCanvas: View {
     let onTap: () -> Void
 
     var body: some View {
-        if let axis = state.plane.axis {
-            SliceView(volume: volume, axis: axis, index: state.slices[axis], lo: state.lo, hi: state.hi,
-                      mirrored: state.mirrored, onTap: onTap) {
-                state.slices[axis] = max(0, min(volume.count(axis: axis) - 1, state.slices[axis] + $0))
+        switch state.plane {
+        case .render:
+            render
+        case .multi:
+            // Multiplanar layout: coronal | sagittal over axial | 3D, thin dividers.
+            Grid(horizontalSpacing: 1, verticalSpacing: 1) {
+                GridRow { slice(1); slice(0) }
+                GridRow { slice(2); render }
             }
-        } else {
-            RenderView(volume: volume, lo: state.lo, hi: state.hi, mode: state.renderMode,
-                       clips: state.clips, clipCutaway: state.clipCutaway, clipHighlight: state.clipHighlight,
-                       preset: state.preset, presetTick: state.presetTick, onTap: onTap)
+            .background(Color(white: 0.25))
+        default:
+            slice(state.plane.axis!)
+        }
+    }
+
+    private var render: some View {
+        let n = [volume.dims.0, volume.dims.1, volume.dims.2]
+        let crosshair = SIMD3<Float>((0..<3).map { (Float(state.slices[$0]) + 0.5) / Float(n[$0]) })
+        return RenderView(volume: volume, lo: state.lo, hi: state.hi, mode: state.renderMode,
+                          clips: state.clips, clipCutaway: state.clipCutaway, clipHighlight: state.clipHighlight,
+                          crosshair: state.plane == .multi ? crosshair : nil,
+                          preset: state.preset, presetTick: state.presetTick, onTap: onTap)
+    }
+
+    private func slice(_ axis: Int) -> some View {
+        let multi = state.plane == .multi
+        // Which volume axes run along a slice's columns and rows (rows go superior/anterior
+        // → inferior/posterior, i.e. the row axis is flipped); see NiftiVolume.slice.
+        let colAxis = axis == 0 ? 1 : 0, rowAxis = axis == 2 ? 1 : 2
+        let n = [volume.dims.0, volume.dims.1, volume.dims.2]
+        let u = (CGFloat(state.slices[colAxis]) + 0.5) / CGFloat(n[colAxis])
+        let v = 1 - (CGFloat(state.slices[rowAxis]) + 0.5) / CGFloat(n[rowAxis])
+        // One scale for all three panes: each fits the envelope of the three slice extents.
+        let extents = (0..<3).map(volume.sliceExtent)
+        let envelope = CGSize(width: CGFloat(extents.map(\.0).max()!), height: CGFloat(extents.map(\.1).max()!))
+        return SliceView(volume: volume, axis: axis, index: state.slices[axis], lo: state.lo, hi: state.hi,
+                         mirrored: state.mirrored, fitExtent: multi ? envelope : nil,
+                         zoom: multi ? state.multiZoom : nil, zoomAnimated: state.multiZoomAnimated,
+                         onZoom: multi ? { state.multiZoom = $0; state.multiZoomAnimated = $1 } : nil,
+                         crosshair: multi ? CGPoint(x: state.mirrored ? 1 - u : u, y: v) : nil,
+                         onLocate: multi ? { p in
+                             // Tap in one pane: move the other two slices to the tapped voxel.
+                             let ud = state.mirrored ? 1 - p.x : p.x
+                             state.slices[colAxis] = max(0, min(n[colAxis] - 1, Int(ud * CGFloat(n[colAxis]))))
+                             state.slices[rowAxis] = max(0, min(n[rowAxis] - 1, Int((1 - p.y) * CGFloat(n[rowAxis]))))
+                         } : nil,
+                         onTap: onTap) {
+            state.slices[axis] = max(0, min(volume.count(axis: axis) - 1, state.slices[axis] + $0))
+        }
+        .overlay {
+            if multi { DirectionLabels(axis: axis, mirrored: state.mirrored, bottomInset: 0) }
         }
     }
 }
 
-/// Anatomical direction at each edge of a slice view (L/R, A/P, S/I), following the
-/// display convention in NiftiVolume.slice and the mirror toggle.
 private struct DirectionLabels: View {
-    let state: ViewState
+    let axis: Int
+    let mirrored: Bool
     let bottomInset: CGFloat // keeps the bottom label clear of the scrubber
 
     var body: some View {
-        if let axis = state.plane.axis {
-            let horizontal = axis == 0 ? ["P", "A"] : ["L", "R"]
-            let vertical = axis == 2 ? ["A", "P"] : ["S", "I"]
-            ZStack {
-                label(horizontal[state.mirrored ? 1 : 0], .leading)
-                label(horizontal[state.mirrored ? 0 : 1], .trailing)
-                label(vertical[0], .top)
-                label(vertical[1], .bottom).padding(.bottom, bottomInset)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.45))
-            .padding(10)
-            .allowsHitTesting(false)
+        let horizontal = axis == 0 ? ["P", "A"] : ["L", "R"]
+        let vertical = axis == 2 ? ["A", "P"] : ["S", "I"]
+        ZStack {
+            label(horizontal[mirrored ? 1 : 0], .leading)
+            label(horizontal[mirrored ? 0 : 1], .trailing)
+            label(vertical[0], .top)
+            label(vertical[1], .bottom).padding(.bottom, bottomInset)
         }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white.opacity(0.45))
+        .padding(10)
+        .allowsHitTesting(false)
     }
 
     private func label(_ text: String, _ edge: Alignment) -> some View {

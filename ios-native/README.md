@@ -28,19 +28,21 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | Tap | Hide or show the toolbar and scrubber |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
 | Bottom scrubber | Jump to a slice |
-| Toolbar | 3D / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Share, Inspector |
+| Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Share, Inspector |
 | Slider track | A tap either side of the knob nudges the value one unit |
 | 3D: drag | Orbit |
 | 3D: two-finger drag, or secondary-button drag | Pan |
 | 3D: pinch, or scroll | Zoom towards the fingers / pointer |
 | 3D: double-tap | Reset to the fitted starting view |
+| Multi: tap a slice pane | Move the crosshair (and the other two slices) to that point |
 
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
-indicator. The inspector holds window level (Black/White), the 3D rendering mode
+indicator. Multi shows coronal, sagittal, axial and 3D in a 2×2 grid at one shared
+scale and zoom, linked by a crosshair drawn in all four panes. The inspector holds window level (Black/White), the 3D rendering mode
 (MIP, or Volume — a port of NiiVue's default compositing shader), up to six tiltable
 3D clip planes with cutaway and highlight options, and volume info.
 
-Launch arguments for simulator checks: `-plane Axial|Coronal|Sagittal|3D`, `-clip
+Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`.
 

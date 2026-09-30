@@ -20,6 +20,8 @@ struct Uniforms {
     int      clipCutaway; // 0 = keep what is on the kept side of every plane;
                           // 1 = remove only the corner on the removed side of every plane
     int      clipHighlight; // 1 = draw each plane as a tinted sheet with an outline
+    int      crosshairOn;   // 1 = draw axis lines through `crosshair`
+    float3   crosshair;     // crosshair point in box space
 };
 
 struct VSOut {
@@ -160,6 +162,25 @@ fragment float4 frag(VSOut in [[stage_in]],
             float3 toFace = u.boxHalf - abs(ro + rd * t);
             float edge = min(toFace.x, min(toFace.y, toFace.z));
             color.rgb = mix(color.rgb, kClipColors[i], edge < 0.006 ? 0.9 : 0.16);
+        }
+    }
+    if (u.crosshairOn != 0) {
+        // Crosshair: three axis-aligned lines through the point, clipped to the box, drawn
+        // on top like the plane highlight. Thickness grows with distance so it stays about
+        // one pixel wide on screen.
+        const float3 red = float3(1.0, 0.25, 0.2);
+        float3 w = u.crosshair - ro;
+        for (int a = 0; a < 3; ++a) {
+            float3 e = float3(a == 0, a == 1, a == 2);
+            float3 n = cross(rd, e);
+            float nn = dot(n, n);
+            if (nn < 1e-8) { continue; }                     // ray parallel to this line
+            float t = dot(cross(w, e), n) / nn;              // closest approach along the ray
+            float s = dot(cross(w, rd), n) / nn;             // ... and along the line
+            float3 q = u.crosshair + e * s;
+            if (t <= 0.0 || any(abs(q) > u.boxHalf + 1e-4)) { continue; }
+            float dist = abs(dot(w, n)) / sqrt(nn), thick = 0.0015 * t;
+            color.rgb = mix(color.rgb, red, 0.45 * (1.0 - smoothstep(0.5 * thick, thick, dist)));
         }
     }
     return color;
