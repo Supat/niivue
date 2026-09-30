@@ -4,8 +4,20 @@
 //  management; this file adds the viewer chrome (plane picker, scrubber, inspector).
 //
 
+import Metal
 import SwiftUI
 import UniformTypeIdentifiers
+
+/// A flag one thread sets and another polls (the segmenter's cancellation check).
+final class ManagedAtomic: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: Bool
+    init(_ v: Bool) { self.v = v }
+    var value: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return v }
+        set { lock.lock(); v = newValue; lock.unlock() }
+    }
+}
 
 @main
 struct NiiMonoApp: App {
@@ -143,6 +155,42 @@ enum RenderMode: String, CaseIterable, Identifiable {
         }
     }
 
+    var segmentingProgress: Double?     // non-nil while the organ model runs
+    private var segmentingTask: Task<Void, Never>?
+
+    /// Run the bundled TotalSegmentator organ model on the scan (minutes) and attach the result.
+    @MainActor func segmentOrgans(volume: NiftiVolume) {
+        guard segmentingTask == nil else { return }
+        segmentationError = nil
+        segmentingProgress = 0
+        let cancelled = ManagedAtomic(false)
+        segmentingTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<LabelVolume, Error> in
+                Result {
+                    guard let url = Bundle.main.url(forResource: "Organs", withExtension: "mlmodelc"),
+                          let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else {
+                        throw SegmenterError.noMetal
+                    }
+                    let segmenter = try OrganSegmenter(modelURL: url, library: library)
+                    return try segmenter.segment(volume, progress: { p in
+                        Task { @MainActor in self?.segmentingProgress = p }
+                    }, isCancelled: { cancelled.value })
+                }
+            }.value
+            guard let self else { return }
+            segmentingProgress = nil
+            segmentingTask = nil
+            switch result {
+            case .success(let labels): segmentation = Segmentation(labels: labels, name: "organs (total_mr)")
+            case .failure(is CancellationError): break
+            case .failure(let error): segmentationError = error.localizedDescription
+            }
+        }
+        segmentingCancel = { cancelled.value = true }
+    }
+    private var segmentingCancel: (() -> Void)?
+    @MainActor func cancelSegmenting() { segmentingCancel?() }
+
     /// Look next to the scan for a matching segmentation (`<tag>_tissues.nii.gz`, also in a
     /// `seg/` folder, where `<tag>` is the scan name without a Dixon suffix) and load it quietly.
     @MainActor func loadSiblingSegmentation(of fileURL: URL, volume: NiftiVolume) async {
@@ -274,7 +322,10 @@ struct ViewerView: View {
             // Chrome auto-hides a few seconds after it appears or was last used, like a
             // video player; a tap brings it back. It stays while the inspector is open.
             .onAppear(perform: scheduleChromeHide)
-            .task { if let fileURL { await state.loadSiblingSegmentation(of: fileURL, volume: volume) } }
+            .task {
+                if let fileURL { await state.loadSiblingSegmentation(of: fileURL, volume: volume) }
+                if UserDefaults.standard.bool(forKey: "segmentOrgans") { state.segmentOrgans(volume: volume) } // for checks
+            }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
             .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
             .onChange(of: state.plane) { scheduleChromeHide() }

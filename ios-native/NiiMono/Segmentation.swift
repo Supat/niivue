@@ -135,7 +135,15 @@ struct SegmentationSection: View {
                 SegmentationControls(seg: seg) { state.segmentation = nil }
             } else {
                 Button("Load Segmentation…", systemImage: "square.3.layers.3d") { importing = true }
-                    .disabled(state.segmentationLoading)
+                    .disabled(state.segmentationLoading || state.segmentingProgress != nil)
+                if let p = state.segmentingProgress {
+                    ProgressView(value: p) { Text("Segmenting organs… \(Int(p * 100))%") }
+                    Button("Cancel", role: .cancel) { state.cancelSegmenting() }
+                } else {
+                    // TotalSegmentator total_mr organ model (non-commercial licence), run on device.
+                    Button("Segment Organs", systemImage: "brain") { state.segmentOrgans(volume: volume) }
+                        .disabled(state.segmentationLoading)
+                }
                 if state.segmentationLoading { ProgressView("Loading segmentation…") }
                 if let error = state.segmentationError {
                     Text(error).font(.footnote).foregroundStyle(.red)

@@ -50,9 +50,22 @@ Files named `*tissues*` get the 14 tissue classes/colours of the body-compositio
 `<scan>_tissues.nii.gz` (also in a `seg/` folder; Dixon suffix `_W/_F/_in/_opp` stripped)
 is picked up automatically when the scan opens.
 
+**On-device organ segmentation.** "Segment Organs" in the Segmentation section runs
+TotalSegmentator's `total_mr` organ network (Dataset850, nnU-Net 3d_fullres, fold 0) as a
+Core ML model bundled in the app (`NiiMono/Organs.mlpackage`, 59 MB, fp16), reproducing the
+TotalSegmentator/nnU-Net inference chain in `OrganSegmenter.swift` (1.5 mm resampling,
+crop, z-score, 0.8-step sliding window with Gaussian blending, argmax; accumulation on the
+GPU via `Accumulate.metal`). Checked against the Python pipeline on a whole-body Dixon
+scan: mean Dice 0.991 over the 29 organs with the Neural Engine (fp16), 1.000 on GPU;
+24 s / 111 s on an M1 Mac, ~1.6 GB peak. It needs a real device — the simulator's CPU-only
+Core ML path allocates ~19 GB and dies. The model is regenerated with
+`tools/convert_organ_model.py` (needs the TotalSegmentator weights and a Python 3.11
+environment with torch 2.7 + coremltools). The weights are under TotalSegmentator's
+non-commercial licence.
+
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
-`-clipHighlight YES`, `-inspector YES`, `-segGhost YES`.
+`-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`.
 
 ## Files
 
@@ -62,6 +75,7 @@ Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipC
 | `NiiMono/SliceView.swift` | Zoomable 2D slice view (UIScrollView + CPU-windowed CGImage). |
 | `NiiMono/StepSlider.swift` | Slider that steps one unit on track taps. |
 | `NiiMono/Segmentation.swift` | Label tables, overlay state, slice compositing and the inspector section. |
+| `NiiMono/OrganSegmenter.swift`, `Accumulate.metal`, `Organs.mlpackage` | On-device TotalSegmentator organ model and its inference chain. |
 | `NiiMono/Snapshot.swift` | Captures the visible panes to a PNG and presents the share sheet. |
 | `NiiMono/NIfTI.swift` | NIfTI-1 reader. Pure Foundation; reorients to RAS+ at load, extracts slices. |
 | `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip planes), camera, gestures and SwiftUI host. |
