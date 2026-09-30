@@ -7,11 +7,11 @@ import Foundation
 
 // 1. Synthetic in-memory NIfTI-1 (little-endian, INT16) — exercises header
 //    parsing, datatype decode and scl_slope/inter with a known answer.
-func makeSyntheticNifti(flipXSwapYZ: Bool = false) -> Data {
+func makeSyntheticNifti(flipXSwapYZ: Bool = false, bigEndian: Bool = false) -> Data {
     var d = Data(count: 352)
-    func putI32(_ off: Int, _ v: Int32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+4, with: $0) } }
-    func putI16(_ off: Int, _ v: Int16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+2, with: $0) } }
-    func putF32(_ off: Int, _ v: Float) { var x = v.bitPattern.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+4, with: $0) } }
+    func putI32(_ off: Int, _ v: Int32) { var x = bigEndian ? v.bigEndian : v.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+4, with: $0) } }
+    func putI16(_ off: Int, _ v: Int16) { var x = bigEndian ? v.bigEndian : v.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+2, with: $0) } }
+    func putF32(_ off: Int, _ v: Float) { var x = bigEndian ? v.bitPattern.bigEndian : v.bitPattern.littleEndian; withUnsafeBytes(of: &x) { d.replaceSubrange(off..<off+4, with: $0) } }
     putI32(0, 348)            // sizeof_hdr
     putI16(40, 3)             // dim[0] = ndim
     putI16(42, 2); putI16(44, 2); putI16(46, 2) // 2x2x2
@@ -25,7 +25,7 @@ func makeSyntheticNifti(flipXSwapYZ: Bool = false) -> Data {
         putF32(280, -1); putF32(296 + 8, 1); putF32(312 + 4, 1)
     }
     // 8 voxels, raw int16 values 0..7 -> scaled = raw*2+10 = 10..24
-    for i in 0..<8 { var v = Int16(i).littleEndian; withUnsafeBytes(of: &v) { d.append(contentsOf: $0) } }
+    for i in 0..<8 { var v = bigEndian ? Int16(i).bigEndian : Int16(i).littleEndian; withUnsafeBytes(of: &v) { d.append(contentsOf: $0) } }
     return d
 }
 
@@ -71,6 +71,11 @@ if CommandLine.arguments.count > 1 {
     assert(vol.dims.0 > 1 && vol.dims.1 > 1 && vol.dims.2 > 1, "plausible 3D dims")
     assert(vol.displayMax > vol.displayMin, "non-degenerate intensity range")
 }
+
+// 2b. Big-endian file: the scalar (byte-swapping) path must agree with the vDSP row path.
+print("== big-endian ==")
+let be = try NIfTI.parse(makeSyntheticNifti(flipXSwapYZ: true, bigEndian: true))
+assert(be.data == ras.data, "big-endian parse equals little-endian parse")
 
 // 3. Label parsing shares the reorientation: same synthetic file read as labels.
 print("== labels ==")

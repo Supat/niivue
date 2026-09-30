@@ -7,8 +7,9 @@
 //  loads. NIfTI-2 and separate .hdr/.img are out of scope for the spike.
 //
 
-import Foundation
+import Accelerate
 import Compression
+import Foundation
 
 /// Voxels are reoriented to the closest RAS+ layout at load time (x → Right,
 /// y → Anterior, z → Superior), so nothing downstream deals with orientation.
@@ -98,8 +99,55 @@ enum NIfTI {
         var pix: [Float]         // voxel size per RAS axis
         var voxOffset: Int
         var reader: (UnsafeRawPointer, Int) -> Float
+        var datatype: Int16, bigEndian: Bool
         var sclSlope: Float, sclInter: Float, calMin: Float, calMax: Float
         var count: Int { od[0] * od[1] * od[2] }
+
+        /// Whole rows along RAS x are contiguous in the file when x is the file's fastest axis
+        /// (true for practically every NIfTI): then each row converts with one vDSP call.
+        var rowsAreContiguous: Bool { stride[0] == 1 }
+
+        /// Calls `body(outputRowStart, rawRow)` for every x-row in RAS order, with the row
+        /// already converted to Float (byte-swapped, flipped if needed). Requires
+        /// `rowsAreContiguous`. `scratch` must hold `od[0]` floats.
+        func forEachRow(in d: Data, scratch: inout [Float], _ body: (Int, UnsafeMutableBufferPointer<Float>) -> Void) {
+            let n = od[0], nv = vDSP_Length(n)
+            d.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                let base = buf.baseAddress!.advanced(by: voxOffset)
+                scratch.withUnsafeMutableBufferPointer { row in
+                    let out = row.baseAddress!
+                    var o = 0
+                    for z in 0..<od[2] {
+                        let sz = (flip[2] ? od[2] - 1 - z : z) * stride[2]
+                        for y in 0..<od[1] {
+                            let src = base.advanced(by: (sz + (flip[1] ? od[1] - 1 - y : y) * stride[1]) * bytesPerVoxel)
+                            convertRow(src, out, nv)
+                            if flip[0] { vDSP_vrvrs(out, 1, nv) }
+                            body(o, row)
+                            o += n
+                        }
+                    }
+                }
+            }
+        }
+
+        var bytesPerVoxel: Int { [2: 1, 256: 1, 4: 2, 512: 2, 8: 4, 768: 4, 16: 4, 64: 8][Int(datatype)] ?? 1 }
+
+        /// One row of raw voxels → Float, via vDSP where a conversion exists.
+        private func convertRow(_ src: UnsafeRawPointer, _ out: UnsafeMutablePointer<Float>, _ n: vDSP_Length) {
+            let count = Int(n)
+            switch (datatype, bigEndian) {
+            case (2, _): vDSP_vfltu8(src.assumingMemoryBound(to: UInt8.self), 1, out, 1, n)
+            case (256, _): vDSP_vflt8(src.assumingMemoryBound(to: Int8.self), 1, out, 1, n)
+            case (4, false): vDSP_vflt16(src.assumingMemoryBound(to: Int16.self), 1, out, 1, n)
+            case (512, false): vDSP_vfltu16(src.assumingMemoryBound(to: UInt16.self), 1, out, 1, n)
+            case (8, false): vDSP_vflt32(src.assumingMemoryBound(to: Int32.self), 1, out, 1, n)
+            case (768, false): vDSP_vfltu32(src.assumingMemoryBound(to: UInt32.self), 1, out, 1, n)
+            case (16, false): out.update(from: src.assumingMemoryBound(to: Float.self), count: count)
+            case (64, false): vDSP_vdpsp(src.assumingMemoryBound(to: Double.self), 1, out, 1, n)
+            default: for i in 0..<count { out[i] = reader(src, i) } // big-endian: rare, scalar path
+            }
+        }
 
         /// Calls `body(outputIndex, rawValue)` for every voxel in RAS order.
         func forEachVoxel(in d: Data, _ body: (Int, Float) -> Void) {
@@ -180,7 +228,7 @@ enum NIfTI {
         }
         return Layout(od: perm.map { dim[$0] }, stride: perm.map { [1, nx, nx * ny][$0] },
                       flip: (0..<3).map { m[$0][perm[$0]] < 0 }, pix: perm.map { pix[$0] },
-                      voxOffset: voxOffset, reader: reader,
+                      voxOffset: voxOffset, reader: reader, datatype: datatype, bigEndian: bigEndian,
                       sclSlope: sclSlope, sclInter: sclInter, calMin: f32(128), calMax: f32(124))
     }
 
@@ -189,12 +237,33 @@ enum NIfTI {
         let count = L.count
         var out = [Float](repeating: 0, count: count)
         var lo = Float.greatestFiniteMagnitude, hi = -Float.greatestFiniteMagnitude
-        L.forEachVoxel(in: d) { o, raw in
-            var v = raw * L.sclSlope + L.sclInter
-            if !v.isFinite { v = 0 }
-            out[o] = v
-            if v < lo { lo = v }
-            if v > hi { hi = v }
+        if L.rowsAreContiguous {
+            var scratch = [Float](repeating: 0, count: L.od[0])
+            var slope = L.sclSlope, inter = L.sclInter
+            let n = vDSP_Length(L.od[0])
+            let isFloat = L.datatype == 16 || L.datatype == 64
+            out.withUnsafeMutableBufferPointer { dst in
+                L.forEachRow(in: d, scratch: &scratch) { o, row in
+                    let p = dst.baseAddress!.advanced(by: o)
+                    vDSP_vsmsa(row.baseAddress!, 1, &slope, &inter, p, 1, n)
+                    if isFloat { // NaN/inf poison a sum, so only rows that need it get the scalar scrub
+                        var sum: Float = 0
+                        vDSP_sve(p, 1, &sum, n)
+                        if !sum.isFinite { for i in 0..<Int(n) where !p[i].isFinite { p[i] = 0 } }
+                    }
+                    var rlo: Float = 0, rhi: Float = 0
+                    vDSP_minv(p, 1, &rlo, n); vDSP_maxv(p, 1, &rhi, n)
+                    lo = min(lo, rlo); hi = max(hi, rhi)
+                }
+            }
+        } else {
+            L.forEachVoxel(in: d) { o, raw in
+                var v = raw * L.sclSlope + L.sclInter
+                if !v.isFinite { v = 0 }
+                out[o] = v
+                if v < lo { lo = v }
+                if v > hi { hi = v }
+            }
         }
 
         // Default window: the file's cal_min/cal_max if set, else the 2nd–98th percentile
@@ -204,11 +273,15 @@ enum NIfTI {
             (winLo, winHi) = (L.calMin, L.calMax)
         } else if hi > lo {
             let bins = 1024, s = Float(bins - 1) / (hi - lo)
-            var hist = [Int](repeating: 0, count: bins)
-            for v in out { hist[min(bins - 1, Int((v - lo) * s))] += 1 }
+            // Every 7th voxel is plenty for a display window (and 7× faster in Debug builds).
+            var hist = [Int](repeating: 0, count: bins), sampled = 0
+            out.withUnsafeBufferPointer { p in
+                var i = 0
+                while i < count { hist[min(bins - 1, Int((p[i] - lo) * s))] += 1; sampled += 1; i += 7 }
+            }
             // Percentiles over the foreground only: the lowest bin is background air,
             // often half the volume, and would drag the 98th percentile into the tissue.
-            let fg = count - hist[0]
+            let fg = sampled - hist[0]
             var acc = 0, loBin = -1, hiBin = bins - 1
             for (b, n) in hist.enumerated().dropFirst() {
                 acc += n
@@ -234,10 +307,26 @@ enum NIfTI {
         let L = try layout(d)
         var out = [UInt8](repeating: 0, count: L.count)
         var maxLabel: UInt8 = 0
-        L.forEachVoxel(in: d) { o, raw in
-            let v: UInt8 = raw.isFinite && raw >= 0 ? UInt8(min(raw.rounded(), 255)) : 0
-            out[o] = v
-            if v > maxLabel { maxLabel = v }
+        if L.rowsAreContiguous {
+            var scratch = [Float](repeating: 0, count: L.od[0])
+            var zero: Float = 0, top: Float = 255
+            let n = vDSP_Length(L.od[0])
+            out.withUnsafeMutableBufferPointer { dst in
+                L.forEachRow(in: d, scratch: &scratch) { o, row in
+                    // Clip to 0...255 (NaN clips to 0 through the comparisons), round, narrow.
+                    vDSP_vclip(row.baseAddress!, 1, &zero, &top, row.baseAddress!, 1, n)
+                    vDSP_vfixru8(row.baseAddress!, 1, dst.baseAddress!.advanced(by: o), 1, n)
+                    var rhi: Float = 0
+                    vDSP_maxv(row.baseAddress!, 1, &rhi, n)
+                    maxLabel = max(maxLabel, UInt8(min(255, max(0, rhi.rounded()))))
+                }
+            }
+        } else {
+            L.forEachVoxel(in: d) { o, raw in
+                let v: UInt8 = raw.isFinite && raw >= 0 ? UInt8(min(raw.rounded(), 255)) : 0
+                out[o] = v
+                if v > maxLabel { maxLabel = v }
+            }
         }
         return LabelVolume(dims: (L.od[0], L.od[1], L.od[2]), data: out, maxLabel: Int(maxLabel))
     }

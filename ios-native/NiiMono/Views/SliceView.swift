@@ -32,24 +32,20 @@ struct SliceView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
 
+    /// Everything the slice image depends on; the image is only rebuilt when this changes
+    /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
+    struct ImageKey: Equatable {
+        let axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
+        let mapID: UUID?, opacity: Float, lut: [SIMD4<UInt8>]
+    }
+
     func updateUIView(_ view: ZoomView, context: Context) {
-        let image: CGImage?
-        if let overlay {
-            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
-            image = CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
-                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
-                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-            }
-        } else {
-            let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
-            image = CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
-                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: s.width,
-                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-            }
+        let key = ImageKey(axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
+                           mapID: overlay?.mapID, opacity: overlay?.opacity ?? 0, lut: overlay?.lut ?? [])
+        if view.imageKey != key {
+            view.imageKey = key
+            if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         }
-        if let image { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         let e = volume.sliceExtent(axis: axis)
         view.extent = CGSize(width: CGFloat(e.0), height: CGFloat(e.1))
         view.fitExtent = fitExtent
@@ -65,6 +61,24 @@ struct SliceView: UIViewRepresentable {
                 }
             } else {
                 view.setZoomScale(zoom, keepingCentre: true)
+            }
+        }
+    }
+
+    private func makeImage() -> CGImage? {
+        if let overlay {
+            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
+            return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
+                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+            }
+        } else {
+            let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
+                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: s.width,
+                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
             }
         }
     }
@@ -87,6 +101,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)?
+    var imageKey: SliceView.ImageKey?
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()

@@ -63,14 +63,20 @@ struct Mask {
     func holesFilled() -> Mask {
         var out = self
         var seen = [UInt8](repeating: 0, count: count)
-        var stack = [Int]()
+        var stack = [Int32]()
         stack.reserveCapacity(1 << 20)
-        func seed(_ i: Int) { if v[i] == 0 && seen[i] == 0 { seen[i] = 1; stack.append(i) } }
-        for z in 0..<nz { for y in 0..<ny {
-            seed((z * ny + y) * nx); seed((z * ny + y) * nx + nx - 1)
-            if y == 0 || y == ny - 1 || z == 0 || z == nz - 1 { for x in 0..<nx { seed((z * ny + y) * nx + x) } }
+        v.withUnsafeBufferPointer { v in seen.withUnsafeMutableBufferPointer { seen in
+            func seed(_ i: Int) { if v[i] == 0 && seen[i] == 0 { seen[i] = 1; stack.append(Int32(i)) } }
+            for z in 0..<nz { for y in 0..<ny {
+                seed((z * ny + y) * nx); seed((z * ny + y) * nx + nx - 1)
+                if y == 0 || y == ny - 1 || z == 0 || z == nz - 1 { for x in 0..<nx { seed((z * ny + y) * nx + x) } }
+            } }
+            // Flood through background from the seeds.
+            while let i32 = stack.popLast() {
+                let i = Int(i32)
+                forEachNeighbour(of: i) { n in if v[n] == 0 && seen[n] == 0 { seen[n] = 1; stack.append(Int32(n)) } }
+            }
         } }
-        floodFill(&seen, &stack)
         out.v.withUnsafeMutableBufferPointer { o in for i in 0..<o.count where o[i] == 0 && seen[i] == 0 { o[i] = 1 } }
         return out
     }
@@ -79,32 +85,29 @@ struct Mask {
     func withoutComponents(smallerThan minVoxels: Int) -> Mask {
         var out = self
         var seen = [UInt8](repeating: 0, count: count)
-        var stack = [Int](), members = [Int]()
-        for start in 0..<count where v[start] == 1 && seen[start] == 0 {
-            seen[start] = 1; stack = [start]; members.removeAll(keepingCapacity: true)
-            while let i = stack.popLast() {
-                members.append(i)
-                for n in neighbours(of: i) where v[n] == 1 && seen[n] == 0 { seen[n] = 1; stack.append(n) }
+        var stack = [Int32](), members = [Int32]()
+        v.withUnsafeBufferPointer { v in seen.withUnsafeMutableBufferPointer { seen in
+            out.v.withUnsafeMutableBufferPointer { o in
+                for start in 0..<count where v[start] == 1 && seen[start] == 0 {
+                    seen[start] = 1; stack.append(Int32(start)); members.removeAll(keepingCapacity: true)
+                    while let i32 = stack.popLast() {
+                        let i = Int(i32)
+                        members.append(i32)
+                        forEachNeighbour(of: i) { n in if v[n] == 1 && seen[n] == 0 { seen[n] = 1; stack.append(Int32(n)) } }
+                    }
+                    if members.count < minVoxels { for i in members { o[Int(i)] = 0 } }
+                }
             }
-            if members.count < minVoxels { for i in members { out.v[i] = 0 } }
-        }
+        } }
         return out
     }
 
-    /// Grow `seen` from the queued voxels through voxels with the same value as the seeds' (0).
-    private func floodFill(_ seen: inout [UInt8], _ stack: inout [Int]) {
-        while let i = stack.popLast() {
-            for n in neighbours(of: i) where v[n] == 0 && seen[n] == 0 { seen[n] = 1; stack.append(n) }
-        }
-    }
-
-    @inline(__always) private func neighbours(of i: Int) -> [Int] {
-        let x = i % nx, y = (i / nx) % ny, z = i / (nx * ny)
-        var n = [Int](); n.reserveCapacity(6)
-        if x > 0 { n.append(i - 1) }; if x + 1 < nx { n.append(i + 1) }
-        if y > 0 { n.append(i - nx) }; if y + 1 < ny { n.append(i + nx) }
-        if z > 0 { n.append(i - nx * ny) }; if z + 1 < nz { n.append(i + nx * ny) }
-        return n
+    /// The up-to-six 6-connected neighbours, without allocating.
+    @inline(__always) private func forEachNeighbour(of i: Int, _ body: (Int) -> Void) {
+        let plane = nx * ny, x = i % nx, y = (i / nx) % ny, z = i / plane
+        if x > 0 { body(i - 1) }; if x + 1 < nx { body(i + 1) }
+        if y > 0 { body(i - nx) }; if y + 1 < ny { body(i + nx) }
+        if z > 0 { body(i - plane) }; if z + 1 < nz { body(i + plane) }
     }
 
     /// Opening along z with a line of `length` voxels (scipy binary_opening with a
