@@ -25,7 +25,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 |---|---|
 | Pinch / drag | Zoom and pan (UIScrollView — native bounce and deceleration) |
 | Double-tap | Zoom in on the point / back to fit |
-| Tap | Hide or show the toolbar and scrubber |
+| Tap | Hide or show the toolbar and scrubber (they also hide by themselves after 4 s) |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
 | Bottom scrubber | Jump to a slice |
 | Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Share, Inspector |

@@ -131,6 +131,7 @@ struct ViewerView: View {
     let fileURL: URL?
     @State private var state: ViewState
     @State private var chromeHidden = false
+    @State private var hideChromeTask: Task<Void, Never>?
     @State private var showInspector = UserDefaults.standard.bool(forKey: "inspector") // `-inspector YES` for checks
     @State private var fullWidth: CGFloat = 0   // window width including the inspector column
     @State private var canvasWidth: CGFloat = 0 // width left for the image
@@ -144,8 +145,20 @@ struct ViewerView: View {
         _state = State(initialValue: ViewState(volume))
     }
 
+    private func scheduleChromeHide() {
+        hideChromeTask?.cancel()
+        guard !chromeHidden, !showInspector else { return }
+        hideChromeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, !showInspector else { return }
+            withAnimation { chromeHidden = true }
+        }
+    }
+
     var body: some View {
-        VolumeCanvas(volume: volume, state: state) { withAnimation { chromeHidden.toggle() } }
+        VolumeCanvas(volume: volume, state: state,
+                     onTap: { withAnimation { chromeHidden.toggle() } },
+                     onInteract: { if chromeHidden { withAnimation { chromeHidden = false } } })
             // Full-bleed under the bars, but not under the inspector column (a trailing
             // safe-area inset), so the image is centred in the space that's actually visible.
             .ignoresSafeArea(edges: .vertical)
@@ -204,7 +217,16 @@ struct ViewerView: View {
                     .sharedBackgroundVisibility(.hidden)
                 }
             }
+            // Chrome auto-hides a few seconds after it appears or was last used, like a
+            // video player; a tap brings it back. It stays while the inspector is open.
+            .onAppear(perform: scheduleChromeHide)
+            .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
+            .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
+            .onChange(of: state.plane) { scheduleChromeHide() }
+            .onChange(of: state.slices) { scheduleChromeHide() }
+            .onChange(of: state.mirrored) { scheduleChromeHide() }
             .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar)
+            .background(NavigationBarHider(hidden: chromeHidden))
             .toolbarColorScheme(.dark, for: .navigationBar) // content is always black
             .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .statusBarHidden(chromeHidden)
@@ -220,6 +242,8 @@ private struct VolumeCanvas: View {
     let volume: NiftiVolume
     let state: ViewState
     let onTap: () -> Void
+    /// A tap that does something else (moves the crosshair) still brings hidden chrome back.
+    let onInteract: () -> Void
 
     var body: some View {
         switch state.plane {
@@ -264,6 +288,7 @@ private struct VolumeCanvas: View {
                          crosshair: multi ? CGPoint(x: state.mirrored ? 1 - u : u, y: v) : nil,
                          onLocate: multi ? { p in
                              // Tap in one pane: move the other two slices to the tapped voxel.
+                             onInteract()
                              let ud = state.mirrored ? 1 - p.x : p.x
                              state.slices[colAxis] = max(0, min(n[colAxis] - 1, Int(ud * CGFloat(n[colAxis]))))
                              state.slices[rowAxis] = max(0, min(n[rowAxis] - 1, Int((1 - p.y) * CGFloat(n[rowAxis]))))
@@ -416,5 +441,27 @@ private struct InspectorView: View {
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .ignoresSafeArea(edges: belowBar ? [] : .top)
         .contentMargins(.top, belowBar ? 0 : 28, for: .scrollContent) // stay clear of the status bar icons
+    }
+}
+
+/// DocumentGroup's navigation controller ignores SwiftUI's toolbar-visibility preferences on
+/// iPadOS, so the bar is hidden through UIKit: this invisible view finds the controller in
+/// its responder chain and calls setNavigationBarHidden.
+private struct NavigationBarHider: UIViewRepresentable {
+    let hidden: Bool
+
+    func makeUIView(context: Context) -> UIView { UIView(frame: .zero) }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        DispatchQueue.main.async { // the view may not be in the hierarchy yet during an update
+            var r: UIResponder? = view
+            while let next = r?.next {
+                if let nav = next as? UINavigationController {
+                    if nav.isNavigationBarHidden != hidden { nav.setNavigationBarHidden(hidden, animated: true) }
+                    return
+                }
+                r = next
+            }
+        }
     }
 }
