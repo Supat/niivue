@@ -50,8 +50,10 @@ static float2 intersectBox(float3 ro, float3 rd, float3 halfExtent) {
 }
 
 // Colour of one ray through the volume. `hit` is the ray's [near, far] range in the box.
+// `tSurface` receives the ray distance of the first tissue sample (1e20 if none).
 static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
-                    texture1d<float> cmap, sampler samp, float3 ro, float3 rd, float2 hit) {
+                    texture1d<float> cmap, sampler samp, float3 ro, float3 rd, float2 hit,
+                    thread float& tSurface) {
     // Clip planes. Normal mode trims the ray's [near, far] range to each plane's kept
     // half-space. Cutaway instead finds the stretch of the ray inside every plane's
     // removed half-space — (cut0, cut1), one interval since that region is convex — and
@@ -102,6 +104,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             float txl = clamp((v - u.dataMin) / window, 2.0 / 256.0, 1.0);
             float a = txl * (128.0 / 255.0);
             if (a < 0.01) { continue; }
+            tSurface = min(tSurface, tIn + s * tStep);
             acc += (1.0 - acc.a) * float4(float3(txl) * a, a);
             if (acc.a > earlyTermination) { break; }
         }
@@ -116,6 +119,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         float3 pos = ro + rd * t;
         float3 uvw = pos / (2.0 * u.boxHalf) + 0.5;       // [-half,half] -> [0,1]
         float v = vol.sample(samp, uvw, level(0)).r;
+        if (v > u.dataMin) { tSurface = min(tSurface, t); }
         maxV = max(maxV, v);                              // MIP
     }
 
@@ -147,7 +151,8 @@ fragment float4 frag(VSOut in [[stage_in]],
 
     float2 box = intersectBox(ro, rd, u.boxHalf);
     if (box.x > box.y || box.y < 0.0) { return float4(0, 0, 0, 1); } // ray misses the volume
-    float4 color = shade(in.position, u, vol, cmap, samp, ro, rd, box);
+    float tSurface = 1e20;
+    float4 color = shade(in.position, u, vol, cmap, samp, ro, rd, box, tSurface);
 
     if (u.clipHighlight != 0) {
         // Plane highlight: wherever the ray crosses a clip plane inside the volume box,
@@ -166,9 +171,10 @@ fragment float4 frag(VSOut in [[stage_in]],
     }
     if (u.crosshairOn != 0) {
         // Crosshair: three axis-aligned lines through the point, clipped to the box, drawn
-        // on top like the plane highlight. Thickness grows with distance so it stays about
-        // one pixel wide on screen.
-        const float3 red = float3(1.0, 0.25, 0.2);
+        // on top like the plane highlight: red where the line is in front of the tissue
+        // surface, green where it runs behind it (inside the body). Thickness grows with
+        // distance so it stays about one pixel wide on screen.
+        const float3 red = float3(1.0, 0.25, 0.2), green = float3(0.3, 0.9, 0.4);
         float3 w = u.crosshair - ro;
         for (int a = 0; a < 3; ++a) {
             float3 e = float3(a == 0, a == 1, a == 2);
@@ -180,7 +186,8 @@ fragment float4 frag(VSOut in [[stage_in]],
             float3 q = u.crosshair + e * s;
             if (t <= 0.0 || any(abs(q) > u.boxHalf + 1e-4)) { continue; }
             float dist = abs(dot(w, n)) / sqrt(nn), thick = 0.0015 * t;
-            color.rgb = mix(color.rgb, red, 0.45 * (1.0 - smoothstep(0.5 * thick, thick, dist)));
+            float3 tint = t > tSurface ? green : red;
+            color.rgb = mix(color.rgb, tint, 0.45 * (1.0 - smoothstep(0.5 * thick, thick, dist)));
         }
     }
     return color;

@@ -168,7 +168,7 @@ struct ViewerView: View {
                         ForEach(Plane.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 360) // roomier than the intrinsic size, which cramps the last segment
+                    .frame(width: 440) // roomier than the intrinsic size, which cramps the longer labels
                     .environment(\.colorScheme, .dark) // match the dark bar in light mode
                 }
                 .sharedBackgroundVisibility(.hidden) // the segmented control is already glass
