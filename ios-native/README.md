@@ -37,11 +37,12 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
 indicator. The inspector holds window level (Black/White), the 3D rendering mode
-(MIP, or Volume — a port of NiiVue's default compositing shader), a tiltable 3D clip
-plane, and volume info.
+(MIP, or Volume — a port of NiiVue's default compositing shader), up to three tiltable
+3D clip planes with an optional cutaway mode, and volume info.
 
 Launch arguments for simulator checks: `-plane Axial|Coronal|Sagittal|3D`, `-clip
-Sagittal|Coronal|Axial`, `-clipTilt <degrees>`, `-inspector YES`.
+Axial,Sagittal,…` (comma-separated, up to three), `-clipTilt <degrees>`, `-clipCutaway YES`,
+`-inspector YES`.
 
 ## Files
 
@@ -51,7 +52,7 @@ Sagittal|Coronal|Axial`, `-clipTilt <degrees>`, `-inspector YES`.
 | `NiiMono/SliceView.swift` | Zoomable 2D slice view (UIScrollView + CPU-windowed CGImage). |
 | `NiiMono/StepSlider.swift` | Slider that steps one unit on track taps. |
 | `NiiMono/NIfTI.swift` | NIfTI-1 reader. Pure Foundation; reorients to RAS+ at load, extracts slices. |
-| `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip plane), camera, gestures and SwiftUI host. |
+| `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip planes), camera, gestures and SwiftUI host. |
 | `Info.plist` | Document types (`.nii`, gzip) and document-browser keys. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation. |
 

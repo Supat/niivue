@@ -88,13 +88,6 @@ enum RenderMode: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-/// Clip plane for the 3D view, perpendicular to one anatomical axis.
-enum ClipPlane: String, CaseIterable, Identifiable {
-    case off = "Off", sagittal = "Sagittal", coronal = "Coronal", axial = "Axial"
-    var id: Self { self }
-    var axis: Int32 { [.off: -1, .sagittal: 0, .coronal: 1, .axial: 2][self]! }
-}
-
 /// Per-frame viewer state lives here rather than in ViewerView's @State so scrubbing
 /// and windowing only invalidate the small views that read it, not the toolbar tree.
 @Observable final class ViewState {
@@ -111,11 +104,13 @@ enum ClipPlane: String, CaseIterable, Identifiable {
         didSet { UserDefaults.standard.set(renderMode.rawValue, forKey: "renderMode") }
     }
 
-    var clip = ClipPlane(rawValue: UserDefaults.standard.string(forKey: "clip") ?? "") ?? .off // `-clip Axial`
-    var clipPos: Float = 0.5
-    var clipFlip = false
-    // Degrees about the two axes after the plane's own (cyclic x→y→z). `-clipTilt 30` for checks.
-    var clipTilt = SIMD2<Float>(UserDefaults.standard.float(forKey: "clipTilt"), 0)
+    // Up to `maxClips` clip planes. `-clip Axial,Sagittal` and `-clipTilt 30` preset them for checks.
+    static let maxClips = 3
+    var clips: [ClipSetting] = (UserDefaults.standard.string(forKey: "clip") ?? "").split(separator: ",")
+        .compactMap { ClipSetting.Plane(rawValue: String($0)) }.prefix(maxClips)
+        .map { ClipSetting(plane: $0, tilt: SIMD2(UserDefaults.standard.float(forKey: "clipTilt"), 0)) }
+    /// Remove only the corner between the planes instead of everything beyond each one.
+    var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
     // 3D camera preset request: RenderView applies `preset` whenever `presetTick` changes.
     var preset: ViewPreset?
     var presetTick = 0
@@ -226,7 +221,7 @@ private struct VolumeCanvas: View {
             }
         } else {
             RenderView(volume: volume, lo: state.lo, hi: state.hi, mode: state.renderMode,
-                       clip: state.clip, clipPos: state.clipPos, clipFlip: state.clipFlip, clipTilt: state.clipTilt,
+                       clips: state.clips, clipCutaway: state.clipCutaway,
                        preset: state.preset, presetTick: state.presetTick, onTap: onTap)
         }
     }
@@ -314,17 +309,42 @@ private struct InspectorView: View {
                 }
                 .pickerStyle(.segmented)
             }
-            Section("3D Clip Plane") {
-                Picker("Plane", selection: $state.clip) {
-                    ForEach(ClipPlane.allCases) { Text($0.rawValue).tag($0) }
-                }
-                if state.clip != .off {
-                    LabeledContent("Depth") { StepSlider(value: $state.clipPos, in: 0...1, unit: 0.01) }
+            // Bind each section by id, not by position. ForEach($state.clips) hands out
+            // index-based bindings, and controls still on screen read theirs once more after
+            // a plane is removed — an out-of-range crash. These fall back to the last value.
+            ForEach(state.clips) { snapshot in
+                let id = snapshot.id
+                let binding = Binding<ClipSetting>(
+                    get: { state.clips.first { $0.id == id } ?? snapshot },
+                    set: { new in if let i = state.clips.firstIndex(where: { $0.id == id }) { state.clips[i] = new } })
+                let clip = binding.wrappedValue
+                let number = (state.clips.firstIndex { $0.id == id } ?? 0) + 1
+                Section("3D Clip Plane \(number)") {
+                    Picker("Plane", selection: binding.plane) {
+                        ForEach(ClipSetting.Plane.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    LabeledContent("Depth") { StepSlider(value: binding.pos, in: 0...1, unit: 0.01) }
                     // Tilt axes are the two after the plane's own axis, cyclically (x→y→z→x).
-                    let names = ["L–R", "A–P", "S–I"], a = Int(state.clip.axis)
-                    tiltSlider("Tilt about \(names[(a + 1) % 3])", $state.clipTilt.x)
-                    tiltSlider("Tilt about \(names[(a + 2) % 3])", $state.clipTilt.y)
-                    Toggle("Flip Side", isOn: $state.clipFlip)
+                    let names = ["L–R", "A–P", "S–I"], a = Int(clip.plane.axis)
+                    tiltSlider("Tilt about \(names[(a + 1) % 3])", binding.tilt.x)
+                    tiltSlider("Tilt about \(names[(a + 2) % 3])", binding.tilt.y)
+                    Toggle("Flip Side", isOn: binding.flip)
+                    Button("Remove Clip Plane", role: .destructive) {
+                        state.clips.removeAll { $0.id == id }
+                    }
+                }
+            }
+            Section(state.clips.isEmpty ? "3D Clip Plane" : "") {
+                // With one plane, cutaway and normal clipping are the same thing.
+                if state.clips.count > 1 {
+                    Toggle("Cutaway", isOn: $state.clipCutaway)
+                }
+                if state.clips.count < ViewState.maxClips {
+                    Button("Add Clip Plane", systemImage: "plus") {
+                        // Start with an orientation that isn't in use yet.
+                        let unused = ClipSetting.Plane.allCases.first { p in !state.clips.contains { $0.plane == p } }
+                        state.clips.append(ClipSetting(plane: unused ?? .sagittal))
+                    }
                 }
             }
             Section("Info") {

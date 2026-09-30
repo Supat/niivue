@@ -14,13 +14,13 @@ struct Uniforms {
     var invViewProj: simd_float4x4
     var camPos: simd_float3
     var boxHalf: simd_float3
-    var clipNormal: simd_float3
+    var clips: (simd_float4, simd_float4, simd_float4)
     var dataMin: Float
     var dataMax: Float
     var steps: Int32
     var mode: Int32
-    var clipOn: Int32
-    var clipOffset: Float
+    var clipCount: Int32
+    var clipCutaway: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -36,10 +36,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var windowLo: Float = 0
     var windowHi: Float = 1
     var mode: Int32 = 0 // RenderMode.shaderMode
-    var clipAxis: Int32 = -1 // -1 = off, else the axis the untilted plane is perpendicular to
-    var clipFlip = false
-    var clipPos: Float = 0.5 // 0...1 across the volume, along the plane normal
-    var clipTilt = simd_float2.zero // radians, about the two axes following clipAxis (cyclic)
+    var clips: [ClipSetting] = [] // at most 3 are used
+    var clipCutaway = false
 
     // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
@@ -151,18 +149,21 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         // Clip plane normal: the chosen axis, tilted about the other two. Depth runs along
         // the normal across the box's full extent in that direction, so the slider always
         // sweeps the whole volume whatever the tilt. Flip = same plane, opposite side kept.
-        var normal = simd_float3(1, 0, 0), offset: Float = 0
-        if clipAxis >= 0 {
-            func unit(_ i: Int) -> simd_float3 { var v = simd_float3.zero; v[i % 3] = 1; return v }
-            let a = Int(clipAxis)
-            normal = simd_quatf(angle: clipTilt.y, axis: unit(a + 2)).act(
-                simd_quatf(angle: clipTilt.x, axis: unit(a + 1)).act(unit(a)))
-            offset = (clipPos - 0.5) * 2 * dot(abs(normal), boxHalf)
-            if clipFlip { normal = -normal; offset = -offset }
+        func unit(_ i: Int) -> simd_float3 { var v = simd_float3.zero; v[i % 3] = 1; return v }
+        var planes = [simd_float4](repeating: .zero, count: 3)
+        let active = clips.prefix(3)
+        for (i, clip) in active.enumerated() {
+            let a = Int(clip.plane.axis), tilt = clip.tilt * (.pi / 180)
+            var normal = simd_quatf(angle: tilt.y, axis: unit(a + 2)).act(
+                simd_quatf(angle: tilt.x, axis: unit(a + 1)).act(unit(a)))
+            var offset = (clip.pos - 0.5) * 2 * dot(abs(normal), boxHalf)
+            if clip.flip { normal = -normal; offset = -offset }
+            planes[i] = simd_float4(normal, offset)
         }
-        return Uniforms(invViewProj: invVP, camPos: eye, boxHalf: boxHalf, clipNormal: normal,
+        return Uniforms(invViewProj: invVP, camPos: eye, boxHalf: boxHalf,
+                        clips: (planes[0], planes[1], planes[2]),
                         dataMin: windowLo, dataMax: windowHi, steps: steps, mode: mode,
-                        clipOn: clipAxis >= 0 ? 1 : 0, clipOffset: offset)
+                        clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0)
     }
 }
 
@@ -234,6 +235,20 @@ extension VolumeRenderer {
 
 import SwiftUI
 
+/// One clip plane for the 3D view: perpendicular to an anatomical axis, then tilted.
+struct ClipSetting: Identifiable, Equatable {
+    enum Plane: String, CaseIterable, Identifiable {
+        case sagittal = "Sagittal", coronal = "Coronal", axial = "Axial"
+        var id: Self { self }
+        var axis: Int32 { [.sagittal: 0, .coronal: 1, .axial: 2][self]! }
+    }
+    let id = UUID()
+    var plane: Plane
+    var pos: Float = 0.5            // 0...1 across the volume, along the plane normal
+    var flip = false
+    var tilt = SIMD2<Float>(0, 0)   // degrees, about the two axes after the plane's own (cyclic x→y→z)
+}
+
 /// Anatomical camera presets. Yaw/pitch place the camera on that side of the patient.
 enum ViewPreset: String, CaseIterable, Identifiable {
     case anterior = "Anterior", posterior = "Posterior", left = "Left", right = "Right"
@@ -257,10 +272,8 @@ struct RenderView: UIViewRepresentable {
     let lo: Float
     let hi: Float
     let mode: RenderMode
-    let clip: ClipPlane
-    let clipPos: Float
-    let clipFlip: Bool
-    let clipTilt: SIMD2<Float> // degrees
+    let clips: [ClipSetting]
+    let clipCutaway: Bool
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
     let presetTick: Int
@@ -386,10 +399,8 @@ struct RenderView: UIViewRepresentable {
         renderer.windowLo = (lo - volume.dataMin) / range
         renderer.windowHi = (hi - volume.dataMin) / range
         renderer.mode = mode == .mip ? 0 : 1
-        renderer.clipAxis = clip.axis
-        renderer.clipPos = clipPos
-        renderer.clipFlip = clipFlip
-        renderer.clipTilt = clipTilt * (.pi / 180)
+        renderer.clips = clips
+        renderer.clipCutaway = clipCutaway
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }
