@@ -137,7 +137,7 @@ enum RenderMode: String, CaseIterable, Identifiable {
         segmentationError = nil
         defer { segmentationLoading = false }
         let dims = volume.dims
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<LabelVolume, Error> in
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<Segmentation, Error> in
             let accessed = scoped && url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             return Result {
@@ -146,11 +146,11 @@ enum RenderMode: String, CaseIterable, Identifiable {
                 guard labels.dims == dims else {
                     throw NiftiError.gridMismatch(labels.dims, dims)
                 }
-                return labels
+                return Segmentation(labels: labels, name: url.lastPathComponent, volume: volume)
             }
         }.value
         switch result {
-        case .success(let labels): segmentation = Segmentation(labels: labels, name: url.lastPathComponent)
+        case .success(let seg): segmentation = seg
         case .failure(let error): segmentationError = error.localizedDescription
         }
     }
@@ -165,23 +165,24 @@ enum RenderMode: String, CaseIterable, Identifiable {
         segmentingProgress = 0
         let cancelled = ManagedAtomic(false)
         segmentingTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<LabelVolume, Error> in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<Segmentation, Error> in
                 Result {
                     guard let url = Bundle.main.url(forResource: "Organs", withExtension: "mlmodelc"),
                           let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else {
                         throw SegmenterError.noMetal
                     }
                     let segmenter = try OrganSegmenter(modelURL: url, library: library)
-                    return try segmenter.segment(volume, progress: { p in
+                    let labels = try segmenter.segment(volume, progress: { p in
                         Task { @MainActor in self?.segmentingProgress = p }
                     }, isCancelled: { cancelled.value })
+                    return Segmentation(labels: labels, name: "organs (total_mr)", volume: volume)
                 }
             }.value
             guard let self else { return }
             segmentingProgress = nil
             segmentingTask = nil
             switch result {
-            case .success(let labels): segmentation = Segmentation(labels: labels, name: "organs (total_mr)")
+            case .success(let seg): segmentation = seg
             case .failure(is CancellationError): break
             case .failure(let error): segmentationError = error.localizedDescription
             }
@@ -537,6 +538,7 @@ private struct InspectorView: View {
                 }
             }
             SegmentationSection(volume: volume, fileURL: fileURL, state: state)
+            if let seg = state.segmentation { BodyCompositionSection(seg: seg) }
             Section("Info") {
                 LabeledContent("Dimensions", value: "\(volume.dims.0) × \(volume.dims.1) × \(volume.dims.2)")
                 LabeledContent("Voxel Size", value: String(format: "%.2f × %.2f × %.2f mm",

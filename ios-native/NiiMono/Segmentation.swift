@@ -9,8 +9,13 @@ import SwiftUI
 struct LabelTable {
     let names: [Int: String]
     let colors: [Int: SIMD3<Float>] // 0...1 RGB
+    var densities: [Int: Float] = [:] // g/mL, for mass estimates; see `density`
 
     func name(_ label: Int) -> String { names[label] ?? "Label \(label)" }
+
+    /// Tissue density in g/mL (soft tissue when unknown).
+    func density(_ label: Int) -> Float { densities[label] ?? 1.03 }
+    static let softTissue: Float = 1.03
 
     func color(_ label: Int) -> SIMD3<Float> {
         if let c = colors[label] { return c }
@@ -28,7 +33,10 @@ struct LabelTable {
         colors: [1: [0.90, 0.20, 0.20], 2: [1.00, 0.85, 0.20], 3: [1.00, 0.55, 0.10], 4: [0.45, 0.25, 0.10],
                  5: [0.55, 0.10, 0.45], 6: [0.20, 0.50, 0.20], 7: [0.60, 0.80, 0.30], 8: [0.35, 0.75, 0.65],
                  9: [0.65, 0.45, 0.85], 10: [0.85, 0.30, 0.55], 11: [0.55, 0.75, 1.00], 12: [0.10, 0.35, 0.95],
-                 13: [0.92, 0.92, 0.85], 14: [0.95, 0.60, 0.90]])
+                 13: [0.92, 0.92, 0.85], 14: [0.95, 0.60, 0.90]],
+        // Adipose 0.92, skeletal muscle 1.06, organs ~1.05, lungs 0.3, bone with marrow ~1.4.
+        densities: [1: 1.06, 2: 0.92, 3: 0.92, 4: 1.05, 5: 1.05, 6: 1.05, 7: 1.04, 8: 1.04, 9: 1.03,
+                    10: 1.05, 11: 0.30, 12: 1.05, 13: 1.40, 14: 1.04])
 
     /// TotalSegmentator's `total_mr` task (50 structures).
     static let totalMR = LabelTable(
@@ -42,7 +50,9 @@ struct LabelTable {
             gluteus_medius_right gluteus_minimus_left gluteus_minimus_right autochthon_left autochthon_right \
             iliopsoas_left iliopsoas_right brain
             """.split(separator: " ").enumerated().map { ($0.offset + 1, $0.element.replacingOccurrences(of: "_", with: " ")) }),
-        colors: [:])
+        colors: [:],
+        densities: Dictionary(uniqueKeysWithValues: (1...50).map { l in
+            (l, [10, 11].contains(l) ? Float(0.30) : (18...20).contains(l) || (30...39).contains(l) ? 1.40 : 1.05) }))
 
     static let generic = LabelTable(names: [:], colors: [:])
 
@@ -70,12 +80,28 @@ private extension UIColor {
     var visible: [Bool]           // indexed by label; [0] unused
     var opacity: Float = 0.65     // colour blend over the grey image
     var ghost = UserDefaults.standard.bool(forKey: "segGhost") // 3D: fade unlabelled tissue (`-segGhost YES` for checks)
+    /// Voxel counts per label ([0] = unlabelled), and how many of those unlabelled voxels are
+    /// inside the body (non-zero intensity) — for the body-composition estimate.
+    let counts: [Int]
+    let unlabelledBodyVoxels: Int
+    let voxelML: Double
 
-    init(labels: LabelVolume, name: String) {
+    /// `volume` is the scan the labels sit on; counting is one pass, do it off the main thread.
+    init(labels: LabelVolume, name: String, volume: NiftiVolume) {
         self.labels = labels
         self.name = name
         table = LabelTable.forFile(named: name)
         visible = [Bool](repeating: true, count: max(labels.maxLabel, 1) + 1)
+        var counts = [Int](repeating: 0, count: 256), body = 0
+        labels.data.withUnsafeBufferPointer { l in volume.data.withUnsafeBufferPointer { v in
+            for i in 0..<l.count {
+                counts[Int(l[i])] += 1
+                if l[i] == 0 && v[i] != 0 { body += 1 }
+            }
+        } }
+        self.counts = counts
+        unlabelledBodyVoxels = body
+        voxelML = Double(volume.voxelSize.0 * volume.voxelSize.1 * volume.voxelSize.2) / 1000
     }
 
     var labelRange: ClosedRange<Int> { 1...max(labels.maxLabel, 1) }
@@ -184,5 +210,117 @@ private struct SegmentationControls: View {
             }
         }
         Button("Remove Segmentation", role: .destructive, action: remove)
+    }
+}
+
+// MARK: - Body composition
+
+/// Body segments that may lie outside the scan, with their share of body mass
+/// (Dempster / Winter anthropometric tables; both sides where paired).
+enum BodySegment: String, CaseIterable, Identifiable {
+    case headNeck = "Head & neck", upperArms = "Upper arms", forearmsHands = "Forearms & hands"
+    case thighs = "Thighs", shanks = "Lower legs", feet = "Feet"
+    var id: Self { self }
+    var massFraction: Double {
+        switch self {
+        case .headNeck: return 0.081
+        case .upperArms: return 2 * 0.028
+        case .forearmsHands: return 2 * 0.022
+        case .thighs: return 2 * 0.100
+        case .shanks: return 2 * 0.0465
+        case .feet: return 2 * 0.0145
+        }
+    }
+    /// Limbs are extrapolated with the imaged muscle/fat composition; the head is not.
+    var isLimb: Bool { self != .headNeck }
+}
+
+/// Inspector section: per-class volume and mass, and whole-body estimates from the
+/// subject's weight once the segments outside the scan are declared.
+struct BodyCompositionSection: View {
+    let seg: Segmentation
+    @AppStorage("subjectWeightKg") private var weightKg = 0.0
+    // Defaults match a shoulders-to-thigh whole-body protocol: head, lower legs and feet missing.
+    @AppStorage("missingSegments") private var missingRaw = "Head & neck,Lower legs,Feet"
+    @AppStorage("thighsMissingPercent") private var thighsMissing = 0.0
+
+    private var missing: Set<BodySegment> {
+        Set(missingRaw.split(separator: ",").compactMap { BodySegment(rawValue: String($0)) })
+    }
+
+    private func massKg(_ l: Int) -> Double { Double(seg.counts[l]) * seg.voxelML * Double(seg.table.density(l)) / 1000 }
+
+    /// Missing mass fraction (whole segments plus the declared part of the thighs), the
+    /// limb-only part of it, and the factor that extrapolates imaged limb tissue to the
+    /// whole body. Missing limbs are assumed to share the imaged muscle/fat composition
+    /// (ponytail: per-segment composition tables would refine this); organs are all imaged.
+    private var missingModel: (fMissing: Double, limbScale: Double) {
+        let fThigh = BodySegment.thighs.massFraction * thighsMissing / 100
+        let whole = missing.filter { $0 != .thighs }
+        let fMissing = whole.reduce(fThigh) { $0 + $1.massFraction }
+        let fLimb = whole.filter(\.isLimb).reduce(fThigh) { $0 + $1.massFraction }
+        return (fMissing, 1 + fLimb / max(1 - fMissing, 0.01))
+    }
+
+    var body: some View {
+        let rows = seg.labelRange.filter { seg.counts[$0] > 0 }
+        let otherKg = Double(seg.unlabelledBodyVoxels) * seg.voxelML * Double(LabelTable.softTissue) / 1000
+        let imagedKg = rows.reduce(otherKg) { $0 + massKg($1) }
+        let (fMissing, limbScale) = missingModel
+        let expectedKg = weightKg * (1 - fMissing)
+
+        Section("Body Composition") {
+            LabeledContent("Subject weight") {
+                HStack(spacing: 4) {
+                    TextField("kg", value: $weightKg, format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 70)
+                    Text("kg").foregroundStyle(.secondary)
+                }
+            }
+            DisclosureGroup("Outside the scan") {
+                ForEach(BodySegment.allCases.filter { $0 != .thighs }) { s in
+                    Toggle(s.rawValue, isOn: Binding(
+                        get: { missing.contains(s) },
+                        set: { on in var m = missing; if on { m.insert(s) } else { m.remove(s) }
+                               missingRaw = m.map(\.rawValue).joined(separator: ",") }))
+                }
+                VStack(alignment: .leading) {
+                    LabeledContent("Thighs missing", value: "\(Int(thighsMissing))%")
+                    StepSlider(value: $thighsMissing, in: 0...100, unit: 5)
+                }
+            }
+            LabeledContent("Imaged tissue", value: String(format: "%.1f kg", imagedKg))
+            if weightKg > 0 {
+                LabeledContent("Expected in scan", value: String(format: "%.1f kg (%.0f%% of weight)", expectedKg, (1 - fMissing) * 100))
+                LabeledContent("Agreement", value: String(format: "%+.0f%%", (imagedKg / max(expectedKg, 0.1) - 1) * 100))
+                    .foregroundStyle(abs(imagedKg / max(expectedKg, 0.1) - 1) > 0.1 ? .red : .primary)
+            }
+            Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 6) {
+                GridRow {
+                    Text("Class").gridColumnAlignment(.leading)
+                    Text("L"); Text("kg"); Text("kg, body")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                ForEach(rows, id: \.self) { l in
+                    let litres = Double(seg.counts[l]) * seg.voxelML / 1000
+                    let isLimbTissue = (1...3).contains(l) && seg.table.names.count == 14 // muscle / fat classes of the tissue map
+                    GridRow {
+                        Text(seg.table.name(l)).gridColumnAlignment(.leading).lineLimit(1)
+                        Text(String(format: "%.2f", litres))
+                        Text(String(format: "%.2f", massKg(l)))
+                        Text(isLimbTissue && weightKg > 0 ? String(format: "%.2f", massKg(l) * limbScale) : "–")
+                    }
+                    .font(.footnote.monospacedDigit())
+                }
+                GridRow {
+                    Text("other tissue").gridColumnAlignment(.leading).foregroundStyle(.secondary)
+                    Text(String(format: "%.2f", Double(seg.unlabelledBodyVoxels) * seg.voxelML / 1000))
+                    Text(String(format: "%.2f", otherKg)); Text("–")
+                }
+                .font(.footnote.monospacedDigit())
+            }
+            Text("Masses use typical tissue densities (adipose 0.92, muscle 1.06, organs ~1.05, lungs 0.3, bone 1.4 g/mL). Whole-body muscle and fat assume the missing limbs share the imaged composition.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }

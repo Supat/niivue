@@ -50,6 +50,12 @@ Files named `*tissues*` get the 14 tissue classes/colours of the body-compositio
 `<scan>_tissues.nii.gz` (also in a `seg/` folder; Dixon suffix `_W/_F/_in/_opp` stripped)
 is picked up automatically when the scan opens.
 
+**Body composition.** With a segmentation loaded, the inspector lists each class's volume
+and mass (typical tissue densities) and, given the subject's weight and which body segments
+lie outside the scan (Dempster/Winter mass fractions; thighs as a percentage), checks the
+imaged mass against the expected share and extrapolates muscle and fat to the whole body,
+assuming the missing limbs share the imaged composition.
+
 **On-device organ segmentation.** "Segment Organs" in the Segmentation section runs
 TotalSegmentator's `total_mr` organ network (Dataset850, nnU-Net 3d_fullres, fold 0) as a
 Core ML model bundled in the app (`NiiMono/Organs.mlpackage`, 59 MB, fp16), reproducing the
