@@ -32,7 +32,8 @@ final class OrganSegmenter {
     static let patch = (z: 112, y: 128, x: 160)
     static let spacing: Float = 1.5
     static let stepFraction: Float = 0.8   // TotalSegmentator's tile_step_size for total_mr
-    static let classes = 30                // background + 29 organs (total_mr ids 1...29)
+    /// Network outputs: background + structures. 30 for the organs part, 22 for muscles/bones.
+    let classes: Int
 
     private let model: MLModel
     private let device: MTLDevice
@@ -41,7 +42,8 @@ final class OrganSegmenter {
     private let finalize: MTLComputePipelineState
 
     /// `modelURL` is a compiled `.mlmodelc`; `library` holds Accumulate.metal's kernels.
-    init(modelURL: URL, library: MTLLibrary, computeUnits: MLComputeUnits = .all) throws {
+    init(modelURL: URL, library: MTLLibrary, classes: Int = 30, computeUnits: MLComputeUnits = .all) throws {
+        self.classes = classes
         let config = MLModelConfiguration()
         config.computeUnits = computeUnits
         model = try MLModel(contentsOf: modelURL, configuration: config)
@@ -56,7 +58,7 @@ final class OrganSegmenter {
 
     /// Peak memory is roughly: three float copies of the 1.5 mm volume, the logit ring
     /// (patch depth × classes × slice, fp16) and one patch of logits — ~1 GB for a whole body.
-    /// Segment `volume`; the result has the scan's dims and organ ids 1...29 (0 = none).
+    /// Segment `volume`; the result has the scan's dims and the model's ids (0 = none).
     /// `progress` gets 0...1; return true from `isCancelled` to stop early (throws CancellationError).
     func segment(_ volume: NiftiVolume, progress: (Double) -> Void = { _ in },
                  isCancelled: () -> Bool = { false }) throws -> LabelVolume {
@@ -101,7 +103,7 @@ final class OrganSegmenter {
         // 5. Sliding window over the padded image.
         let stepsZ = Self.steps(size: pd.z, patch: P.z), stepsY = Self.steps(size: pd.y, patch: P.y), stepsX = Self.steps(size: pd.x, patch: P.x)
         let total = stepsZ.count * stepsY.count * stepsX.count
-        let C = Self.classes
+        let C = classes
         guard let ring = device.makeBuffer(length: P.z * C * pd.y * pd.x * MemoryLayout<UInt16>.stride, options: .storageModeShared),
               let logitsBuf = device.makeBuffer(length: C * P.z * P.y * P.x * MemoryLayout<UInt16>.stride, options: .storageModeShared),
               let gaussBuf = device.makeBuffer(bytes: Self.gaussian(), length: P.z * P.y * P.x * 4, options: .storageModeShared),

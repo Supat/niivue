@@ -40,16 +40,7 @@ struct LabelTable {
 
     /// TotalSegmentator's `total_mr` task (50 structures).
     static let totalMR = LabelTable(
-        names: Dictionary(uniqueKeysWithValues: """
-            spleen kidney_right kidney_left gallbladder liver stomach pancreas adrenal_gland_right \
-            adrenal_gland_left lung_left lung_right esophagus small_bowel duodenum colon urinary_bladder prostate \
-            sacrum vertebrae intervertebral_discs spinal_cord heart aorta inferior_vena_cava \
-            portal_vein_and_splenic_vein iliac_artery_left iliac_artery_right iliac_vena_left iliac_vena_right \
-            humerus_left humerus_right scapula_left scapula_right clavicula_left clavicula_right femur_left \
-            femur_right hip_left hip_right gluteus_maximus_left gluteus_maximus_right gluteus_medius_left \
-            gluteus_medius_right gluteus_minimus_left gluteus_minimus_right autochthon_left autochthon_right \
-            iliopsoas_left iliopsoas_right brain
-            """.split(separator: " ").enumerated().map { ($0.offset + 1, $0.element.replacingOccurrences(of: "_", with: " ")) }),
+        names: TotalMR.names.mapValues { $0.replacingOccurrences(of: "_", with: " ") },
         colors: [:],
         densities: Dictionary(uniqueKeysWithValues: (1...50).map { l in
             (l, [10, 11].contains(l) ? Float(0.30) : (18...20).contains(l) || (30...39).contains(l) ? 1.40 : 1.05) }))
@@ -59,6 +50,7 @@ struct LabelTable {
     static func forFile(named name: String) -> LabelTable {
         let n = name.lowercased()
         if n.contains("tissue") { return .tissues }
+        if n.contains("structures") { return .totalMR }
         if n.contains("total_mr") || n.contains("totalseg") { return .totalMR }
         return .generic
     }
@@ -154,21 +146,35 @@ struct SegmentationSection: View {
     let fileURL: URL?
     let state: ViewState
     @State private var importing = false
+    @State private var importingFat = false
 
     var body: some View {
         Section("Segmentation") {
             if let seg = state.segmentation {
-                SegmentationControls(seg: seg) { state.segmentation = nil }
+                if state.structures != nil {
+                    Picker("Show", selection: Binding(get: { seg.name }, set: { _ in state.swapSegmentation() })) {
+                        Text(seg.name).tag(seg.name)
+                        Text(state.structures!.name).tag(state.structures!.name)
+                    }
+                }
+                SegmentationControls(seg: seg) { state.segmentation = nil; state.structures = nil }
             } else {
                 Button("Load Segmentation…", systemImage: "square.3.layers.3d") { importing = true }
                     .disabled(state.segmentationLoading || state.segmentingProgress != nil)
                 if let p = state.segmentingProgress {
-                    ProgressView(value: p) { Text("Segmenting organs… \(Int(p * 100))%") }
+                    ProgressView(value: p) { Text("Segmenting \(state.segmentingStage)… \(Int(p * 100))%") }
                     Button("Cancel", role: .cancel) { state.cancelSegmenting() }
                 } else {
-                    // TotalSegmentator total_mr organ model (non-commercial licence), run on device.
-                    Button("Segment Organs", systemImage: "brain") { state.segmentOrgans(volume: volume) }
+                    // TotalSegmentator total_mr models (non-commercial licence), run on device.
+                    Button("Generate Segmentation", systemImage: "brain") { state.generateSegmentation(volume: volume) }
                         .disabled(state.segmentationLoading)
+                    if state.fatVolume == nil {
+                        Text("Muscle and fat classes need the Dixon fat image; without it only organs, bones and muscle groups are labelled.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("Choose Fat Image…", systemImage: "drop") { importingFat = true }
+                    } else {
+                        LabeledContent("Fat image", value: state.fatURL?.lastPathComponent ?? "loaded").lineLimit(1).truncationMode(.middle)
+                    }
                 }
                 if state.segmentationLoading { ProgressView("Loading segmentation…") }
                 if let error = state.segmentationError {
@@ -180,6 +186,11 @@ struct SegmentationSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
             if case .success(let url) = result {
                 Task { await state.loadSegmentation(from: url, scoped: true, volume: volume) }
+            }
+        }
+        .fileImporter(isPresented: $importingFat, allowedContentTypes: [.nifti, .gzip, .data]) { result in
+            if case .success(let url) = result {
+                Task { await state.loadFat(from: url, scoped: true, volume: volume) }
             }
         }
     }

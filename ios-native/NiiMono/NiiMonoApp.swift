@@ -155,34 +155,55 @@ enum RenderMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var segmentingProgress: Double?     // non-nil while the organ model runs
+    var segmentingProgress: Double?     // non-nil while the models run
+    var segmentingStage = ""
     private var segmentingTask: Task<Void, Never>?
+    /// The 50-structure map kept alongside a generated tissue map, switchable in the inspector.
+    var structures: Segmentation?
+    /// The Dixon fat image, needed for the muscle/fat tissue classes; found beside the scan
+    /// (`<tag>_F.nii.gz`) or chosen by hand.
+    var fatVolume: NiftiVolume?
+    var fatURL: URL?
 
-    /// Run the bundled TotalSegmentator organ model on the scan (minutes) and attach the result.
-    @MainActor func segmentOrgans(volume: NiftiVolume) {
+    /// Run the bundled TotalSegmentator models (organs, then muscles/bones) and, if the fat
+    /// image is available, derive the 14 tissue classes. Minutes on an iPad.
+    @MainActor func generateSegmentation(volume: NiftiVolume) {
         guard segmentingTask == nil else { return }
         segmentationError = nil
         segmentingProgress = 0
         let cancelled = ManagedAtomic(false)
+        let fat = fatVolume
         segmentingTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<Segmentation, Error> in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<(Segmentation, Segmentation?), Error> in
                 Result {
-                    guard let url = Bundle.main.url(forResource: "Organs", withExtension: "mlmodelc"),
-                          let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else {
-                        throw SegmenterError.noMetal
+                    guard let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else { throw SegmenterError.noMetal }
+                    func report(_ stage: String, _ p: Double) { Task { @MainActor in self?.segmentingStage = stage; self?.segmentingProgress = p } }
+                    func run(_ model: String, classes: Int, stage: String, from: Double, to: Double) throws -> LabelVolume {
+                        guard let url = Bundle.main.url(forResource: model, withExtension: "mlmodelc") else { throw SegmenterError.noMetal }
+                        let seg = try OrganSegmenter(modelURL: url, library: library, classes: classes)
+                        return try seg.segment(volume, progress: { report(stage, from + (to - from) * $0) }, isCancelled: { cancelled.value })
                     }
-                    let segmenter = try OrganSegmenter(modelURL: url, library: library)
-                    let labels = try segmenter.segment(volume, progress: { p in
-                        Task { @MainActor in self?.segmentingProgress = p }
-                    }, isCancelled: { cancelled.value })
-                    return Segmentation(labels: labels, name: "organs (total_mr)", volume: volume)
+                    let organs = try run("Organs", classes: TotalMR.organCount + 1, stage: "organs", from: 0, to: 0.45)
+                    let muscles = try run("Muscles", classes: TotalMR.names.count - TotalMR.organCount + 1, stage: "muscles and bones", from: 0.45, to: 0.9)
+                    // Merge like TotalSegmentator: the later part overwrites where both claim a voxel.
+                    var merged = organs.data
+                    muscles.data.withUnsafeBufferPointer { m in
+                        for i in 0..<m.count where m[i] != 0 { merged[i] = m[i] + UInt8(TotalMR.organCount) }
+                    }
+                    let all = LabelVolume(dims: volume.dims, data: merged, maxLabel: TotalMR.names.count)
+                    let structures = Segmentation(labels: all, name: "structures (total_mr)", volume: volume)
+                    guard let fat else { return (structures, nil) }
+                    report("tissue classes", 0.9)
+                    let tissue = try TissueClassifier.classify(water: volume, fat: fat, labels: all, library: library,
+                                                               progress: { report("tissue classes", 0.9 + 0.1 * $0) })
+                    return (Segmentation(labels: tissue, name: "tissues (generated)", volume: volume), structures)
                 }
             }.value
             guard let self else { return }
             segmentingProgress = nil
             segmentingTask = nil
             switch result {
-            case .success(let seg): segmentation = seg
+            case .success(let (shown, other)): segmentation = shown; structures = other
             case .failure(is CancellationError): break
             case .failure(let error): segmentationError = error.localizedDescription
             }
@@ -191,6 +212,39 @@ enum RenderMode: String, CaseIterable, Identifiable {
     }
     private var segmentingCancel: (() -> Void)?
     @MainActor func cancelSegmenting() { segmentingCancel?() }
+
+    /// Swap the shown map with the kept structures map.
+    @MainActor func swapSegmentation() {
+        guard let other = structures else { return }
+        structures = segmentation
+        segmentation = other
+    }
+
+    /// Load the fat image (must share the scan's grid).
+    @MainActor func loadFat(from url: URL, scoped: Bool, volume: NiftiVolume) async {
+        let dims = volume.dims
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<NiftiVolume, Error> in
+            let accessed = scoped && url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            return Result {
+                let data = try Data(contentsOf: url)
+                let v = try NIfTI.parse(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data)
+                guard v.dims == dims else { throw NiftiError.gridMismatch(v.dims, dims) }
+                return v
+            }
+        }.value
+        switch result {
+        case .success(let v): fatVolume = v; fatURL = url
+        case .failure(let error): segmentationError = error.localizedDescription
+        }
+    }
+
+    /// Dixon tag of a water image (`S_S_W.nii.gz` → `S_S`), or nil if it has no `_W` suffix.
+    static func dixonTag(of fileURL: URL) -> String? {
+        var base = fileURL.lastPathComponent
+        for ext in [".nii.gz", ".nii"] where base.hasSuffix(ext) { base.removeLast(ext.count) }
+        return base.hasSuffix("_W") ? String(base.dropLast(2)) : nil
+    }
 
     /// Look next to the scan for a matching segmentation (`<tag>_tissues.nii.gz`, also in a
     /// `seg/` folder, where `<tag>` is the scan name without a Dixon suffix) and load it quietly.
@@ -201,6 +255,12 @@ enum RenderMode: String, CaseIterable, Identifiable {
         var tags = [base]
         for suffix in ["_W", "_F", "_in", "_opp"] where base.hasSuffix(suffix) { tags.append(String(base.dropLast(suffix.count))) }
         let dir = fileURL.deletingLastPathComponent()
+        if fatVolume == nil, let tag = Self.dixonTag(of: fileURL) {
+            for name in ["\(tag)_F.nii.gz", "\(tag)_F.nii"] {
+                let url = dir.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { await loadFat(from: url, scoped: false, volume: volume); segmentationError = nil; break }
+            }
+        }
         for tag in tags {
             for folder in [dir, dir.appendingPathComponent("seg")] {
                 for name in ["\(tag)_tissues.nii.gz", "\(tag)_tissues.nii", "\(tag)_seg.nii.gz"] {
@@ -325,7 +385,7 @@ struct ViewerView: View {
             .onAppear(perform: scheduleChromeHide)
             .task {
                 if let fileURL { await state.loadSiblingSegmentation(of: fileURL, volume: volume) }
-                if UserDefaults.standard.bool(forKey: "segmentOrgans") { state.segmentOrgans(volume: volume) } // for checks
+                if UserDefaults.standard.bool(forKey: "segmentOrgans") { state.generateSegmentation(volume: volume) } // for checks
             }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
             .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }

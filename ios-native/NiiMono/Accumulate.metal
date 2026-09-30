@@ -61,3 +61,22 @@ kernel void finalize(device half* ring          [[buffer(0)]],
     }
     labels[(z * p.Y + y) * p.X + x] = uchar(bestC);
 }
+
+// MARK: - Binary morphology (TissueClassifier)
+
+struct MorphParams { uint nx, ny, nz; uint dilate; };
+
+// One 6-connected erosion (dilate = 0) or dilation (dilate = 1) pass over a 0/1 mask;
+// outside the volume counts as 0, like scipy's border_value=0.
+kernel void morph(device const uchar* in      [[buffer(0)]],
+                  device uchar* out           [[buffer(1)]],
+                  constant MorphParams& p     [[buffer(2)]],
+                  uint3 g                     [[thread_position_in_grid]]) {
+    if (g.x >= p.nx || g.y >= p.ny || g.z >= p.nz) { return; }
+    uint i = (g.z * p.ny + g.y) * p.nx + g.x;
+    uchar c = in[i];
+    uchar xm = g.x > 0 ? in[i - 1] : 0, xp = g.x + 1 < p.nx ? in[i + 1] : 0;
+    uchar ym = g.y > 0 ? in[i - p.nx] : 0, yp = g.y + 1 < p.ny ? in[i + p.nx] : 0;
+    uchar zm = g.z > 0 ? in[i - p.nx * p.ny] : 0, zp = g.z + 1 < p.nz ? in[i + p.nx * p.ny] : 0;
+    out[i] = p.dilate ? (c | xm | xp | ym | yp | zm | zp) : (c & xm & xp & ym & yp & zm & zp);
+}

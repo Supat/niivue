@@ -56,18 +56,22 @@ lie outside the scan (Dempster/Winter mass fractions; thighs as a percentage), c
 imaged mass against the expected share and extrapolates muscle and fat to the whole body,
 assuming the missing limbs share the imaged composition.
 
-**On-device organ segmentation.** "Segment Organs" in the Segmentation section runs
-TotalSegmentator's `total_mr` organ network (Dataset850, nnU-Net 3d_fullres, fold 0) as a
-Core ML model bundled in the app (`NiiMono/Organs.mlpackage`, 59 MB, fp16), reproducing the
-TotalSegmentator/nnU-Net inference chain in `OrganSegmenter.swift` (1.5 mm resampling,
-crop, z-score, 0.8-step sliding window with Gaussian blending, argmax; accumulation on the
-GPU via `Accumulate.metal`). Checked against the Python pipeline on a whole-body Dixon
-scan: mean Dice 0.991 over the 29 organs with the Neural Engine (fp16), 1.000 on GPU;
-24 s / 111 s on an M1 Mac, ~1.6 GB peak. It needs a real device — the simulator's CPU-only
-Core ML path allocates ~19 GB and dies. The model is regenerated with
-`tools/convert_organ_model.py` (needs the TotalSegmentator weights and a Python 3.11
-environment with torch 2.7 + coremltools). The weights are under TotalSegmentator's
-non-commercial licence.
+**On-device segmentation.** "Generate Segmentation" in the Segmentation section runs both
+TotalSegmentator `total_mr` networks (Dataset850 organs, Dataset851 muscles/bones; nnU-Net
+3d_fullres, fold 0) as Core ML models bundled in the app (`NiiMono/Organs.mlpackage`,
+`Muscles.mlpackage`, 59 MB each, fp16), merges them into the 50-structure map, and — when the
+Dixon fat image is available (`<tag>_F.nii.gz` beside a `<tag>_W` scan, or chosen by hand) —
+derives the 14 tissue classes of the body-composition pipeline (`TissueClassifier.swift`:
+fat-fraction muscle and fat with the muscle.py / tissue_render.py morphology, visceral fat by
+the per-slice trunk hull). `OrganSegmenter.swift` reproduces the TotalSegmentator/nnU-Net
+inference chain (1.5 mm resampling, crop, z-score, 0.8-step sliding window with Gaussian
+blending, argmax; accumulation on the GPU via `Accumulate.metal`, which also holds the
+morphology kernel). Checked against the Python pipeline on a whole-body Dixon scan: mean
+Dice 0.992 over the 49 structures present and ≥ 0.98 on every tissue class (muscle and both
+fat classes 0.999–1.000); about 80 s in all on an M1 Mac, ~1.7 GB peak. Needs a real device:
+the simulator's CPU-only Core ML path allocates ~19 GB and dies. Models are regenerated with
+`tools/convert_organ_model.py <out> organs|muscles` (TotalSegmentator weights, Python 3.11
+with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-commercial licence.
 
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
@@ -81,7 +85,8 @@ Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipC
 | `NiiMono/SliceView.swift` | Zoomable 2D slice view (UIScrollView + CPU-windowed CGImage). |
 | `NiiMono/StepSlider.swift` | Slider that steps one unit on track taps. |
 | `NiiMono/Segmentation.swift` | Label tables, overlay state, slice compositing and the inspector section. |
-| `NiiMono/OrganSegmenter.swift`, `Accumulate.metal`, `Organs.mlpackage` | On-device TotalSegmentator organ model and its inference chain. |
+| `NiiMono/OrganSegmenter.swift`, `Accumulate.metal`, `Organs.mlpackage`, `Muscles.mlpackage` | On-device TotalSegmentator models and their inference chain. |
+| `NiiMono/TissueClassifier.swift` | The 14 tissue classes from Dixon water/fat + structure labels (morphology on the GPU). |
 | `NiiMono/Snapshot.swift` | Captures the visible panes to a PNG and presents the share sheet. |
 | `NiiMono/NIfTI.swift` | NIfTI-1 reader. Pure Foundation; reorients to RAS+ at load, extracts slices. |
 | `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip planes), camera, gestures and SwiftUI host. |

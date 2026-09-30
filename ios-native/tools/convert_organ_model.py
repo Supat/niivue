@@ -1,9 +1,12 @@
-"""Build the nnU-Net organ network from its checkpoint, trace it on a fixed patch, convert to Core ML."""
+"""Build a TotalSegmentator total_mr nnU-Net (organs or muscles part) from its checkpoint, trace it on a fixed
+patch and convert to Core ML.  Usage: convert_organ_model.py <out.mlpackage> [organs|muscles]"""
 import json, sys, time, numpy as np, torch, coremltools as ct
 from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
 
-MODEL = '/Users/Sui/.totalsegmentator/nnunet/results/Dataset850_TotalSegMRI_part1_organs_1088subj/nnUNetTrainer_2000epochs_NoMirroring__nnUNetPlans__3d_fullres'
+PART = sys.argv[2] if len(sys.argv) > 2 else 'organs'
+MODEL = {'organs': 'Dataset850_TotalSegMRI_part1_organs_1088subj', 'muscles': 'Dataset851_TotalSegMRI_part2_muscles_1088subj'}[PART]
+MODEL = f'/Users/Sui/.totalsegmentator/nnunet/results/{MODEL}/nnUNetTrainer_2000epochs_NoMirroring__nnUNetPlans__3d_fullres'
 plans = json.load(open(f'{MODEL}/plans.json')); dataset = json.load(open(f'{MODEL}/dataset.json'))
 pm = PlansManager(plans); cm = pm.get_configuration('3d_fullres')
 n_out = len(dataset['labels'])
@@ -44,7 +47,7 @@ ml = ct.convert(traced, inputs=[ct.TensorType(name='patch', shape=(1, 1, *patch)
                 convert_to='mlprogram', minimum_deployment_target=ct.target.iOS18,
                 compute_precision=ct.precision.FLOAT16)
 print('converted in', round(time.time() - t), 's')
-ml.short_description = 'TotalSegmentator total_mr organs (nnU-Net 3d_fullres, fold 0). Non-commercial licence.'
+ml.short_description = f'TotalSegmentator total_mr {PART} (nnU-Net 3d_fullres, fold 0). Non-commercial licence.'
 ml.save(sys.argv[1])
 # compare on the same random input
 out = ml.predict({'patch': x.numpy()})['logits']
