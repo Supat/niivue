@@ -10,21 +10,6 @@
 import Foundation
 import Metal
 
-/// TotalSegmentator's `total_mr` label ids and names (organs part 1...29, muscles/bones part 30...50).
-enum TotalMR {
-    static let names: [Int: String] = Dictionary(uniqueKeysWithValues: """
-        spleen kidney_right kidney_left gallbladder liver stomach pancreas adrenal_gland_right \
-        adrenal_gland_left lung_left lung_right esophagus small_bowel duodenum colon urinary_bladder prostate \
-        sacrum vertebrae intervertebral_discs spinal_cord heart aorta inferior_vena_cava \
-        portal_vein_and_splenic_vein iliac_artery_left iliac_artery_right iliac_vena_left iliac_vena_right \
-        humerus_left humerus_right scapula_left scapula_right clavicula_left clavicula_right femur_left \
-        femur_right hip_left hip_right gluteus_maximus_left gluteus_maximus_right gluteus_medius_left \
-        gluteus_medius_right gluteus_minimus_left gluteus_minimus_right autochthon_left autochthon_right \
-        iliopsoas_left iliopsoas_right brain
-        """.split(separator: " ").enumerated().map { ($0.offset + 1, String($0.element)) })
-    static let organCount = 29 // the organ model's classes; the muscle model's ids are offset by this
-}
-
 /// A 0/1 mask on the volume grid, [z][y][x].
 struct Mask {
     let nx: Int, ny: Int, nz: Int
@@ -183,10 +168,7 @@ final class Morphology {
 }
 
 enum TissueClassifier {
-    /// total_mr ids whose names contain any of the substrings (muscle.py's `ids()`).
-    static func ids(_ subs: String...) -> Set<Int> {
-        Set(TotalMR.names.filter { n in subs.contains { n.value.contains($0) } }.keys)
-    }
+    static func ids(_ subs: String...) -> Set<Int> { TotalMR.ids(subs) }
 
     /// 99th percentile of the values where `include` holds, by histogram.
     static func percentile99(_ a: [Float], _ b: [Float]?, include: (Int) -> Bool) -> Float {

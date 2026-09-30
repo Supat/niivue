@@ -77,27 +77,26 @@ Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`,
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`.
 
-## Files
+## Files (MVVM)
 
-| File | Role |
+| Folder | Contents |
 |---|---|
-| `NiiMono/NiiMonoApp.swift` | `DocumentGroup` app, document type, viewer chrome. |
-| `NiiMono/SliceView.swift` | Zoomable 2D slice view (UIScrollView + CPU-windowed CGImage). |
-| `NiiMono/StepSlider.swift` | Slider that steps one unit on track taps. |
-| `NiiMono/Segmentation.swift` | Label tables, overlay state, slice compositing and the inspector section. |
-| `NiiMono/OrganSegmenter.swift`, `Accumulate.metal`, `Organs.mlpackage`, `Muscles.mlpackage` | On-device TotalSegmentator models and their inference chain. |
-| `NiiMono/TissueClassifier.swift` | The 14 tissue classes from Dixon water/fat + structure labels (morphology on the GPU). |
-| `NiiMono/Snapshot.swift` | Captures the visible panes to a PNG and presents the share sheet. |
-| `NiiMono/NIfTI.swift` | NIfTI-1 reader. Pure Foundation; reorients to RAS+ at load, extracts slices. |
-| `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip planes), camera, gestures and SwiftUI host. |
+| `NiiMono/App` | `NiiMonoApp` (DocumentGroup) and `MRIDocument`. |
+| `NiiMono/Models` | `NIfTI` reader + `NiftiVolume`/`LabelVolume`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` and the slice compositing; `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
+| `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs). |
+| `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
+| `NiiMono/Services` | `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
+| `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
+| `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist` | Document types (`.nii`, gzip) and document-browser keys. |
-| `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation. |
+| `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
+| `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 
 Run the reader check (Swift only allows top-level code in `main.swift`, hence the copy):
 
 ```sh
 mkdir -p /tmp/ncheck && cp spike/nifti_check.swift /tmp/ncheck/main.swift
-swiftc NiiMono/NIfTI.swift /tmp/ncheck/main.swift -O -o /tmp/ncheck/ncheck && /tmp/ncheck/ncheck T1w_DEMO.nii.gz
+swiftc NiiMono/Models/NIfTI.swift /tmp/ncheck/main.swift -O -o /tmp/ncheck/ncheck && /tmp/ncheck/ncheck T1w_DEMO.nii.gz
 ```
 
 ## Conventions and limits

@@ -16,10 +16,11 @@ import Foundation
 import Metal
 
 enum SegmenterError: LocalizedError {
-    case noMetal, missingKernel(String), modelOutput, simulator
+    case noMetal, missingKernel(String), missingModel(String), modelOutput, simulator
     var errorDescription: String? {
         switch self {
         case .noMetal: return "Metal is unavailable"
+        case .missingModel(let n): return "the \(n) model is missing from the app bundle"
         case .simulator: return "organ segmentation needs a real device (the simulator runs Core ML on the CPU and runs out of memory)"
         case .missingKernel(let n): return "Metal kernel \(n) is missing"
         case .modelOutput: return "the model returned an unexpected output"

@@ -14,7 +14,7 @@ struct SliceView: UIViewRepresentable {
     let lo: Float
     let hi: Float
     let mirrored: Bool
-    var segmentation: Segmentation? = nil
+    var overlay: SegmentationOverlay? = nil
     /// Physical size (mm) to fit instead of the slice's own, so several panes share one
     /// scale: pass the envelope of all their extents. nil = fit this slice alone.
     var fitExtent: CGSize? = nil
@@ -34,8 +34,8 @@ struct SliceView: UIViewRepresentable {
 
     func updateUIView(_ view: ZoomView, context: Context) {
         let image: CGImage?
-        if let seg = segmentation {
-            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, labels: seg.labels, lut: seg.lut, opacity: seg.opacity)
+        if let overlay {
+            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
             image = CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
                 CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
