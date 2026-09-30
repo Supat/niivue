@@ -38,6 +38,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let cmapTex: MTLTexture
     private let labelLUT: MTLTexture   // 256 × RGBA, alpha 0 = hidden label
     private var labelTex: MTLTexture?  // r8Uint labels, same grid as the volume
+    private let noLabels: MTLTexture   // 1×1×1 r8Uint stand-in: the slot must hold a uint texture
     private var labelSource: ObjectIdentifier?
     var overlayOpacity: Float = 0.65
     var overlayGhost = false
@@ -123,6 +124,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         for i in 0..<256 { lut[i*4] = UInt8(i); lut[i*4+1] = UInt8(i); lut[i*4+2] = UInt8(i); lut[i*4+3] = 255 }
         cmapTex.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: lut, bytesPerRow: 256 * 4)
         labelLUT = device.makeTexture(descriptor: cd)!
+        let nd = MTLTextureDescriptor()
+        nd.textureType = .type3D; nd.pixelFormat = .r8Uint; nd.width = 1; nd.height = 1; nd.depth = 1; nd.usage = .shaderRead
+        noLabels = device.makeTexture(descriptor: nd)!
 
         // Volume box: half-extents proportional to physical size, normalized so the
         // largest axis is 1.0 — keeps anisotropic voxels in correct proportion.
@@ -240,7 +244,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         enc.setFragmentTexture(volumeTex, index: 0)
         enc.setFragmentTexture(cmapTex, index: 1)
-        enc.setFragmentTexture(labelTex ?? volumeTex, index: 2) // any bound 3D texture when there are no labels
+        enc.setFragmentTexture(labelTex ?? noLabels, index: 2)
         enc.setFragmentTexture(labelLUT, index: 3)
         enc.setFragmentSamplerState(sampler, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
