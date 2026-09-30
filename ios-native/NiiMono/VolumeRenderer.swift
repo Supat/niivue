@@ -14,13 +14,14 @@ struct Uniforms {
     var invViewProj: simd_float4x4
     var camPos: simd_float3
     var boxHalf: simd_float3
-    var clips: (simd_float4, simd_float4, simd_float4)
+    var clips: (simd_float4, simd_float4, simd_float4, simd_float4, simd_float4, simd_float4)
     var dataMin: Float
     var dataMax: Float
     var steps: Int32
     var mode: Int32
     var clipCount: Int32
     var clipCutaway: Int32
+    var clipHighlight: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -36,8 +37,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var windowLo: Float = 0
     var windowHi: Float = 1
     var mode: Int32 = 0 // RenderMode.shaderMode
-    var clips: [ClipSetting] = [] // at most 3 are used
+    var clips: [ClipSetting] = [] // at most ClipSetting.maxCount are used
     var clipCutaway = false
+    var clipHighlight = false
 
     // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
@@ -119,7 +121,74 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         super.init()
     }
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    // Re-centring glide when the view's width changes (inspector opening/closing). The
+    // left edge stays put, so the render's centre would jump by half the width change and
+    // its size by the change in fit distance; instead these two offsets are eased between
+    // "where the image was" and "where it belongs". Growing views resize at once and glide
+    // from an initial offset to zero; shrinking views (see RenderHost) keep their old size
+    // while the render glides to the narrower layout, then resize with no offset.
+    private var lastSize = CGSize.zero
+    private var glideShift: Float = 0     // horizontal offset in NDC
+    private var glideScale: Float = 1     // camera distance multiplier
+    private var glide: (from: SIMD2<Float>, to: SIMD2<Float>, start: CFTimeInterval, done: (() -> Void)?)?
+    private var glideLink: CADisplayLink?
+    private weak var glideView: MTKView?
+    private var skipResizeGlide = false
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        defer { lastSize = size }
+        if skipResizeGlide { skipResizeGlide = false; return }
+        guard lastSize.width > 0, size.width > 0, size.height > 0,
+              lastSize.height == size.height, lastSize.width != size.width else { return }
+        let oldW = Float(lastSize.width), newW = Float(size.width), h = Float(size.height)
+        // Start from offsets that reproduce the old picture in the new view.
+        glideShift = glideShift * oldW / newW + (oldW - newW) / newW
+        glideScale *= fitDistance(aspect: oldW / h) / fitDistance(aspect: newW / h)
+        startGlide(to: SIMD2(0, 1), in: view)
+    }
+
+    /// Glide the render into the layout it will have once `view` is `newWidth` pixels wide,
+    /// without resizing the view yet; `done` runs when it can be resized.
+    func glide(toWidth newWidth: CGFloat, in view: MTKView, done: @escaping () -> Void) {
+        let oldW = Float(view.drawableSize.width), newW = Float(newWidth), h = Float(view.drawableSize.height)
+        guard oldW > 0, newW > 0, h > 0 else { done(); return }
+        let target = SIMD2((newW - oldW) / oldW, fitDistance(aspect: newW / h) / fitDistance(aspect: oldW / h))
+        startGlide(to: target, in: view) { [weak self] in
+            // The resize that follows must not start another glide.
+            self?.skipResizeGlide = true
+            self?.glideShift = 0
+            self?.glideScale = 1
+            done()
+        }
+    }
+
+    /// Abandon a pending narrower layout and glide back to the view's own size.
+    func cancelGlide(in view: MTKView) { startGlide(to: SIMD2(0, 1), in: view) }
+
+    private func startGlide(to target: SIMD2<Float>, in view: MTKView, done: (() -> Void)? = nil) {
+        glide = (SIMD2(glideShift, glideScale), target, CACurrentMediaTime(), done)
+        glideView = view
+        if glideLink == nil {
+            glideLink = CADisplayLink(target: self, selector: #selector(glideTick))
+            glideLink?.add(to: .main, forMode: .common)
+        }
+    }
+
+    @objc private func glideTick() {
+        guard let g = glide else { glideLink?.invalidate(); glideLink = nil; return }
+        let t = min(1, Float((CACurrentMediaTime() - g.start) / 0.35))
+        let e = t * t * (3 - 2 * t) // smoothstep ease in/out
+        let v = g.from + (g.to - g.from) * e
+        glideShift = v.x
+        glideScale = v.y
+        glideView?.setNeedsDisplay()
+        if t >= 1 {
+            glideLink?.invalidate()
+            glideLink = nil
+            glide = nil
+            g.done?()
+        }
+    }
 
     func draw(in view: MTKView) {
         guard let rpd = view.currentRenderPassDescriptor,
@@ -142,16 +211,21 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     }
 
     private func makeUniforms(aspect: Float) -> Uniforms {
-        let eye = target + distance(aspect: aspect) * Self.direction(yaw: yaw, pitch: pitch)
+        let eye = target + distance(aspect: aspect) * glideScale * Self.direction(yaw: yaw, pitch: pitch)
         let view = lookAt(eye: eye, center: target, up: simd_float3(0, 0, 1))
-        let proj = perspective(fovy: Self.fovY, aspect: aspect, near: 0.05, far: 100)
+        var proj = perspective(fovy: Self.fovY, aspect: aspect, near: 0.05, far: 100)
+        if glideShift != 0 { // slide the image sideways in NDC: x' = x + shift·w
+            var slide = matrix_identity_float4x4
+            slide.columns.3.x = glideShift
+            proj = slide * proj
+        }
         let invVP = (proj * view).inverse
         // Clip plane normal: the chosen axis, tilted about the other two. Depth runs along
         // the normal across the box's full extent in that direction, so the slider always
         // sweeps the whole volume whatever the tilt. Flip = same plane, opposite side kept.
         func unit(_ i: Int) -> simd_float3 { var v = simd_float3.zero; v[i % 3] = 1; return v }
-        var planes = [simd_float4](repeating: .zero, count: 3)
-        let active = clips.prefix(3)
+        var planes = [simd_float4](repeating: .zero, count: ClipSetting.maxCount)
+        let active = clips.prefix(ClipSetting.maxCount)
         for (i, clip) in active.enumerated() {
             let a = Int(clip.plane.axis), tilt = clip.tilt * (.pi / 180)
             var normal = simd_quatf(angle: tilt.y, axis: unit(a + 2)).act(
@@ -161,9 +235,10 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             planes[i] = simd_float4(normal, offset)
         }
         return Uniforms(invViewProj: invVP, camPos: eye, boxHalf: boxHalf,
-                        clips: (planes[0], planes[1], planes[2]),
+                        clips: (planes[0], planes[1], planes[2], planes[3], planes[4], planes[5]),
                         dataMin: windowLo, dataMax: windowHi, steps: steps, mode: mode,
-                        clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0)
+                        clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0,
+                        clipHighlight: clipHighlight ? 1 : 0)
     }
 }
 
@@ -242,6 +317,14 @@ struct ClipSetting: Identifiable, Equatable {
         var id: Self { self }
         var axis: Int32 { [.sagittal: 0, .coronal: 1, .axial: 2][self]! }
     }
+    /// Matches `float4 clips[6]` in Raycaster.metal.
+    static let maxCount = 6
+    /// Highlight colour per plane slot; mirrors kClipColors in Raycaster.metal.
+    static let colors: [Color] = [
+        Color(red: 1.00, green: 0.27, blue: 0.23), Color(red: 0.20, green: 0.78, blue: 0.35),
+        Color(red: 0.04, green: 0.52, blue: 1.00), Color(red: 1.00, green: 0.80, blue: 0.00),
+        Color(red: 0.75, green: 0.35, blue: 0.95), Color(red: 0.39, green: 0.82, blue: 1.00),
+    ]
     let id = UUID()
     var plane: Plane
     var pos: Float = 0.5            // 0...1 across the volume, along the plane normal
@@ -274,6 +357,7 @@ struct RenderView: UIViewRepresentable {
     let mode: RenderMode
     let clips: [ClipSetting]
     let clipCutaway: Bool
+    let clipHighlight: Bool
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
     let presetTick: Int
@@ -353,8 +437,9 @@ struct RenderView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> MTKView {
-        let v = MTKView()
+    func makeUIView(context: Context) -> RenderHost {
+        let host = RenderHost()
+        let v = host.mtk
         let c = context.coordinator
         c.renderer = VolumeRenderer(view: v, volume: volume)
         v.delegate = c.renderer
@@ -388,10 +473,12 @@ struct RenderView: UIViewRepresentable {
             c.gizmo.widthAnchor.constraint(equalToConstant: 76),
             c.gizmo.heightAnchor.constraint(equalToConstant: 76),
         ])
-        return v
+        host.renderer = c.renderer
+        return host
     }
 
-    func updateUIView(_ view: MTKView, context: Context) {
+    func updateUIView(_ host: RenderHost, context: Context) {
+        let view = host.mtk
         let c = context.coordinator
         guard let renderer = c.renderer else { return }
         let range = max(volume.dataMax - volume.dataMin, .leastNonzeroMagnitude)
@@ -401,11 +488,47 @@ struct RenderView: UIViewRepresentable {
         renderer.mode = mode == .mip ? 0 : 1
         renderer.clips = clips
         renderer.clipCutaway = clipCutaway
+        renderer.clipHighlight = clipHighlight
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }
         c.presetTick = presetTick
         c.cameraChanged(view)
+    }
+}
+
+/// Holds the MTKView. When SwiftUI narrows this view (inspector opening), the MTKView keeps
+/// its old size until the renderer has glided into the narrower layout, so the picture is
+/// never cut off at the new edge before the panel has slid over it. Growing is immediate.
+final class RenderHost: UIView {
+    let mtk = MTKView()
+    var renderer: VolumeRenderer?
+    private var pendingSize: CGSize?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = false
+        addSubview(mtk)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let old = mtk.frame.size, new = bounds.size
+        if let pendingSize, pendingSize != new { // layout changed again mid-glide
+            self.pendingSize = nil
+            renderer?.cancelGlide(in: mtk)
+        }
+        let narrowing = old.width > new.width && old.height == new.height && old.width > 0
+            && UIView.inheritedAnimationDuration == 0 && pendingSize == nil
+        guard narrowing, let renderer else { mtk.frame = bounds; return }
+        pendingSize = new
+        renderer.glide(toWidth: new.width * mtk.contentScaleFactor, in: mtk) { [weak self] in
+            guard let self, pendingSize == new else { return }
+            pendingSize = nil
+            mtk.frame = bounds
+        }
     }
 }
 

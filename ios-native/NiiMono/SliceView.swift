@@ -74,17 +74,34 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.width > 0, bounds.height > 0, extent.width > 0, extent.height > 0 else { return }
-        if fitted.bounds != bounds.size || fitted.extent != extent {
-            // Aspect-fit at zoom 1. Resets zoom on rotation / inspector / plane change.
-            fitted = (bounds.size, extent)
-            zoomScale = 1
-            let k = min(bounds.width / extent.width, bounds.height / extent.height)
-            imageView.frame = CGRect(x: 0, y: 0, width: extent.width * k, height: extent.height * k)
-            contentSize = imageView.frame.size
+        let refit = fitted.bounds != bounds.size || fitted.extent != extent
+        // A width-only change with the same slice is the inspector opening or closing:
+        // glide to the new centre instead of jumping. (Rotation already runs inside the
+        // system's own animation; first layout and plane changes should not animate.)
+        let glide = refit && fitted.extent == extent && fitted.bounds.height == bounds.height
+            && fitted.bounds.width > 0 && UIView.inheritedAnimationDuration == 0
+        let apply = { [self] in
+            if refit {
+                // Aspect-fit at zoom 1. Resets zoom on rotation / inspector / plane change.
+                fitted = (bounds.size, extent)
+                zoomScale = 1
+                let k = min(bounds.width / extent.width, bounds.height / extent.height)
+                imageView.frame = CGRect(x: 0, y: 0, width: extent.width * k, height: extent.height * k)
+                contentSize = imageView.frame.size
+            }
+            // Keep the image centred whenever it is smaller than the viewport.
+            imageView.frame.origin = CGPoint(x: max(0, (bounds.width - imageView.frame.width) / 2),
+                                             y: max(0, (bounds.height - imageView.frame.height) / 2))
         }
-        // Keep the image centred whenever it is smaller than the viewport.
-        imageView.frame.origin = CGPoint(x: max(0, (bounds.width - imageView.frame.width) / 2),
-                                         y: max(0, (bounds.height - imageView.frame.height) / 2))
+        if glide {
+            // Our bounds have already jumped to the new width; let the image overflow them
+            // while it glides so it isn't cut off before the panel has slid over it.
+            clipsToBounds = false
+            UIView.animate(withDuration: 0.35, delay: 0, options: [.curveEaseInOut, .allowUserInteraction],
+                           animations: apply) { _ in self.clipsToBounds = true }
+        } else {
+            apply()
+        }
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }

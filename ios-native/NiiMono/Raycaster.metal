@@ -1,9 +1,6 @@
 //
-//  Raycaster.metal — minimal MIP volume raycaster.
-//  Proves the GPU half: a 3D NIfTI texture ray-marched in Metal, colour-mapped.
-//  This is hand-written rather than transpiled from niivue's GLSL on purpose —
-//  the spike answers "can Metal raycast our data", not "does niivue's shader run".
-//  The niivue GLSL (8 programs) is what you'd run through SPIRV-Cross next.
+//  Raycaster.metal — volume raycaster: MIP and a port of niivue's default compositing
+//  render, with clip planes. Hand-written MSL rather than transpiled niivue GLSL.
 //
 
 #include <metal_stdlib>
@@ -13,15 +10,16 @@ struct Uniforms {
     float4x4 invViewProj; // clip -> world
     float3   camPos;      // world-space eye
     float3   boxHalf;     // half-extents of the volume box (anisotropy baked in)
-    float4   clips[3];    // clip planes in box space: xyz = unit normal, w = offset;
+    float4   clips[6];    // clip planes in box space: xyz = unit normal, w = offset;
                           // the kept region of each is dot(xyz, p) <= w
     float    dataMin;
     float    dataMax;
     int      steps;       // samples along the ray (MIP)
     int      mode;        // 0 = MIP, 1 = niivue-style compositing
-    int      clipCount;   // number of active planes in `clips` (0...3)
+    int      clipCount;   // number of active planes in `clips` (0...6)
     int      clipCutaway; // 0 = keep what is on the kept side of every plane;
                           // 1 = remove only the corner on the removed side of every plane
+    int      clipHighlight; // 1 = draw each plane as a tinted sheet with an outline
 };
 
 struct VSOut {
@@ -49,20 +47,9 @@ static float2 intersectBox(float3 ro, float3 rd, float3 halfExtent) {
     return float2(n, f);
 }
 
-fragment float4 frag(VSOut in [[stage_in]],
-                     constant Uniforms& u   [[buffer(0)]],
-                     texture3d<float> vol    [[texture(0)]],
-                     texture1d<float> cmap   [[texture(1)]],
-                     sampler samp            [[sampler(0)]]) {
-    // Reconstruct a world-space ray through this pixel.
-    float4 nearH = u.invViewProj * float4(in.ndc, 0.0, 1.0);
-    float4 farH  = u.invViewProj * float4(in.ndc, 1.0, 1.0);
-    float3 nearW = nearH.xyz / nearH.w;
-    float3 farW  = farH.xyz  / farH.w;
-    float3 ro = u.camPos;
-    float3 rd = normalize(farW - nearW);
-
-    float2 hit = intersectBox(ro, rd, u.boxHalf);
+// Colour of one ray through the volume. `hit` is the ray's [near, far] range in the box.
+static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
+                    texture1d<float> cmap, sampler samp, float3 ro, float3 rd, float2 hit) {
     // Clip planes. Normal mode trims the ray's [near, far] range to each plane's kept
     // half-space. Cutaway instead finds the stretch of the ray inside every plane's
     // removed half-space — (cut0, cut1), one interval since that region is convex — and
@@ -103,7 +90,7 @@ fragment float4 frag(VSOut in [[stage_in]],
         float4 acc = float4(0.0);
         float tStep = (hit.y - tIn) / lenVox; // ray distance per voxel step
         float skip0 = (cut0 - tIn) / tStep, skip1 = (cut1 - tIn) / tStep;
-        float s = fract(sin(in.position.x * 12.9898 + in.position.y * 78.233) * 43758.5453);
+        float s = fract(sin(fragPos.x * 12.9898 + fragPos.y * 78.233) * 43758.5453);
         for (; s <= lenVox; s += 1.0) {
             // Jump over the cutaway. Assign rather than step back and `continue`: float
             // rounding could land just short of skip1 and repeat the jump forever.
@@ -135,4 +122,45 @@ fragment float4 frag(VSOut in [[stage_in]],
     // would blend the last LUT entry with the black border and turn saturated voxels grey.
     float3 rgb = cmap.sample(samp, (norm * 255.0 + 0.5) / 256.0).rgb;
     return float4(rgb, 1.0);
+}
+
+// One colour per clip plane; ClipSetting.colors in VolumeRenderer.swift mirrors these.
+constant float3 kClipColors[6] = {
+    float3(1.00, 0.27, 0.23), float3(0.20, 0.78, 0.35), float3(0.04, 0.52, 1.00),
+    float3(1.00, 0.80, 0.00), float3(0.75, 0.35, 0.95), float3(0.39, 0.82, 1.00),
+};
+
+fragment float4 frag(VSOut in [[stage_in]],
+                     constant Uniforms& u   [[buffer(0)]],
+                     texture3d<float> vol    [[texture(0)]],
+                     texture1d<float> cmap   [[texture(1)]],
+                     sampler samp            [[sampler(0)]]) {
+    // Reconstruct a world-space ray through this pixel.
+    float4 nearH = u.invViewProj * float4(in.ndc, 0.0, 1.0);
+    float4 farH  = u.invViewProj * float4(in.ndc, 1.0, 1.0);
+    float3 nearW = nearH.xyz / nearH.w;
+    float3 farW  = farH.xyz  / farH.w;
+    float3 ro = u.camPos;
+    float3 rd = normalize(farW - nearW);
+
+    float2 box = intersectBox(ro, rd, u.boxHalf);
+    if (box.x > box.y || box.y < 0.0) { return float4(0, 0, 0, 1); } // ray misses the volume
+    float4 color = shade(in.position, u, vol, cmap, samp, ro, rd, box);
+
+    if (u.clipHighlight != 0) {
+        // Plane highlight: wherever the ray crosses a clip plane inside the volume box,
+        // tint the pixel with that plane's colour; near the box faces draw it solid, which
+        // outlines the plane. ponytail: drawn on top of the render (not depth-tested
+        // against tissue) so a plane stays visible even where it is buried.
+        for (int i = 0; i < u.clipCount; ++i) {
+            float d = dot(u.clips[i].xyz, rd);
+            if (abs(d) < 1e-6) { continue; }
+            float t = (u.clips[i].w - dot(u.clips[i].xyz, ro)) / d;
+            if (t <= max(box.x, 0.0) || t >= box.y) { continue; }
+            float3 toFace = u.boxHalf - abs(ro + rd * t);
+            float edge = min(toFace.x, min(toFace.y, toFace.z));
+            color.rgb = mix(color.rgb, kClipColors[i], edge < 0.006 ? 0.9 : 0.16);
+        }
+    }
+    return color;
 }

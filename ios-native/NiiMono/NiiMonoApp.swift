@@ -76,7 +76,7 @@ struct DocumentView: View {
 }
 
 enum Plane: String, CaseIterable, Identifiable {
-    case axial = "Axial", coronal = "Coronal", sagittal = "Sagittal", render = "3D"
+    case render = "3D", axial = "Axial", coronal = "Coronal", sagittal = "Sagittal" // picker order
     var id: Self { self }
     /// Volume axis the plane is perpendicular to; nil for the 3D render.
     var axis: Int? { [.sagittal: 0, .coronal: 1, .axial: 2][self] }
@@ -84,15 +84,15 @@ enum Plane: String, CaseIterable, Identifiable {
 
 /// How the 3D view draws the volume.
 enum RenderMode: String, CaseIterable, Identifiable {
-    case mip = "MIP", volume = "Volume"
+    case volume = "Volume", mip = "MIP" // picker order
     var id: Self { self }
 }
 
 /// Per-frame viewer state lives here rather than in ViewerView's @State so scrubbing
 /// and windowing only invalidate the small views that read it, not the toolbar tree.
 @Observable final class ViewState {
-    // Launch argument `-plane 3D` (etc.) picks the initial view, for simulator checks.
-    var plane = Plane(rawValue: UserDefaults.standard.string(forKey: "plane") ?? "") ?? .axial
+    // Opens in 3D. Launch argument `-plane Axial` (etc.) picks another view, for simulator checks.
+    var plane = Plane(rawValue: UserDefaults.standard.string(forKey: "plane") ?? "") ?? .render
     var slices: [Int]
     var lo: Float
     var hi: Float
@@ -100,17 +100,19 @@ enum RenderMode: String, CaseIterable, Identifiable {
     var mirrored = UserDefaults.standard.bool(forKey: "mirrored") {
         didSet { UserDefaults.standard.set(mirrored, forKey: "mirrored") }
     }
-    var renderMode = RenderMode(rawValue: UserDefaults.standard.string(forKey: "renderMode") ?? "") ?? .mip {
+    var renderMode = RenderMode(rawValue: UserDefaults.standard.string(forKey: "renderMode") ?? "") ?? .volume {
         didSet { UserDefaults.standard.set(renderMode.rawValue, forKey: "renderMode") }
     }
 
     // Up to `maxClips` clip planes. `-clip Axial,Sagittal` and `-clipTilt 30` preset them for checks.
-    static let maxClips = 3
+    static let maxClips = ClipSetting.maxCount
     var clips: [ClipSetting] = (UserDefaults.standard.string(forKey: "clip") ?? "").split(separator: ",")
         .compactMap { ClipSetting.Plane(rawValue: String($0)) }.prefix(maxClips)
         .map { ClipSetting(plane: $0, tilt: SIMD2(UserDefaults.standard.float(forKey: "clipTilt"), 0)) }
     /// Remove only the corner between the planes instead of everything beyond each one.
     var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
+    /// Draw each clip plane as a tinted, outlined sheet so its position is visible.
+    var clipHighlight = UserDefaults.standard.bool(forKey: "clipHighlight") // `-clipHighlight YES` for checks
     // 3D camera preset request: RenderView applies `preset` whenever `presetTick` changes.
     var preset: ViewPreset?
     var presetTick = 0
@@ -160,7 +162,7 @@ struct ViewerView: View {
                         ForEach(Plane.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    .fixedSize()
+                    .frame(width: 360) // roomier than the intrinsic size, which cramps the last segment
                     .environment(\.colorScheme, .dark) // match the dark bar in light mode
                 }
                 .sharedBackgroundVisibility(.hidden) // the segmented control is already glass
@@ -221,7 +223,7 @@ private struct VolumeCanvas: View {
             }
         } else {
             RenderView(volume: volume, lo: state.lo, hi: state.hi, mode: state.renderMode,
-                       clips: state.clips, clipCutaway: state.clipCutaway,
+                       clips: state.clips, clipCutaway: state.clipCutaway, clipHighlight: state.clipHighlight,
                        preset: state.preset, presetTick: state.presetTick, onTap: onTap)
         }
     }
@@ -319,7 +321,7 @@ private struct InspectorView: View {
                     set: { new in if let i = state.clips.firstIndex(where: { $0.id == id }) { state.clips[i] = new } })
                 let clip = binding.wrappedValue
                 let number = (state.clips.firstIndex { $0.id == id } ?? 0) + 1
-                Section("3D Clip Plane \(number)") {
+                Section {
                     Picker("Plane", selection: binding.plane) {
                         ForEach(ClipSetting.Plane.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -332,10 +334,20 @@ private struct InspectorView: View {
                     Button("Remove Clip Plane", role: .destructive) {
                         state.clips.removeAll { $0.id == id }
                     }
+                } header: {
+                    HStack(spacing: 6) {
+                        Text("3D Clip Plane \(number)")
+                        if state.clipHighlight { // the plane's highlight colour in the render
+                            Circle().fill(ClipSetting.colors[number - 1]).frame(width: 9, height: 9)
+                        }
+                    }
                 }
             }
             Section(state.clips.isEmpty ? "3D Clip Plane" : "") {
                 // With one plane, cutaway and normal clipping are the same thing.
+                if !state.clips.isEmpty {
+                    Toggle("Highlight Planes", isOn: $state.clipHighlight)
+                }
                 if state.clips.count > 1 {
                     Toggle("Cutaway", isOn: $state.clipCutaway)
                 }
