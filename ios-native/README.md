@@ -42,9 +42,17 @@ scale and zoom, linked by a crosshair drawn in all four panes. The inspector hol
 (MIP, or Volume — a port of NiiVue's default compositing shader), up to six tiltable
 3D clip planes with cutaway and highlight options, and volume info.
 
+**Segmentation overlay.** The inspector's Segmentation section loads a label map on the
+scan's grid (`.nii`/`.nii.gz`, integer labels, 0 = background) and colours slices and the
+3D render with it: per-label toggles, opacity, and a "show through tissue" mode for 3D.
+Files named `*tissues*` get the 14 tissue classes/colours of the body-composition pipeline,
+`*total_mr*` TotalSegmentator's 50 structure names, anything else numbered labels. A sibling
+`<scan>_tissues.nii.gz` (also in a `seg/` folder; Dixon suffix `_W/_F/_in/_opp` stripped)
+is picked up automatically when the scan opens.
+
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
-`-clipHighlight YES`, `-inspector YES`.
+`-clipHighlight YES`, `-inspector YES`, `-segGhost YES`.
 
 ## Files
 
@@ -53,6 +61,7 @@ Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipC
 | `NiiMono/NiiMonoApp.swift` | `DocumentGroup` app, document type, viewer chrome. |
 | `NiiMono/SliceView.swift` | Zoomable 2D slice view (UIScrollView + CPU-windowed CGImage). |
 | `NiiMono/StepSlider.swift` | Slider that steps one unit on track taps. |
+| `NiiMono/Segmentation.swift` | Label tables, overlay state, slice compositing and the inspector section. |
 | `NiiMono/Snapshot.swift` | Captures the visible panes to a PNG and presents the share sheet. |
 | `NiiMono/NIfTI.swift` | NIfTI-1 reader. Pure Foundation; reorients to RAS+ at load, extracts slices. |
 | `NiiMono/VolumeRenderer.swift`, `Raycaster.metal` | 3D raycaster (MIP + NiiVue-style compositing, clip planes), camera, gestures and SwiftUI host. |

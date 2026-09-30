@@ -24,6 +24,9 @@ struct Uniforms {
     var clipHighlight: Int32
     var crosshairOn: Int32
     var crosshair: simd_float3
+    var overlayOn: Int32
+    var overlayOpacity: Float
+    var overlayGhost: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -33,6 +36,11 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let sampler: MTLSamplerState
     private let volumeTex: MTLTexture
     private let cmapTex: MTLTexture
+    private let labelLUT: MTLTexture   // 256 × RGBA, alpha 0 = hidden label
+    private var labelTex: MTLTexture?  // r8Uint labels, same grid as the volume
+    private var labelSource: ObjectIdentifier?
+    var overlayOpacity: Float = 0.65
+    var overlayGhost = false
     let boxHalf: simd_float3
 
     // Display window, normalized to the volume's full intensity range (0...1).
@@ -114,6 +122,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         var lut = [UInt8](repeating: 0, count: 256 * 4)
         for i in 0..<256 { lut[i*4] = UInt8(i); lut[i*4+1] = UInt8(i); lut[i*4+2] = UInt8(i); lut[i*4+3] = 255 }
         cmapTex.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: lut, bytesPerRow: 256 * 4)
+        labelLUT = device.makeTexture(descriptor: cd)!
 
         // Volume box: half-extents proportional to physical size, normalized so the
         // largest axis is 1.0 — keeps anisotropic voxels in correct proportion.
@@ -193,6 +202,28 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Attach (or detach) a segmentation; the label volume is uploaded once per object.
+    func setSegmentation(_ seg: Segmentation?) {
+        overlayOpacity = seg?.opacity ?? 0
+        overlayGhost = seg?.ghost ?? false
+        guard let seg else { labelTex = nil; labelSource = nil; return }
+        seg.lut.withUnsafeBytes { labelLUT.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 256 * 4) }
+        guard labelSource != ObjectIdentifier(seg) else { return }
+        let (nx, ny, nz) = seg.labels.dims
+        let td = MTLTextureDescriptor()
+        td.textureType = .type3D; td.pixelFormat = .r8Uint
+        td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
+        guard let tex = device.makeTexture(descriptor: td) else { return }
+        seg.labels.data.withUnsafeBytes { raw in
+            for z in 0..<nz { // per slice: keeps the staging copy small
+                tex.replace(region: MTLRegionMake3D(0, 0, z, nx, ny, 1), mipmapLevel: 0, slice: 0,
+                            withBytes: raw.baseAddress! + z * nx * ny, bytesPerRow: nx, bytesPerImage: nx * ny)
+            }
+        }
+        labelTex = tex
+        labelSource = ObjectIdentifier(seg)
+    }
+
     func draw(in view: MTKView) {
         guard let rpd = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
@@ -209,6 +240,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         enc.setFragmentTexture(volumeTex, index: 0)
         enc.setFragmentTexture(cmapTex, index: 1)
+        enc.setFragmentTexture(labelTex ?? volumeTex, index: 2) // any bound 3D texture when there are no labels
+        enc.setFragmentTexture(labelLUT, index: 3)
         enc.setFragmentSamplerState(sampler, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
@@ -267,7 +300,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         dataMin: windowLo, dataMax: windowHi, steps: steps, mode: mode,
                         clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0,
                         clipHighlight: clipHighlight ? 1 : 0,
-                        crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero)
+                        crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
+                        overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0)
     }
 }
 
@@ -389,6 +423,7 @@ struct RenderView: UIViewRepresentable {
     let clipHighlight: Bool
     /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
     var crosshair: SIMD3<Float>? = nil
+    var segmentation: Segmentation? = nil
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
     let presetTick: Int
@@ -521,6 +556,7 @@ struct RenderView: UIViewRepresentable {
         renderer.clipCutaway = clipCutaway
         renderer.clipHighlight = clipHighlight
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
+        renderer.setSegmentation(segmentation)
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }

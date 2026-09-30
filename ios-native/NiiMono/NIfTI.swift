@@ -52,6 +52,13 @@ struct NiftiVolume: @unchecked Sendable {
     }
 }
 
+/// A segmentation on the same grid as a NiftiVolume: one 8-bit label per voxel, 0 = none.
+struct LabelVolume: @unchecked Sendable {
+    var dims: (Int, Int, Int)
+    var data: [UInt8]
+    var maxLabel: Int
+}
+
 enum NiftiError: LocalizedError, CustomStringConvertible {
     var errorDescription: String? { description }
 
@@ -59,6 +66,7 @@ enum NiftiError: LocalizedError, CustomStringConvertible {
     case badMagic
     case unsupportedDatatype(Int16)
     case truncated(expected: Int, got: Int)
+    case gridMismatch((Int, Int, Int), (Int, Int, Int))
 
     var description: String {
         switch self {
@@ -66,6 +74,7 @@ enum NiftiError: LocalizedError, CustomStringConvertible {
         case .badMagic: return "sizeof_hdr is not 348 in either endianness — not NIfTI-1"
         case .unsupportedDatatype(let d): return "unsupported NIfTI datatype code \(d)"
         case .truncated(let e, let g): return "voxel data truncated: expected \(e) bytes, got \(g)"
+        case .gridMismatch(let a, let b): return "segmentation grid \(a.0)×\(a.1)×\(a.2) doesn’t match the scan’s \(b.0)×\(b.1)×\(b.2)"
         }
     }
 }
@@ -81,7 +90,37 @@ enum NIfTI {
 
     // MARK: - Header + voxel parsing
 
-    static func parse(_ d: Data) throws -> NiftiVolume {
+    /// Everything needed to walk a file's voxels in RAS order.
+    private struct Layout {
+        var od: [Int]            // output (RAS) dims
+        var stride: [Int]        // file-index step per RAS axis
+        var flip: [Bool]
+        var pix: [Float]         // voxel size per RAS axis
+        var voxOffset: Int
+        var reader: (UnsafeRawPointer, Int) -> Float
+        var sclSlope: Float, sclInter: Float, calMin: Float, calMax: Float
+        var count: Int { od[0] * od[1] * od[2] }
+
+        /// Calls `body(outputIndex, rawValue)` for every voxel in RAS order.
+        func forEachVoxel(in d: Data, _ body: (Int, Float) -> Void) {
+            d.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                let base = buf.baseAddress!.advanced(by: voxOffset)
+                var o = 0
+                for z in 0..<od[2] {
+                    let sz = (flip[2] ? od[2] - 1 - z : z) * stride[2]
+                    for y in 0..<od[1] {
+                        let sy = sz + (flip[1] ? od[1] - 1 - y : y) * stride[1]
+                        for x in 0..<od[0] {
+                            body(o, reader(base, sy + (flip[0] ? od[0] - 1 - x : x) * stride[0]))
+                            o += 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func layout(_ d: Data) throws -> Layout {
         guard d.count >= 348 else { throw NiftiError.tooSmall }
 
         // Endianness: sizeof_hdr (@0, Int32) must read as 348.
@@ -106,7 +145,6 @@ enum NIfTI {
         let voxOffset = vo == 0 ? 352 : Int(vo) // .nii default
         var sclSlope = f32(112); if sclSlope == 0 || !sclSlope.isFinite { sclSlope = 1 }
         var sclInter = f32(116); if !sclInter.isFinite { sclInter = 0 }
-        let calMin = f32(128), calMax = f32(124)
         let pix = [f32(80), f32(84), f32(88)].map { $0.isFinite && $0 != 0 ? abs($0) : 1 } // pixdim[1..3]
 
         guard dim.allSatisfy({ $0 > 0 }) else { throw NiftiError.truncated(expected: 1, got: 0) }
@@ -140,35 +178,30 @@ enum NIfTI {
             let score = abs(m[0][p[0]]) + abs(m[1][p[1]]) + abs(m[2][p[2]])
             if score > best { best = score; perm = p }
         }
-        let flip = (0..<3).map { m[$0][perm[$0]] < 0 }
-        let od = perm.map { dim[$0] }                     // output (RAS) dims
-        let stride = perm.map { [1, nx, nx * ny][$0] }    // file-index step per RAS axis
+        return Layout(od: perm.map { dim[$0] }, stride: perm.map { [1, nx, nx * ny][$0] },
+                      flip: (0..<3).map { m[$0][perm[$0]] < 0 }, pix: perm.map { pix[$0] },
+                      voxOffset: voxOffset, reader: reader,
+                      sclSlope: sclSlope, sclInter: sclInter, calMin: f32(128), calMax: f32(124))
+    }
 
+    static func parse(_ d: Data) throws -> NiftiVolume {
+        let L = try layout(d)
+        let count = L.count
         var out = [Float](repeating: 0, count: count)
         var lo = Float.greatestFiniteMagnitude, hi = -Float.greatestFiniteMagnitude
-        d.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
-            let base = buf.baseAddress!.advanced(by: voxOffset)
-            var o = 0
-            for z in 0..<od[2] {
-                let sz = (flip[2] ? od[2] - 1 - z : z) * stride[2]
-                for y in 0..<od[1] {
-                    let sy = sz + (flip[1] ? od[1] - 1 - y : y) * stride[1]
-                    for x in 0..<od[0] {
-                        var v = reader(base, sy + (flip[0] ? od[0] - 1 - x : x) * stride[0]) * sclSlope + sclInter
-                        if !v.isFinite { v = 0 }
-                        out[o] = v; o += 1
-                        if v < lo { lo = v }
-                        if v > hi { hi = v }
-                    }
-                }
-            }
+        L.forEachVoxel(in: d) { o, raw in
+            var v = raw * L.sclSlope + L.sclInter
+            if !v.isFinite { v = 0 }
+            out[o] = v
+            if v < lo { lo = v }
+            if v > hi { hi = v }
         }
 
         // Default window: the file's cal_min/cal_max if set, else the 2nd–98th percentile
         // (raw min/max is dominated by a few outlier voxels and renders MRI too dark).
         var winLo = lo, winHi = hi
-        if calMax > calMin, calMin.isFinite, calMax.isFinite {
-            (winLo, winHi) = (calMin, calMax)
+        if L.calMax > L.calMin, L.calMin.isFinite, L.calMax.isFinite {
+            (winLo, winHi) = (L.calMin, L.calMax)
         } else if hi > lo {
             let bins = 1024, s = Float(bins - 1) / (hi - lo)
             var hist = [Int](repeating: 0, count: bins)
@@ -187,12 +220,26 @@ enum NIfTI {
         }
 
         return NiftiVolume(
-            dims: (od[0], od[1], od[2]),
-            voxelSize: (pix[perm[0]], pix[perm[1]], pix[perm[2]]),
+            dims: (L.od[0], L.od[1], L.od[2]),
+            voxelSize: (L.pix[0], L.pix[1], L.pix[2]),
             data: out,
             dataMin: lo, dataMax: hi,
             displayMin: winLo, displayMax: winHi
         )
+    }
+
+    /// Parse an integer label map (a segmentation): same reorientation as `parse`, values
+    /// kept as 8-bit labels (0 = background). scl_slope/inter are ignored, as for any label file.
+    static func parseLabels(_ d: Data) throws -> LabelVolume {
+        let L = try layout(d)
+        var out = [UInt8](repeating: 0, count: L.count)
+        var maxLabel: UInt8 = 0
+        L.forEachVoxel(in: d) { o, raw in
+            let v: UInt8 = raw.isFinite && raw >= 0 ? UInt8(min(raw.rounded(), 255)) : 0
+            out[o] = v
+            if v > maxLabel { maxLabel = v }
+        }
+        return LabelVolume(dims: (L.od[0], L.od[1], L.od[2]), data: out, maxLabel: Int(maxLabel))
     }
 
     /// Returns (bytesPerVoxel, (base, index) -> Float).

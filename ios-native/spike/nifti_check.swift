@@ -72,4 +72,11 @@ if CommandLine.arguments.count > 1 {
     assert(vol.displayMax > vol.displayMin, "non-degenerate intensity range")
 }
 
+// 3. Label parsing shares the reorientation: same synthetic file read as labels.
+print("== labels ==")
+let lab = try NIfTI.parseLabels(makeSyntheticNifti(flipXSwapYZ: true))
+assert(lab.maxLabel == 7, "max label = \(lab.maxLabel)")
+assert(lab.data[1 + 2 * (0 + 2 * 0)] == 0, "RAS(1,0,0) holds raw 0")
+assert(lab.data[0 + 2 * (1 + 2 * 1)] == 7, "RAS(0,1,1) holds raw 7")
+
 print("ALL CHECKS PASSED")

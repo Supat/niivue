@@ -14,6 +14,7 @@ struct SliceView: UIViewRepresentable {
     let lo: Float
     let hi: Float
     let mirrored: Bool
+    var segmentation: Segmentation? = nil
     /// Physical size (mm) to fit instead of the slice's own, so several panes share one
     /// scale: pass the envelope of all their extents. nil = fit this slice alone.
     var fitExtent: CGSize? = nil
@@ -32,14 +33,23 @@ struct SliceView: UIViewRepresentable {
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
 
     func updateUIView(_ view: ZoomView, context: Context) {
-        let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
-        if let provider = CGDataProvider(data: Data(s.pixels) as CFData),
-           let image = CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8,
-                               bytesPerRow: s.width, space: CGColorSpaceCreateDeviceGray(),
-                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                               provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
-            view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up)
+        let image: CGImage?
+        if let seg = segmentation {
+            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, labels: seg.labels, lut: seg.lut, opacity: seg.opacity)
+            image = CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
+                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+            }
+        } else {
+            let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            image = CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
+                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: s.width,
+                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+            }
         }
+        if let image { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         let e = volume.sliceExtent(axis: axis)
         view.extent = CGSize(width: CGFloat(e.0), height: CGFloat(e.1))
         view.fitExtent = fitExtent

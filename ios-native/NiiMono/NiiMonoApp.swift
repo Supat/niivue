@@ -115,6 +115,57 @@ enum RenderMode: String, CaseIterable, Identifiable {
     var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
     /// Draw each clip plane as a tinted, outlined sheet so its position is visible.
     var clipHighlight = UserDefaults.standard.bool(forKey: "clipHighlight") // `-clipHighlight YES` for checks
+    var segmentation: Segmentation?
+    var segmentationLoading = false
+    var segmentationError: String?
+
+    /// Read a label file off the main thread and attach it if its grid matches the scan.
+    @MainActor func loadSegmentation(from url: URL, scoped: Bool, volume: NiftiVolume) async {
+        segmentationLoading = true
+        segmentationError = nil
+        defer { segmentationLoading = false }
+        let dims = volume.dims
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<LabelVolume, Error> in
+            let accessed = scoped && url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            return Result {
+                let data = try Data(contentsOf: url)
+                let labels = try NIfTI.parseLabels(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data)
+                guard labels.dims == dims else {
+                    throw NiftiError.gridMismatch(labels.dims, dims)
+                }
+                return labels
+            }
+        }.value
+        switch result {
+        case .success(let labels): segmentation = Segmentation(labels: labels, name: url.lastPathComponent)
+        case .failure(let error): segmentationError = error.localizedDescription
+        }
+    }
+
+    /// Look next to the scan for a matching segmentation (`<tag>_tissues.nii.gz`, also in a
+    /// `seg/` folder, where `<tag>` is the scan name without a Dixon suffix) and load it quietly.
+    @MainActor func loadSiblingSegmentation(of fileURL: URL, volume: NiftiVolume) async {
+        guard segmentation == nil else { return }
+        var base = fileURL.lastPathComponent
+        for ext in [".nii.gz", ".nii"] where base.hasSuffix(ext) { base.removeLast(ext.count) }
+        var tags = [base]
+        for suffix in ["_W", "_F", "_in", "_opp"] where base.hasSuffix(suffix) { tags.append(String(base.dropLast(suffix.count))) }
+        let dir = fileURL.deletingLastPathComponent()
+        for tag in tags {
+            for folder in [dir, dir.appendingPathComponent("seg")] {
+                for name in ["\(tag)_tissues.nii.gz", "\(tag)_tissues.nii", "\(tag)_seg.nii.gz"] {
+                    let url = folder.appendingPathComponent(name)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        await loadSegmentation(from: url, scoped: false, volume: volume)
+                        segmentationError = nil // a failed auto-load is not worth an error message
+                        return
+                    }
+                }
+            }
+        }
+    }
+
     // 3D camera preset request: RenderView applies `preset` whenever `presetTick` changes.
     var preset: ViewPreset?
     var presetTick = 0
@@ -223,6 +274,7 @@ struct ViewerView: View {
             // Chrome auto-hides a few seconds after it appears or was last used, like a
             // video player; a tap brings it back. It stays while the inspector is open.
             .onAppear(perform: scheduleChromeHide)
+            .task { if let fileURL { await state.loadSiblingSegmentation(of: fileURL, volume: volume) } }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
             .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
             .onChange(of: state.plane) { scheduleChromeHide() }
@@ -234,7 +286,7 @@ struct ViewerView: View {
             .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .statusBarHidden(chromeHidden)
             .inspector(isPresented: $showInspector) {
-                InspectorView(volume: volume, state: state, belowBar: !shiftsToolbar)
+                InspectorView(volume: volume, fileURL: fileURL, state: state, belowBar: !shiftsToolbar)
                     .inspectorColumnWidth(Self.inspectorWidth)
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
@@ -269,7 +321,7 @@ private struct VolumeCanvas: View {
         let crosshair = SIMD3<Float>((0..<3).map { (Float(state.slices[$0]) + 0.5) / Float(n[$0]) })
         return RenderView(volume: volume, lo: state.lo, hi: state.hi, mode: state.renderMode,
                           clips: state.clips, clipCutaway: state.clipCutaway, clipHighlight: state.clipHighlight,
-                          crosshair: state.plane == .multi ? crosshair : nil,
+                          crosshair: state.plane == .multi ? crosshair : nil, segmentation: state.segmentation,
                           preset: state.preset, presetTick: state.presetTick, onTap: onTap)
     }
 
@@ -285,7 +337,7 @@ private struct VolumeCanvas: View {
         let extents = (0..<3).map(volume.sliceExtent)
         let envelope = CGSize(width: CGFloat(extents.map(\.0).max()!), height: CGFloat(extents.map(\.1).max()!))
         return SliceView(volume: volume, axis: axis, index: state.slices[axis], lo: state.lo, hi: state.hi,
-                         mirrored: state.mirrored, fitExtent: multi ? envelope : nil,
+                         mirrored: state.mirrored, segmentation: state.segmentation, fitExtent: multi ? envelope : nil,
                          zoom: multi ? state.multiZoom : nil, zoomAnimated: state.multiZoomAnimated,
                          onZoom: multi ? { state.multiZoom = $0; state.multiZoomAnimated = $1 } : nil,
                          crosshair: multi ? CGPoint(x: state.mirrored ? 1 - u : u, y: v) : nil,
@@ -354,6 +406,7 @@ private struct SliceScrubber: View {
 
 private struct InspectorView: View {
     let volume: NiftiVolume
+    let fileURL: URL?
     @Bindable var state: ViewState
     /// Keep the empty strip under the navigation bar. False once the toolbar buttons have
     /// moved off the panel, so the controls can start at the top.
@@ -432,6 +485,7 @@ private struct InspectorView: View {
                     }
                 }
             }
+            SegmentationSection(volume: volume, fileURL: fileURL, state: state)
             Section("Info") {
                 LabeledContent("Dimensions", value: "\(volume.dims.0) × \(volume.dims.1) × \(volume.dims.2)")
                 LabeledContent("Voxel Size", value: String(format: "%.2f × %.2f × %.2f mm",

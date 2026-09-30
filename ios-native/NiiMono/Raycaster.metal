@@ -22,6 +22,9 @@ struct Uniforms {
     int      clipHighlight; // 1 = draw each plane as a tinted sheet with an outline
     int      crosshairOn;   // 1 = draw axis lines through `crosshair`
     float3   crosshair;     // crosshair point in box space
+    int      overlayOn;     // 1 = a label volume is bound at texture(2), its LUT at texture(3)
+    float    overlayOpacity;
+    int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through
 };
 
 struct VSOut {
@@ -52,8 +55,15 @@ static float2 intersectBox(float3 ro, float3 rd, float3 halfExtent) {
 // Colour of one ray through the volume. `hit` is the ray's [near, far] range in the box.
 // `tSurface` receives the ray distance of the first tissue sample (1e20 if none).
 static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
-                    texture1d<float> cmap, sampler samp, float3 ro, float3 rd, float2 hit,
-                    thread float& tSurface) {
+                    texture1d<float> cmap, texture3d<uint> labels, texture1d<float> lut,
+                    sampler samp, float3 ro, float3 rd, float2 hit, thread float& tSurface) {
+    // Label (0 = none/hidden) and its colour at a texture coordinate.
+    float3 ldims = float3(labels.get_width(), labels.get_height(), labels.get_depth());
+    auto labelAt = [&](float3 uvw) -> uint {
+        if (u.overlayOn == 0) { return 0; }
+        uint l = labels.read(uint3(clamp(uvw, 0.0, 0.9999) * ldims)).r;
+        return lut.read(l).a > 0.0 ? l : 0;
+    };
     // Clip planes. Normal mode trims the ray's [near, far] range to each plane's kept
     // half-space. Cutaway instead finds the stretch of the ray inside every plane's
     // removed half-space — (cut0, cut1), one interval since that region is convex — and
@@ -99,13 +109,24 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             // Jump over the cutaway. Assign rather than step back and `continue`: float
             // rounding could land just short of skip1 and repeat the jump forever.
             if (s > skip0 && s < skip1) { s = skip1; if (s > lenVox) { break; } }
-            float v = vol.sample(samp, uvw0 + stepUVW * s, level(0)).r;
-            if (v <= u.dataMin) { continue; }
+            float3 uvw = uvw0 + stepUVW * s;
+            float v = vol.sample(samp, uvw, level(0)).r;
+            uint lab = labelAt(uvw);
+            if (v <= u.dataMin && lab == 0) { continue; }
             float txl = clamp((v - u.dataMin) / window, 2.0 / 256.0, 1.0);
             float a = txl * (128.0 / 255.0);
+            float3 rgb = float3(txl);
+            if (lab != 0) {
+                // Labelled voxel: blend in its colour, and give dark structures (lungs,
+                // bone) enough opacity to show at all.
+                rgb = mix(rgb, lut.read(lab).rgb, u.overlayOpacity);
+                a = max(a, 0.4 * u.overlayOpacity);
+            } else if (u.overlayGhost != 0 && u.overlayOn != 0) {
+                a *= 0.08;
+            }
             if (a < 0.01) { continue; }
             tSurface = min(tSurface, tIn + s * tStep);
-            acc += (1.0 - acc.a) * float4(float3(txl) * a, a);
+            acc += (1.0 - acc.a) * float4(rgb * a, a);
             if (acc.a > earlyTermination) { break; }
         }
         return float4(acc.rgb / earlyTermination, 1.0);
@@ -113,20 +134,24 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
 
     float dt = (hit.y - tIn) / float(u.steps);
     float maxV = 0.0;
+    uint maxLab = 0;
     for (int i = 0; i < u.steps; ++i) {
         float t = tIn + dt * float(i);
         if (t > cut0 && t < cut1) { continue; }
         float3 pos = ro + rd * t;
         float3 uvw = pos / (2.0 * u.boxHalf) + 0.5;       // [-half,half] -> [0,1]
         float v = vol.sample(samp, uvw, level(0)).r;
+        uint lab = labelAt(uvw);
+        if (u.overlayGhost != 0 && u.overlayOn != 0 && lab == 0) { continue; } // labelled tissue only
         if (v > u.dataMin) { tSurface = min(tSurface, t); }
-        maxV = max(maxV, v);                              // MIP
+        if (v > maxV) { maxV = v; maxLab = lab; }          // MIP, remembering the label there
     }
 
     float norm = clamp((maxV - u.dataMin) / window, 0.0, 1.0);
     // Sample texel centres: the sampler is clamp-to-zero (for the volume), so u = 1.0
     // would blend the last LUT entry with the black border and turn saturated voxels grey.
     float3 rgb = cmap.sample(samp, (norm * 255.0 + 0.5) / 256.0).rgb;
+    if (maxLab != 0) { rgb = mix(rgb, lut.read(maxLab).rgb, u.overlayOpacity); }
     return float4(rgb, 1.0);
 }
 
@@ -140,6 +165,8 @@ fragment float4 frag(VSOut in [[stage_in]],
                      constant Uniforms& u   [[buffer(0)]],
                      texture3d<float> vol    [[texture(0)]],
                      texture1d<float> cmap   [[texture(1)]],
+                     texture3d<uint> labels  [[texture(2)]],
+                     texture1d<float> lut    [[texture(3)]],
                      sampler samp            [[sampler(0)]]) {
     // Reconstruct a world-space ray through this pixel.
     float4 nearH = u.invViewProj * float4(in.ndc, 0.0, 1.0);
@@ -152,7 +179,7 @@ fragment float4 frag(VSOut in [[stage_in]],
     float2 box = intersectBox(ro, rd, u.boxHalf);
     if (box.x > box.y || box.y < 0.0) { return float4(0, 0, 0, 1); } // ray misses the volume
     float tSurface = 1e20;
-    float4 color = shade(in.position, u, vol, cmap, samp, ro, rd, box, tSurface);
+    float4 color = shade(in.position, u, vol, cmap, labels, lut, samp, ro, rd, box, tSurface);
 
     if (u.clipHighlight != 0) {
         // Plane highlight: wherever the ray crosses a clip plane inside the volume box,
