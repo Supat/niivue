@@ -30,6 +30,14 @@ struct RenderView: UIViewRepresentable {
         let gizmo = OrientationGizmo()
         let orbit = UIPanGestureRecognizer()
         let mousePan = UIPanGestureRecognizer()
+        let pinch = UIPinchGestureRecognizer()
+        let scroll = UIPanGestureRecognizer()
+        /// The current pinch comes from a trackpad (transform events) rather than fingers.
+        private var trackpadPinch = false
+        /// A trackpad pinch reports far larger scale steps than fingers on glass for the same
+        /// motion, so its scale is damped by this exponent. The slice views' UIScrollView
+        /// zoom is fine as is.
+        private static let trackpadPinchDamping: Float = 0.18
 
         /// Redraw the volume and the orientation indicator after any camera change.
         func cameraChanged(_ view: UIView?) {
@@ -69,7 +77,11 @@ struct RenderView: UIViewRepresentable {
 
         @objc func pinched(_ g: UIPinchGestureRecognizer) {
             guard let renderer, let view = g.view else { return }
-            renderer.zoom(by: Float(g.scale), atNDC: ndc(g.location(in: view), in: view), aspect: aspect(view))
+            // Trackpad pinches arrive as transform events with no touches; check both, as the
+            // event type isn't always seen by shouldReceive.
+            if g.state == .began { trackpadPinch = trackpadPinch || g.numberOfTouches == 0 }
+            let scale = trackpadPinch ? pow(Float(g.scale), Self.trackpadPinchDamping) : Float(g.scale)
+            renderer.zoom(by: scale, atNDC: ndc(g.location(in: view), in: view), aspect: aspect(view))
             g.scale = 1
             cameraChanged(view)
         }
@@ -85,13 +97,16 @@ struct RenderView: UIViewRepresentable {
 
         // A secondary-button (right) drag pans; any other drag orbits.
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+            if g === pinch { trackpadPinch = event.type == .transform }
             let secondary = event.buttonMask.contains(.secondary)
             return g === mousePan ? secondary : g === orbit ? !secondary : true
         }
 
-        // Pinch and two-finger pan run together (zoom while sliding); orbit stays exclusive.
+        // Pinch and two-finger pan run together (zoom while sliding); orbit stays exclusive,
+        // and so do pinch and scroll, so a trackpad pinch that also scrolls doesn't zoom twice.
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            g !== orbit && other !== orbit
+            let pair: Set<ObjectIdentifier> = [ObjectIdentifier(g), ObjectIdentifier(other)]
+            return g !== orbit && other !== orbit && pair != [ObjectIdentifier(pinch), ObjectIdentifier(scroll)]
         }
     }
 
@@ -116,11 +131,11 @@ struct RenderView: UIViewRepresentable {
         pan.minimumNumberOfTouches = 2
         c.mousePan.addTarget(c, action: #selector(Coordinator.panned))
         c.mousePan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
-        let scroll = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.scrolled))
-        scroll.allowedScrollTypesMask = .all
-        scroll.allowedTouchTypes = [] // scroll events only, never touches
-        let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinched))
-        for g in [double, single, c.orbit, pan, c.mousePan, scroll, pinch] {
+        c.scroll.addTarget(c, action: #selector(Coordinator.scrolled))
+        c.scroll.allowedScrollTypesMask = .all
+        c.scroll.allowedTouchTypes = [] // scroll events only, never touches
+        c.pinch.addTarget(c, action: #selector(Coordinator.pinched))
+        for g in [double, single, c.orbit, pan, c.mousePan, c.scroll, c.pinch] {
             g.delegate = c
             v.addGestureRecognizer(g)
         }
