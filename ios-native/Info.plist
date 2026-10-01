@@ -18,6 +18,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Snapshots can be saved to your photo library.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>NSUbiquitousContainers</key>

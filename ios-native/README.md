@@ -28,7 +28,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | Tap | Hide or show the toolbar and scrubber (they also hide by themselves after 4 s) |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
 | Bottom scrubber | Jump to a slice |
-| Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet), Share, Inspector |
+| Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector |
 | Slider track | A tap either side of the knob nudges the value one unit |
 | 3D: drag | Orbit |
 | 3D: two-finger drag, or secondary-button drag | Pan |
