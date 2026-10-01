@@ -85,14 +85,20 @@ import Observation
         }
     }
 
+    var companionLoading = false
+    var companionError: String?
+
     /// Load a companion Dixon image (must share the scan's grid).
     func loadCompanion(_ which: ImageRole, from url: URL, scoped: Bool, quiet: Bool = false) async {
+        companionLoading = true
+        companionError = nil
+        defer { companionLoading = false }
         let volume = volume
         let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume) } }.value
         switch result {
         case .success(let v):
             if which == .fat { fat = v; fatURL = url } else { water = v; waterURL = url }
-        case .failure(let e): if !quiet { error = e.localizedDescription }
+        case .failure(let e): if !quiet { companionError = e.localizedDescription }
         }
     }
 

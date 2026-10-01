@@ -123,7 +123,10 @@ private struct ClipPlaneSections: View {
 /// What the opened file is, and the companion Dixon images the tissue classes need.
 private struct ImageSection: View {
     @Bindable var model: SegmentationViewModel
-    @State private var choosing: ImageRole?
+    // The target is kept separately from the presentation flag: SwiftUI clears the
+    // presentation binding before (or without) calling the completion handler.
+    @State private var target: ImageRole = .water
+    @State private var choosing = false
 
     var body: some View {
         Section("Image") {
@@ -132,6 +135,10 @@ private struct ImageSection: View {
             }
             if model.role != .water { companionRow(.water, name: model.waterURL?.lastPathComponent, loaded: model.water != nil) }
             if model.role != .fat { companionRow(.fat, name: model.fatURL?.lastPathComponent, loaded: model.fat != nil) }
+            if model.companionLoading { ProgressView("Loading image…") }
+            if let error = model.companionError {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
             if !model.canClassifyTissue {
                 Text(model.role == .other
                      ? "Muscle and fat classes need both Dixon images (water and fat) on this grid."
@@ -139,9 +146,11 @@ private struct ImageSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
-        .fileImporter(isPresented: Binding(get: { choosing != nil }, set: { if !$0 { choosing = nil } }),
-                      allowedContentTypes: [.nifti, .gzip, .data]) { result in
-            if case .success(let url) = result, let which = choosing { Task { await model.loadCompanion(which, from: url, scoped: true) } }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
+            switch result {
+            case .success(let url): Task { await model.loadCompanion(target, from: url, scoped: true) }
+            case .failure(let error): model.companionError = error.localizedDescription
+            }
         }
     }
 
@@ -149,7 +158,8 @@ private struct ImageSection: View {
         LabeledContent("\(which.rawValue) image") {
             HStack(spacing: 8) {
                 if loaded { Text(name ?? "loaded").lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
-                Button(loaded ? "Change…" : "Choose…") { choosing = which }
+                Button(loaded ? "Change…" : "Choose…") { target = which; choosing = true }
+                    .disabled(model.companionLoading)
             }
         }
     }
