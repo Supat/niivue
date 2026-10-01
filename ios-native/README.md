@@ -73,7 +73,8 @@ shows where it lives and can delete it.
 
 **Launch screen.** The screen in front of the document browser offers "Open <last scan>",
 a one-tap return to the last file opened (a security-scoped bookmark; the file is handed to
-the system, which routes it back into the app). The browser itself is the system's and runs
+the document browser's delegate, as if it had been picked there — the system refuses file
+URLs passed to `UIApplication.open` on a device). The browser itself is the system's and runs
 out of process on iPadOS 26, so its folder can't be steered from the app.
 
 **Files locations.** Scans kept in *On My iPad › NiiMono* or *iCloud Drive › NiiMono* (the
@@ -101,7 +102,8 @@ with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-comm
 
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
-`-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`.
+`-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
+the last scan by itself).
 
 ## Files (MVVM)
 
