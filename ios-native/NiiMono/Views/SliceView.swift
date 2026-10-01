@@ -25,6 +25,8 @@ struct SliceView: UIViewRepresentable {
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)? = nil
     /// Crosshair position as fractions of the displayed image (0...1, x right, y down), or nil.
     var crosshair: CGPoint? = nil
+    /// Acquisition FOV boxes in image fractions (x right, y down), with labels.
+    var fov: [(rect: CGRect, label: String)] = []
     /// If set, a tap reports its position (same fractions) instead of calling onTap.
     var onLocate: ((CGPoint) -> Void)? = nil
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
@@ -56,6 +58,7 @@ struct SliceView: UIViewRepresentable {
         view.onScrub = onScrub
         view.onLocate = onLocate
         view.crosshair = crosshair
+        view.fov = fov
         view.onZoom = onZoom
         view.onViewport = onViewport
         if let zoom, abs(zoom - view.zoomScale) > 0.001, !view.isZooming, !view.isTracking {
@@ -115,6 +118,11 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()
+    var fov: [(rect: CGRect, label: String)] = [] {
+        didSet { if fov.map(\.rect) != oldValue.map(\.rect) || fov.map(\.label) != oldValue.map(\.label) { layoutFOV() } }
+    }
+    private let fovLayer = CAShapeLayer()
+    private var fovLabels: [CATextLayer] = []
     /// Physical size of the slice (mm); only its aspect ratio matters.
     var extent = CGSize(width: 1, height: 1) { didSet { if extent != oldValue { setNeedsLayout() } } }
     /// Extent whose aspect-fit sets the scale (see SliceView.fitExtent); nil = `extent`.
@@ -138,6 +146,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         crosshairLayer.strokeColor = UIColor(red: 1, green: 0.25, blue: 0.2, alpha: 0.45).cgColor
         crosshairLayer.lineWidth = 1
         crosshairLayer.fillColor = nil
+        fovLayer.strokeColor = UIColor.systemYellow.withAlphaComponent(0.85).cgColor
+        fovLayer.lineWidth = 1.5
+        fovLayer.fillColor = nil
+        layer.addSublayer(fovLayer)
         layer.addSublayer(crosshairLayer)
 
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
@@ -180,6 +192,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             imageView.frame.origin = CGPoint(x: max(0, (bounds.width - imageView.frame.width) / 2),
                                              y: max(0, (bounds.height - imageView.frame.height) / 2))
             layoutCrosshair()
+            layoutFOV()
             reportViewport()
         }
         if glide {
@@ -220,6 +233,32 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 
     /// Crosshair lines in content coordinates (the scroll view's own layer scrolls with the
     /// content), spanning the visible viewport, at a constant 1 pt whatever the zoom.
+    /// FOV rectangles over the image (content coordinates, so they follow zoom and pan),
+    /// each labelled with its station at the top-left corner.
+    private func layoutFOV() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let f = imageView.frame, path = UIBezierPath()
+        var cornerUse = [CGPoint: Int]() // overlapping boxes (axial slices in a station overlap) share a corner
+        while fovLabels.count < fov.count {
+            let t = CATextLayer()
+            t.fontSize = 11; t.foregroundColor = UIColor.systemYellow.cgColor
+            t.contentsScale = traitCollection.displayScale; t.alignmentMode = .left
+            layer.addSublayer(t); fovLabels.append(t)
+        }
+        for (i, t) in fovLabels.enumerated() {
+            guard i < fov.count else { t.isHidden = true; continue }
+            let r = fov[i].rect
+            let box = CGRect(x: f.minX + r.minX * f.width, y: f.minY + r.minY * f.height,
+                             width: r.width * f.width, height: r.height * f.height).integral.insetBy(dx: 0.75, dy: 0.75)
+            path.append(UIBezierPath(rect: box))
+            t.string = fov[i].label; t.isHidden = false
+            let n = cornerUse[box.origin, default: 0]; cornerUse[box.origin] = n + 1
+            t.frame = CGRect(x: box.minX + 3 + CGFloat(n) * 16, y: box.minY + 2, width: 24, height: 14)
+        }
+        fovLayer.path = fov.isEmpty ? nil : path.cgPath
+    }
+
     private func layoutCrosshair() {
         guard let c = crosshair else { crosshairLayer.path = nil; return }
         let f = imageView.frame, v = bounds, gap: CGFloat = 7
@@ -278,3 +317,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 }
 
 private func - (a: CGPoint, b: CGPoint) -> CGPoint { CGPoint(x: a.x - b.x, y: a.y - b.y) }
+
+extension CGPoint: @retroactive Hashable {
+    public func hash(into h: inout Hasher) { h.combine(x); h.combine(y) }
+}

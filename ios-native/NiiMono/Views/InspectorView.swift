@@ -18,6 +18,7 @@ struct InspectorView: View {
         let unit = (range.upperBound - range.lowerBound) / 100 // one tap on the track = 1% of the range
         Form {
             ImageSection(model: model.segmentation)
+            FOVSection(model: model)
             Section("Adjust") {
                 LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
                 LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
@@ -127,6 +128,27 @@ private struct ClipPlaneSections: View {
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { value.wrappedValue = 0 } // double-tap the readout to zero it
             StepSlider(value: value, in: -90...90, unit: 1)
+        }
+    }
+}
+
+/// The acquisition metadata that places each station's field of view on the scan.
+private struct FOVSection: View {
+    @Bindable var model: ViewerViewModel
+    @State private var choosing = false
+
+    var body: some View {
+        Section("Field of View") {
+            if model.fovBoxes.isEmpty {
+                LabeledContent("Metadata") { Button("Choose…") { choosing = true } }
+                if let status = model.fovStatus { Text(status).font(.footnote).foregroundStyle(.secondary) }
+            } else {
+                Toggle("Show station FOVs (\(model.fovBoxes.count))", isOn: $model.showFOV)
+                LabeledContent("Metadata") { Button("Change…") { choosing = true } }
+            }
+        }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { Task { await model.loadFOVMetadata(from: url) } }
         }
     }
 }

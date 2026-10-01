@@ -59,6 +59,7 @@ struct ViewerView: View {
             // Chrome auto-hides a few seconds after it appears or was last used, like a
             // video player; a tap brings it back. It stays while the inspector is open.
             .onAppear(perform: scheduleChromeHide)
+            .task { await model.loadFOV() }
             .task {
                 // Sidecar first (it also records the companion images); siblings fill any gaps.
                 let restored = await model.restoreFromSidecar()
@@ -103,6 +104,11 @@ struct ViewerView: View {
                     if model.plane != .render {
                         Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                                isOn: $model.mirrored)
+                        // Station fields of view from the acquisition metadata (Inspector › Image).
+                        // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
+                        Toggle("Field of View", systemImage: "viewfinder",
+                               isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
+                            .disabled(model.fovBoxes.isEmpty)
                     }
                     if model.plane.axis == nil { // 3D and multiplanar
                         Menu("View", systemImage: "cube") {
@@ -249,6 +255,7 @@ private struct VolumeCanvas: View {
                          zoom: multi ? model.multiZoom : nil, zoomAnimated: model.multiZoomAnimated,
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,
                          crosshair: multi ? model.crosshair(in: axis) : model.showsSideBySide ? model.photoMarker : nil,
+                         fov: model.fovRects(in: axis),
                          onLocate: multi ? { p in onInteract(); model.locate(p, in: axis) } : nil,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }

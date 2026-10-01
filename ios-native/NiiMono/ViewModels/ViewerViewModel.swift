@@ -29,6 +29,11 @@ import Observation
     var lo: Float
     var hi: Float
     // Remembered across documents and launches.
+    /// Station FOVs from the acquisition metadata beside the scan; [] when there is none.
+    private(set) var fovBoxes: [FOVBox] = []
+    var showFOV = UserDefaults.standard.bool(forKey: "showFOV") { // `-showFOV YES` for checks
+        didSet { UserDefaults.standard.set(showFOV, forKey: "showFOV") }
+    }
     var mirrored = UserDefaults.standard.bool(forKey: "mirrored") {
         didSet { UserDefaults.standard.set(mirrored, forKey: "mirrored") }
     }
@@ -211,6 +216,51 @@ import Observation
     }
 
     var dims: [Int] { [volume.dims.0, volume.dims.1, volume.dims.2] }
+
+    /// Why there are no FOV boxes, shown in the inspector; nil when loaded.
+    private(set) var fovStatus: String?
+
+    func loadFOV() async {
+        guard let fileURL else { fovStatus = "No file."; return }
+        let volume = volume, extra = sidecar?.folder.appendingPathComponent("metadata.json")
+        let result = await Task.detached(priority: .utility) { AcquisitionFOV.boxes(for: fileURL, volume: volume, extra: extra) }.value
+        switch result {
+        case .success(let b): fovBoxes = b; fovStatus = nil
+        case .failure(let f): fovBoxes = []; fovStatus = f.localizedDescription
+        }
+    }
+
+    /// A metadata JSON chosen by hand: checked against this scan, then kept in the sidecar
+    /// (`metadata.json`) so it is found again next time.
+    func loadFOVMetadata(from url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { fovStatus = "Couldn't read \(url.lastPathComponent)."; return }
+        let keys = fileURL.map { SegmentationPipeline.tags(of: $0).reversed() } ?? []
+        switch AcquisitionFOV.boxes(json: data, keys: Array(keys), volume: volume) {
+        case .success(let b):
+            fovBoxes = b; fovStatus = nil; showFOV = true
+            if let sidecar {
+                try? FileManager.default.createDirectory(at: sidecar.folder, withIntermediateDirectories: true)
+                try? data.write(to: sidecar.folder.appendingPathComponent("metadata.json"), options: .atomic)
+            }
+        case .failure(let f): fovStatus = f.localizedDescription
+        }
+    }
+
+    /// The FOV boxes cut by the current slice of a pane, as rectangles in image fractions
+    /// (x right, y down, mirror applied), with their station labels.
+    func fovRects(in axis: Int) -> [(rect: CGRect, label: String)] {
+        guard showFOV else { return [] }
+        let (c, r) = sliceAxes(axis), k = Double(slices[axis]) + 0.5
+        return fovBoxes.compactMap { b in
+            guard k > b.lo[axis], k < b.hi[axis] else { return nil }
+            var x0 = b.lo[c] / Double(dims[c]), x1 = b.hi[c] / Double(dims[c])
+            if mirrored { (x0, x1) = (1 - x1, 1 - x0) }
+            let y0 = 1 - b.hi[r] / Double(dims[r]), y1 = 1 - b.lo[r] / Double(dims[r])
+            return (CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), b.label)
+        }
+    }
 
     func resetWindow() { (lo, hi) = (volume.displayMin, volume.displayMax) }
 

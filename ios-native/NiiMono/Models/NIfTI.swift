@@ -24,6 +24,11 @@ struct NiftiVolume: @unchecked Sendable {
     var displayMax: Float              // suggested window high (cal_max or 98th percentile)
     /// What the file records about the subject (see `SubjectInfo`); fields are nil when absent.
     var subject = SubjectInfo()
+    /// How the file's index axes map onto the RAS axes here: RAS axis w is file axis
+    /// `filePerm[w]`, reversed when `fileFlip[w]`. Lets voxel coordinates written against
+    /// the file (e.g. FOV boxes in a metadata JSON) be placed on the displayed grid.
+    var filePerm = [0, 1, 2]
+    var fileFlip = [false, false, false]
 
     var voxelCount: Int { dims.0 * dims.1 * dims.2 }
 
@@ -155,6 +160,7 @@ enum NIfTI {
     /// Everything needed to walk a file's voxels in RAS order.
     private struct Layout {
         var od: [Int]            // output (RAS) dims
+        var perm: [Int]          // file axis for each RAS axis
         var stride: [Int]        // file-index step per RAS axis
         var flip: [Bool]
         var pix: [Float]         // voxel size per RAS axis
@@ -287,7 +293,7 @@ enum NIfTI {
             let score = abs(m[0][p[0]]) + abs(m[1][p[1]]) + abs(m[2][p[2]])
             if score > best { best = score; perm = p }
         }
-        return Layout(od: perm.map { dim[$0] }, stride: perm.map { [1, nx, nx * ny][$0] },
+        return Layout(od: perm.map { dim[$0] }, perm: perm, stride: perm.map { [1, nx, nx * ny][$0] },
                       flip: (0..<3).map { m[$0][perm[$0]] < 0 }, pix: perm.map { pix[$0] },
                       voxOffset: voxOffset, reader: reader, datatype: datatype, bigEndian: bigEndian,
                       sclSlope: sclSlope, sclInter: sclInter, calMin: f32(128), calMax: f32(124))
@@ -362,7 +368,8 @@ enum NIfTI {
             data: out,
             dataMin: lo, dataMax: hi,
             displayMin: winLo, displayMax: winHi,
-            subject: SubjectInfo(headerOf: d, voxOffset: L.voxOffset)
+            subject: SubjectInfo(headerOf: d, voxOffset: L.voxOffset),
+            filePerm: L.perm, fileFlip: L.flip
         )
     }
 
