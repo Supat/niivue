@@ -298,7 +298,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         func unit(_ i: Int) -> simd_float3 { var v = simd_float3.zero; v[i % 3] = 1; return v }
         var planes = [simd_float4](repeating: .zero, count: ClipSetting.maxCount)
         let active = clips.prefix(ClipSetting.maxCount)
-        for (i, clip) in active.enumerated() {
+        for (i, clip) in active.enumerated() where clip.enabled { // disabled: zero normal, skipped by the shader
             let a = Int(clip.plane.axis), tilt = clip.tilt * (.pi / 180)
             var normal = simd_quatf(angle: tilt.y, axis: unit(a + 2)).act(
                 simd_quatf(angle: tilt.x, axis: unit(a + 1)).act(unit(a)))

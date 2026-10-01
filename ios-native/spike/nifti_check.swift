@@ -91,6 +91,22 @@ big[352 + 2 * 7] = UInt8(300 & 0xff); big[352 + 2 * 7 + 1] = UInt8(300 >> 8)
 let labBig = try NIfTI.parseLabels(big)
 assert(labBig.data[7] == 0 && labBig.maxLabel == 6, "label 300 → 0, max label \(labBig.maxLabel)")
 
+// 3b. Subject info from the header text; nil when absent.
+print("== subject info ==")
+var withInfo = makeSyntheticNifti()
+withInfo.replaceSubrange(148..<148 + 60, with: Array("PatientWeight=80.5;PatientSize=1.68;PatientAge=045Y;TE=2.4      ".utf8.prefix(60)))
+let info = try NIfTI.parse(withInfo).subject
+assert(info.weightKg == 80.5 && info.heightCm == 168 && info.ageYears == 45, "weight 80.5 kg, height 168 cm, age 45 from descrip: \(info)")
+assert(syn.subject == SubjectInfo(), "nothing in a plain header")
+let bids = SubjectInfo(text: #"{"PatientSex": "M", "PatientWeight": 72, "PatientSize": 1.8, "x": 1}"#)
+assert(bids.weightKg == 72 && bids.heightCm == 180 && bids.ageYears == nil, "BIDS JSON weight/size, no age")
+assert(SubjectInfo(text: "weight: 9000; height=175; age=300").weightKg == nil, "implausible weight rejected")
+assert(SubjectInfo(text: "height=175").heightCm == 175, "height already in cm")
+assert(SubjectInfo(text: #"{"PatientID": "S_S-01", "PatientWeight": 80}"#).id == "S_S-01", "PatientID from JSON")
+assert(SubjectInfo(text: "TE=2;subject_id=U_N;x").id == "U_N" && info.id == nil, "subject_id from text; none when absent")
+var withName = makeSyntheticNifti(); withName.replaceSubrange(14..<17, with: Array("P42".utf8))
+assert(try NIfTI.parse(withName).subject.id == "P42", "id from the header's db_name field")
+
 // 4. Writer round trip: a label map written as .nii.gz reads back identical (and Python-readable).
 print("== writer ==")
 let written = NIfTI.labelFile(lab, voxelSize: (1.3, 1.3, 1.3))

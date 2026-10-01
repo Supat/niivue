@@ -25,7 +25,7 @@ struct SidecarSettings: Codable, Equatable {
 
     struct Viewer: Codable, Equatable {
         var plane: String, slices: [Int], lo: Float, hi: Float, mirrored: Bool, renderMode: String
-        struct Clip: Codable, Equatable { var plane: String, pos: Float, flip: Bool, tilt: [Float] }
+        struct Clip: Codable, Equatable { var plane: String, pos: Float, flip: Bool, tilt: [Float]; var enabled: Bool? } // enabled absent in older sidecars
         var clips: [Clip], clipCutaway: Bool, clipHighlight: Bool
         var cameraClip: Bool?, cameraClipDepth: Float? // absent in older sidecars
     }
@@ -43,7 +43,10 @@ struct SidecarSettings: Codable, Equatable {
     struct Companion: Codable, Equatable { var name: String, bookmark: Data }
     var water: Companion?, fat: Companion?
 
-    struct Body: Codable, Equatable { var weightKg: Double, missing: [String], thighsMissingPercent: Double }
+    struct Body: Codable, Equatable {
+        var weightKg: Double, missing: [String], thighsMissingPercent: Double
+        var heightCm: Double?, ageYears: Double?, subjectID: String? // absent in older sidecars
+    }
     var body: Body
 }
 

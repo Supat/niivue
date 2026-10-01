@@ -71,7 +71,10 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     // the marches below skip it.
     bool cutaway = u.clipCutaway != 0;
     float cut0 = -1e20, cut1 = 1e20;
+    int enabledClips = 0;
     for (int i = 0; i < u.clipCount; ++i) {
+        if (all(u.clips[i].xyz == float3(0.0))) { continue; } // plane switched off: keeps its slot (and colour)
+        enabledClips += 1;
         float o = dot(u.clips[i].xyz, ro), d = dot(u.clips[i].xyz, rd);
         if (abs(d) < 1e-6) { // ray parallel to the plane: entirely kept or entirely removed
             if (cutaway) { if (o <= u.clips[i].w) { cut1 = -1e20; } }
@@ -82,7 +85,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             else { if (d > 0.0) { hit.y = min(hit.y, t); } else { hit.x = max(hit.x, t); } }
         }
     }
-    if (!cutaway || u.clipCount == 0) { cut1 = -1e20; } // empty interval: nothing skipped
+    if (!cutaway || enabledClips == 0) { cut1 = -1e20; } // empty interval: nothing skipped
     if (hit.x > hit.y || hit.y < 0.0) { return float4(0, 0, 0, 1); } // miss
     // Camera clip: nothing nearer than cameraClip is drawn, so zooming into the volume
     // looks inside instead of at the tissue pressed against the lens.
@@ -192,7 +195,7 @@ fragment float4 frag(VSOut in [[stage_in]],
         // against tissue) so a plane stays visible even where it is buried.
         for (int i = 0; i < u.clipCount; ++i) {
             float d = dot(u.clips[i].xyz, rd);
-            if (abs(d) < 1e-6) { continue; }
+            if (abs(d) < 1e-6) { continue; } // also skips switched-off planes (zero normal)
             float t = (u.clips[i].w - dot(u.clips[i].xyz, ro)) / d;
             if (t <= max(box.x, 0.0) || t >= box.y) { continue; }
             float3 toFace = u.boxHalf - abs(ro + rd * t);

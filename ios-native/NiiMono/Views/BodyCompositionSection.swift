@@ -15,13 +15,18 @@ struct BodyCompositionSection: View {
     var body: some View {
         let e = model.estimate(for: map)
         Section("Body Composition") {
-            LabeledContent("Subject weight") {
-                HStack(spacing: 4) {
-                    TextField("kg", value: $model.weightKg, format: .number.precision(.fractionLength(0...1)))
-                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 70)
-                    Text("kg").foregroundStyle(.secondary)
+            if let id = model.fromFile.id {
+                LabeledContent("Subject ID", value: "\(id) (from file)")
+            } else {
+                LabeledContent("Subject ID") {
+                    TextField("ID", text: $model.subjectID)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
                 }
             }
+            subjectField("Weight", unit: "kg", fromFile: model.fromFile.weightKg, typed: $model.weightKg)
+            subjectField("Height", unit: "cm", fromFile: model.fromFile.heightCm, typed: $model.heightCm)
+            subjectField("Age", unit: "years", fromFile: model.fromFile.ageYears, typed: $model.ageYears)
             DisclosureGroup("Outside the scan") {
                 ForEach(BodySegment.allCases.filter { $0 != .thighs }) { s in
                     Toggle(s.rawValue, isOn: Binding(get: { model.missing.contains(s) }, set: { model.setMissing(s, $0) }))
@@ -71,5 +76,23 @@ struct BodyCompositionSection: View {
     private func mass(_ kg: Double) -> String {
         guard percent else { return String(format: "%.2f", kg) }
         return model.weightKg > 0 ? String(format: "%.1f%%", kg / model.weightKg * 100) : "–"
+    }
+
+    /// A value recorded with the scan is shown read-only; otherwise the field is editable.
+    @ViewBuilder private func subjectField(_ title: String, unit: String, fromFile: Double?, typed: Binding<Double>) -> some View {
+        if let fromFile {
+            LabeledContent(title, value: "\(fromFile.formatted(.number.precision(.fractionLength(0...1)))) \(unit) (from file)")
+        } else {
+            LabeledContent(title) {
+                HStack(spacing: 4) {
+                    // 0 means "not set": shown as an empty field rather than a zero.
+                    TextField(unit, value: Binding<Double?>(get: { typed.wrappedValue > 0 ? typed.wrappedValue : nil },
+                                                           set: { typed.wrappedValue = $0 ?? 0 }),
+                              format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 70)
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

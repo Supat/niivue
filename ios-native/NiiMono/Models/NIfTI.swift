@@ -22,6 +22,8 @@ struct NiftiVolume: @unchecked Sendable {
     var dataMax: Float
     var displayMin: Float              // suggested window low (cal_min or 2nd percentile)
     var displayMax: Float              // suggested window high (cal_max or 98th percentile)
+    /// What the file records about the subject (see `SubjectInfo`); fields are nil when absent.
+    var subject = SubjectInfo()
 
     var voxelCount: Int { dims.0 * dims.1 * dims.2 }
 
@@ -51,6 +53,64 @@ struct NiftiVolume: @unchecked Sendable {
     func sliceExtent(axis: Int) -> (Float, Float) {
         let e = (Float(dims.0) * voxelSize.0, Float(dims.1) * voxelSize.1, Float(dims.2) * voxelSize.2)
         return axis == 0 ? (e.1, e.2) : axis == 1 ? (e.0, e.2) : (e.0, e.1)
+    }
+}
+
+/// Weight, height and age of the subject, where a file records them. NIfTI has no fields
+/// for these, so they are looked for where converters put them: `PatientWeight=80`,
+/// `"PatientSize": 1.68`, `PatientAge=045Y`, or plain `weight=` / `height=` / `age=`, in the
+/// header's `descrip` text, in a header extension, or in a BIDS JSON beside the scan.
+struct SubjectInfo: Equatable {
+    var weightKg: Double?
+    var heightCm: Double?
+    var ageYears: Double?
+    var id: String?
+
+    init() {}
+
+    /// From a NIfTI header: `descrip` (80 bytes at 148) plus any extension block.
+    init(headerOf d: Data, voxOffset: Int) {
+        guard d.count >= 352 else { self.init(); return }
+        var text = String(decoding: d[d.startIndex + 148..<d.startIndex + 228], as: UTF8.self)
+        if d[d.startIndex + 348] != 0, voxOffset > 352, voxOffset <= d.count {
+            text += "\n" + String(decoding: d[d.startIndex + 352..<d.startIndex + voxOffset], as: UTF8.self)
+        }
+        self.init(text: text)
+        // The ANALYZE-era db_name field (18 bytes at 14) is where some tools keep the patient id.
+        if id == nil {
+            let name = String(decoding: d[d.startIndex + 14..<d.startIndex + 32].prefix { $0 != 0 }, as: UTF8.self)
+                .trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { id = name }
+        }
+    }
+
+    /// From free text (header text or a JSON file). Implausible values are ignored.
+    init(text: String) {
+        func value(_ names: String, unit: String = "") -> Double? {
+            let pattern = #"(?i)(?:patient[_ ]?)?(?:"# + names + #")(?:[_ ]?(?:kg|cm|m|years?))?["']?\s*[:=]\s*["']?0*([0-9]+(?:\.[0-9]+)?)"#
+            guard let re = try? Regex(pattern), let m = text.firstMatch(of: re), let s = m.output[1].substring else { return nil }
+            return Double(s)
+        }
+        if let kg = value("weight"), (1...500).contains(kg) { weightKg = kg }
+        // DICOM/BIDS PatientSize is metres; a bare number under 3 is taken as metres too.
+        if let h = value("size|height") {
+            let cm = h < 3 ? h * 100 : h
+            if (30...250).contains(cm) { heightCm = cm }
+        }
+        if let a = value("age"), (0...120).contains(a) { ageYears = a } // DICOM "045Y" → 45
+        // `PatientID=S_S`, `"PatientID": "S_S"`, `subject_id: 12`.
+        if let re = try? Regex(#"(?i)(?:patient|subject)[_ ]?id["']?\s*[:=]\s*["']?([^"';,\s}]+)"#),
+           let m = text.firstMatch(of: re), let s = m.output[1].substring { id = String(s) }
+    }
+
+    /// Fill the gaps from another source.
+    func merging(_ other: SubjectInfo) -> SubjectInfo {
+        var out = self
+        out.weightKg = weightKg ?? other.weightKg
+        out.heightCm = heightCm ?? other.heightCm
+        out.ageYears = ageYears ?? other.ageYears
+        out.id = id ?? other.id
+        return out
     }
 }
 
@@ -301,7 +361,8 @@ enum NIfTI {
             voxelSize: (L.pix[0], L.pix[1], L.pix[2]),
             data: out,
             dataMin: lo, dataMax: hi,
-            displayMin: winLo, displayMax: winHi
+            displayMin: winLo, displayMax: winHi,
+            subject: SubjectInfo(headerOf: d, voxOffset: L.voxOffset)
         )
     }
 

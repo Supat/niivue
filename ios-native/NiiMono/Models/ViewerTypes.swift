@@ -36,6 +36,7 @@ struct ClipSetting: Identifiable, Equatable {
     var plane: Plane
     var pos: Float = 0.5            // 0...1 across the volume, along the plane normal
     var flip = false
+    var enabled = true              // off = keeps its settings and slot but has no effect
     var tilt = SIMD2<Float>(0, 0)   // degrees, about the two axes after the plane's own (cyclic x→y→z)
 }
 

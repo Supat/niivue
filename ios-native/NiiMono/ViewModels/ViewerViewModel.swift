@@ -77,6 +77,13 @@ import Observation
         slices = (0..<3).map { volume.count(axis: $0) / 2 }
         lo = volume.displayMin
         hi = volume.displayMax
+        bodyComposition.fromFile = volume.subject.merging(fileURL.map(Self.jsonSubject) ?? SubjectInfo())
+    }
+
+    /// Subject values from a BIDS JSON beside the scan (`<scan>.json`, as dcm2niix writes).
+    private static func jsonSubject(for fileURL: URL) -> SubjectInfo {
+        let json = fileURL.deletingLastPathComponent().appendingPathComponent(SegmentationPipeline.tags(of: fileURL)[0] + ".json")
+        return (try? String(contentsOf: json, encoding: .utf8)).map(SubjectInfo.init(text:)) ?? SubjectInfo()
     }
 
     // MARK: Sidecar
@@ -86,7 +93,7 @@ import Observation
         SidecarSettings(
             role: segmentation.role,
             viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
-                          clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y]) },
+                          clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y], enabled: $0.enabled) },
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
@@ -94,7 +101,9 @@ import Observation
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
             fat: segmentation.fatURL.flatMap(SidecarSettings.Companion.init),
             body: .init(weightKg: bodyComposition.weightKg, missing: bodyComposition.missing.map(\.rawValue).sorted(),
-                        thighsMissingPercent: bodyComposition.thighsMissingPercent))
+                        thighsMissingPercent: bodyComposition.thighsMissingPercent,
+                        heightCm: bodyComposition.heightCm, ageYears: bodyComposition.ageYears,
+                        subjectID: bodyComposition.subjectID))
     }
 
     private func apply(_ s: SidecarSettings) {
@@ -105,7 +114,7 @@ import Observation
         mirrored = s.viewer.mirrored
         renderMode = RenderMode(rawValue: s.viewer.renderMode) ?? renderMode
         clips = s.viewer.clips.prefix(ClipSetting.maxCount).compactMap { c in
-            ClipSetting.Plane(rawValue: c.plane).map { ClipSetting(plane: $0, pos: c.pos, flip: c.flip, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0)) }
+            ClipSetting.Plane(rawValue: c.plane).map { ClipSetting(plane: $0, pos: c.pos, flip: c.flip, enabled: c.enabled ?? true, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0)) }
         }
         clipCutaway = s.viewer.clipCutaway
         clipHighlight = s.viewer.clipHighlight
@@ -114,6 +123,9 @@ import Observation
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         bodyComposition.weightKg = s.body.weightKg
+        bodyComposition.heightCm = s.body.heightCm ?? bodyComposition.heightCm
+        bodyComposition.ageYears = s.body.ageYears ?? bodyComposition.ageYears
+        bodyComposition.subjectID = s.body.subjectID ?? ""
         bodyComposition.missing = Set(s.body.missing.compactMap(BodySegment.init))
         bodyComposition.thighsMissingPercent = s.body.thighsMissingPercent
     }

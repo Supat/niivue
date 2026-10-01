@@ -215,14 +215,26 @@ private struct VolumeCanvas: View {
                     GeometryReader { g in
                         let multi = model.plane == .multi
                         let width = min(max(min(g.size.width, g.size.height) * 0.16, 44), 150)
-                        Image(uiImage: face)
-                            .resizable().scaledToFit()
-                            .frame(width: width)
-                            .clipShape(.rect(cornerRadius: width * 0.06))
-                            .overlay { RoundedRectangle(cornerRadius: width * 0.06).strokeBorder(.white.opacity(0.35), lineWidth: 1) }
-                            .padding(.leading, multi ? 8 : 16)
-                            .padding(.top, multi ? 8 : 84)
-                            .accessibilityLabel("Subject's face")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(uiImage: face)
+                                .resizable().scaledToFit()
+                                .frame(width: width)
+                                .clipShape(.rect(cornerRadius: width * 0.06))
+                                .overlay { RoundedRectangle(cornerRadius: width * 0.06).strokeBorder(.white.opacity(0.35), lineWidth: 1) }
+                                .accessibilityLabel("Subject's face")
+                            // The full 3D view also lists what is known about the subject;
+                            // the small Multi pane keeps the photo only.
+                            if !multi {
+                                let imaged = model.segmentation.map.map { model.bodyComposition.estimate(for: $0).imagedKg }
+                                ForEach(model.bodyComposition.summaryLines(imagedKg: imaged), id: \.self) { line in
+                                    Text(line)
+                                }
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.white.opacity(0.75))
+                            }
+                        }
+                        .padding(.leading, multi ? 8 : 16)
+                        .padding(.top, multi ? 8 : 84)
                     }
                     .allowsHitTesting(false)
                 }

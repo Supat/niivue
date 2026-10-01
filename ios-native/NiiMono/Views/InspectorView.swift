@@ -87,6 +87,7 @@ private struct ClipPlaneSections: View {
             let clip = binding.wrappedValue
             let number = (model.clips.firstIndex { $0.id == id } ?? 0) + 1
             Section {
+                Toggle("Enabled", isOn: binding.enabled)
                 Picker("Plane", selection: binding.plane) {
                     ForEach(ClipSetting.Plane.allCases) { Text($0.rawValue).tag($0) }
                 }
