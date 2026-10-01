@@ -115,6 +115,10 @@ struct ViewerView: View {
                         Toggle("Side by Side with Photo", systemImage: "rectangle.split.2x1",
                                isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
                             .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
+                    } else {
+                        Toggle("Show Profile", systemImage: "person.crop.rectangle",
+                               isOn: Binding(get: { model.showsProfile }, set: { model.showProfile = $0 }))
+                            .disabled(model.profile.faceCutout == nil) // needs a Coronal Front photo with a face in it
                     }
                     Button("Snapshot", systemImage: "camera") {
                         SnapshotPanes.captureAndShare(documentName: fileURL?.deletingPathExtension().deletingPathExtension().lastPathComponent ?? "Snapshot")
@@ -204,6 +208,25 @@ private struct VolumeCanvas: View {
                    crosshair: model.plane == .multi ? model.crosshairFractions : nil,
                    overlay: model.segmentation.overlay, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)
+            .overlay {
+                if model.showsProfile, let face = model.profile.faceCutout {
+                    // Top-left of the render, sized to the pane; in the full 3D view it sits
+                    // below the back button (the canvas runs under the bar).
+                    GeometryReader { g in
+                        let multi = model.plane == .multi
+                        let width = min(max(min(g.size.width, g.size.height) * 0.16, 44), 150)
+                        Image(uiImage: face)
+                            .resizable().scaledToFit()
+                            .frame(width: width)
+                            .clipShape(.rect(cornerRadius: width * 0.06))
+                            .overlay { RoundedRectangle(cornerRadius: width * 0.06).strokeBorder(.white.opacity(0.35), lineWidth: 1) }
+                            .padding(.leading, multi ? 8 : 16)
+                            .padding(.top, multi ? 8 : 84)
+                            .accessibilityLabel("Subject's face")
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
     }
 
     private func slice(_ axis: Int) -> some View {

@@ -89,6 +89,10 @@ that, the photo is fitted to the slice. Axial slices only ever use the outline. 
 photo drops a marker there and at the matching position on the slice. Snapshot captures
 both panes.
 
+**Show Profile.** In the 3D and Multi views the same toolbar slot holds Show Profile, which
+puts an ID-photo crop of the subject's face (35 × 45, from the Coronal Front photo) in the top
+left corner of the render. It is enabled once that photo exists and Vision finds a face in it.
+
 **Launch screen.** The screen in front of the document browser offers "Open <last scan>",
 a one-tap return to the last file opened (a security-scoped bookmark; the file is handed to
 the document browser's delegate, as if it had been picked there — the system refuses file
@@ -121,7 +125,7 @@ with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-comm
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
-the last scan by itself), `-sideBySide YES`.
+the last scan by itself), `-sideBySide YES`, `-showProfile YES`.
 
 ## Files (MVVM)
 

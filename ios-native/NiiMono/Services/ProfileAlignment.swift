@@ -20,6 +20,8 @@ struct ScanLandmarks: Sendable {
 struct PhotoLandmarks: Sendable {
     var shoulder: CGPoint?, hip: CGPoint?
     var body: CGRect?
+    /// The largest face (roughly brow to chin).
+    var face: CGRect?
     var hasBody: Bool { body != nil || (shoulder != nil && hip != nil) }
 }
 
@@ -98,15 +100,16 @@ enum ProfileAlignment {
 
     // MARK: Photo
 
-    /// The person in a photo: shoulder and hip midpoints from the body pose, and the body's
-    /// outline. Nil if Vision can't run (the simulator) or sees nobody.
+    /// The person in a photo: shoulder and hip midpoints from the body pose, the body's
+    /// outline and the face. Nil if Vision can't run (the simulator) or sees nobody.
     static func photoLandmarks(_ image: CGImage) -> PhotoLandmarks? {
         let human = VNDetectHumanRectanglesRequest()
         human.upperBodyOnly = true // a torso is enough; the scan rarely shows head to toe
         let pose = VNDetectHumanBodyPoseRequest()
+        let faces = VNDetectFaceRectanglesRequest()
         // One at a time, so a request that can't run doesn't take the other down with it.
         let handler = VNImageRequestHandler(cgImage: image)
-        for request in [human, pose] as [VNRequest] {
+        for request in [human, pose, faces] as [VNRequest] {
             do { try handler.perform([request]) } catch {
                 MemoryLog.log.notice("profile: body detection failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -115,6 +118,9 @@ enum ProfileAlignment {
         // Vision's origin is bottom-left; the app's is top-left.
         if let box = human.results?.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })?.boundingBox {
             marks.body = CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
+        }
+        if let box = faces.results?.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })?.boundingBox {
+            marks.face = CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
         }
         if let person = pose.results?.first {
             // Confidence-weighted centre of the joints that mark one level of the trunk. The bar
@@ -130,7 +136,20 @@ enum ProfileAlignment {
             marks.shoulder = centre([.leftShoulder, .rightShoulder, .neck])
             marks.hip = centre([.leftHip, .rightHip, .root])
         }
-        return marks.hasBody ? marks : nil
+        return marks.hasBody || marks.face != nil ? marks : nil
+    }
+
+    /// An ID-photo crop (35 × 45 proportions) around a face, in pixels of an image of `size`:
+    /// the head fills about half the height, with room above the crown and the neck and
+    /// shoulders below the chin. `face` is in fractions of the image, as in PhotoLandmarks.
+    static func idCrop(face: CGRect, size: CGSize) -> CGRect {
+        let f = CGRect(x: face.minX * size.width, y: face.minY * size.height, width: face.width * size.width, height: face.height * size.height)
+        // Vision's box runs from about the brow to the chin; the crown is a third of it higher.
+        var h = min(f.height * 2.6, size.height), w = h * 35 / 45
+        if w > size.width { w = size.width; h = w * 45 / 35 }
+        let x = min(max(f.midX - w / 2, 0), size.width - w)
+        let y = min(max(f.minY - f.height * 0.8, 0), size.height - h)
+        return CGRect(x: x, y: y, width: w, height: h).integral
     }
 
     // MARK: Placement

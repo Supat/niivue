@@ -29,6 +29,8 @@ enum ProfileView: String, CaseIterable, Identifiable {
     /// The person found in each photo (Vision), for the check mark and the side-by-side
     /// alignment; no entry when nobody was detected.
     private(set) var landmarks: [ProfileView: PhotoLandmarks] = [:]
+    /// ID-photo crop of the face in the Coronal Front photo, when one is detected there.
+    private(set) var faceCutout: UIImage?
     private(set) var error: String?
     private let sidecar: SidecarStore?
     /// Longest side of a stored photo, in pixels: plenty for the panel, small in the sidecar.
@@ -55,6 +57,7 @@ enum ProfileView: String, CaseIterable, Identifiable {
         let stored = image.map(Self.fitted)
         photos[view] = stored
         landmarks[view] = nil
+        if view == .coronalFront { faceCutout = nil }
         if let stored { await detectBody(in: stored, for: view) }
         guard let sidecar else { return }
         let data = stored?.jpegData(compressionQuality: 0.9)
@@ -69,14 +72,19 @@ enum ProfileView: String, CaseIterable, Identifiable {
     func setError(_ message: String) { error = message }
 
     /// After the sidecar folder was deleted.
-    func clear() { photos = [:]; landmarks = [:]; error = nil }
+    func clear() { photos = [:]; landmarks = [:]; faceCutout = nil; error = nil }
 
     /// Not stored: the check is quick and is redone whenever a photo is set or restored.
     private func detectBody(in image: UIImage, for view: ProfileView) async {
         guard let cg = image.cgImage else { return }
         let found = await Task.detached(priority: .utility) { ProfileAlignment.photoLandmarks(cg) }.value
         // The photo may have been replaced or removed while this ran.
-        if let found, photos[view] === image { landmarks[view] = found }
+        guard let found, photos[view] === image else { return }
+        landmarks[view] = found
+        if view == .coronalFront, let face = found.face,
+           let crop = cg.cropping(to: ProfileAlignment.idCrop(face: face, size: CGSize(width: cg.width, height: cg.height))) {
+            faceCutout = UIImage(cgImage: crop)
+        }
     }
 
     /// Upright, and no larger than `maxSide` on its longest side.

@@ -57,6 +57,9 @@ import Observation
     var showsSideBySide: Bool { sideBySide && canSideBySide }
     /// Where the slice image currently is in its pane (zoom and pan included); the photo follows it.
     var sliceViewport = CGRect.zero
+    /// 3D and Multi: the subject's face (from the Coronal Front photo) in the corner of the render.
+    var showProfile = UserDefaults.standard.bool(forKey: "showProfile") // `-showProfile YES` for checks
+    var showsProfile: Bool { showProfile && profile.faceCutout != nil }
     /// Marker dropped by a tap on the photo, as fractions of the displayed slice (x right,
     /// y down; outside 0...1 where the photo reaches past the slice). Drawn in both panes.
     var photoMarker: CGPoint?

@@ -47,7 +47,7 @@ private struct ProfilePhotoRow: View {
             } label: {
                 HStack(spacing: 6) {
                     Text(view.rawValue)
-                    if model.landmarks[view] != nil {
+                    if model.landmarks[view]?.hasBody == true {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                             .accessibilityLabel("Body detected")
                     }
