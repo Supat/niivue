@@ -76,7 +76,7 @@ shows where it lives and can delete it.
 bottom, coronal front and back, sagittal left and right, picked from the photo library (no library permission is
 needed: the system picker runs out of process) or from Files; a green check mark after the
 view's name means a person was detected in its photo (Vision's human detector). Each is stored upright, at most 2048 px on
-its longest side, as a JPEG in the sidecar.
+its longest side, as a JPEG in the sidecar. A tap on a row's name shows or hides its preview.
 
 **Side by side.** In landscape, a slice view can show its profile photo beside it (the toolbar
 button before Snapshot; enabled once that photo exists): Axial ↔ Axial Top, Coronal ↔ Coronal

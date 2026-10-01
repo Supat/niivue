@@ -29,6 +29,14 @@ private struct ProfilePhotoRow: View {
     @State private var picked: PhotosPickerItem?
     @State private var choosingPhoto = false
     @State private var choosingFile = false
+    /// Whether the preview under the row is open; remembered per view across launches.
+    @AppStorage private var expanded: Bool
+
+    init(model: ProfileViewModel, view: ProfileView) {
+        self.model = model
+        self.view = view
+        _expanded = AppStorage(wrappedValue: false, "profilePreview.\(view.rawValue)")
+    }
 
     var body: some View {
         let photo = model.photos[view]
@@ -46,14 +54,23 @@ private struct ProfilePhotoRow: View {
                 .buttonStyle(.borderless) // separate tap targets inside one form row
             } label: {
                 HStack(spacing: 6) {
+                    if photo != nil { // the disclosure arrow for the preview
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
                     Text(view.rawValue)
                     if model.landmarks[view]?.hasBody == true {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                             .accessibilityLabel("Body detected")
                     }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { if photo != nil { withAnimation { expanded.toggle() } } }
+                .accessibilityAddTraits(photo != nil ? .isButton : [])
+                .accessibilityHint(photo == nil ? "" : expanded ? "Hides the photo" : "Shows the photo")
             }
-            if let photo {
+            if let photo, expanded {
                 Image(uiImage: photo)
                     .resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: 180)
