@@ -42,6 +42,20 @@ struct ViewerView: View {
                     DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: chromeHidden ? 0 : 64)
                 }
             }
+            .overlay(alignment: .top) {
+                // Open-time restore (sidecar settings, saved segmentation, companion images).
+                if let stage = model.openingStage {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text(stage).font(.footnote)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.top, chromeHidden ? 8 : 64) // below the toolbar while it's showing
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.default, value: model.openingStage == nil)
             .overlay(alignment: .bottom) {
                 if !chromeHidden, let axis = model.plane.axis, volume.count(axis: axis) > 1 {
                     SliceScrubber(model: model, axis: axis, count: volume.count(axis: axis))
@@ -99,8 +113,8 @@ struct ViewerView: View {
             .task {
                 // Sidecar first (it also records the companion images); siblings fill any gaps.
                 let restored = await model.restoreFromSidecar()
-                if let fileURL, !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
-                    await model.segmentation.discoverSiblings(of: fileURL)
+                if !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
+                    await model.discoverSiblings()
                 }
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
             }

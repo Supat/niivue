@@ -14,6 +14,8 @@ import Observation
     let bodyComposition = BodyCompositionViewModel()
     /// Where this scan's settings and maps persist; nil for a document without a file URL.
     let sidecar: SidecarStore?
+    /// What the open-time restore is doing right now (shown as a banner), nil when done.
+    private(set) var openingStage: String?
     private(set) var sidecarSavedAt: Date?
     private(set) var sidecarMapsSaved = false
     @ObservationIgnored private var sidecarSaveTask: Task<Void, Never>?
@@ -94,20 +96,34 @@ import Observation
     /// whatever lies beside the scan. Returns true when a sidecar was used.
     func restoreFromSidecar() async -> Bool {
         guard let sidecar, let s = sidecar.loadSettings() else { return false }
+        openingStage = "Restoring settings…"
+        defer { openingStage = nil }
         apply(s)
         let volume = volume
-        let maps = await Task.detached(priority: .userInitiated) { () -> (SegmentationMap?, SegmentationMap?) in
-            (s.segmentation.shownName.flatMap { sidecar.loadMap(slot: "shown", name: $0, volume: volume) },
-             s.segmentation.keptName.flatMap { sidecar.loadMap(slot: "kept", name: $0, volume: volume) })
-        }.value
-        segmentation.restore(shown: maps.0, kept: maps.1, visible: s.segmentation.visible)
-        sidecarMapsSaved = maps.0 != nil || s.segmentation.shownName == nil
+        if s.segmentation.shownName != nil {
+            openingStage = "Loading saved segmentation…"
+            let maps = await Task.detached(priority: .userInitiated) { () -> (SegmentationMap?, SegmentationMap?) in
+                (s.segmentation.shownName.flatMap { sidecar.loadMap(slot: "shown", name: $0, volume: volume) },
+                 s.segmentation.keptName.flatMap { sidecar.loadMap(slot: "kept", name: $0, volume: volume) })
+            }.value
+            segmentation.restore(shown: maps.0, kept: maps.1, visible: s.segmentation.visible)
+            sidecarMapsSaved = maps.0 != nil
+        }
         for (which, companion) in [(ImageRole.water, s.water), (.fat, s.fat)] {
             guard let companion, let url = companion.resolve() else { continue }
+            openingStage = "Loading \(which.rawValue.lowercased()) image…"
             await segmentation.loadCompanion(which, from: url, scoped: true, quiet: true)
         }
         sidecarSavedAt = (try? sidecar.settingsURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         return true
+    }
+
+    /// Companions and a tissue map lying beside the scan, with the banner up meanwhile.
+    func discoverSiblings() async {
+        guard let fileURL else { return }
+        openingStage = "Looking beside the scan…"
+        defer { openingStage = nil }
+        await segmentation.discoverSiblings(of: fileURL)
     }
 
     /// Write the settings a moment after the last change (coalesces slider drags).
