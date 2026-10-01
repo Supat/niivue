@@ -61,6 +61,32 @@ struct ViewerView: View {
                     SliceScrubber(model: model, axis: axis, count: volume.count(axis: axis))
                 }
             }
+            // Chrome auto-hides a few seconds after it appears or was last used, like a
+            // video player; a tap brings it back. It stays while the inspector is open.
+            .onAppear(perform: scheduleChromeHide)
+            .task {
+                // Sidecar first (it also records the companion images); siblings fill any gaps.
+                let restored = await model.restoreFromSidecar()
+                if !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
+                    await model.discoverSiblings()
+                }
+                if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
+            }
+            .onChange(of: model.sidecarSettings) { model.scheduleSidecarSave() }
+            .onChange(of: model.segmentation.map?.id) { model.saveSidecarMaps() }
+            .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
+            .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
+            .onChange(of: model.plane) { scheduleChromeHide() }
+            .onChange(of: model.slices) { scheduleChromeHide() }
+            .onChange(of: model.mirrored) { scheduleChromeHide() }
+            .inspector(isPresented: $showInspector) {
+                InspectorView(model: model, belowBar: !shiftsToolbar)
+                    .inspectorColumnWidth(Self.inspectorWidth)
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
+            // Toolbar modifiers sit outside the inspector: declared inside it they are lost on
+            // iPadOS 27 when the document opens in the launch window (a browser pick), leaving
+            // only the back button and title; a document opened in a window of its own kept them.
             .toolbar {
                 // Trailing, not .principal: principal would replace the document title menu.
                 ToolbarItem(placement: .topBarTrailing) {
@@ -107,34 +133,11 @@ struct ViewerView: View {
                     .sharedBackgroundVisibility(.hidden)
                 }
             }
-            // Chrome auto-hides a few seconds after it appears or was last used, like a
-            // video player; a tap brings it back. It stays while the inspector is open.
-            .onAppear(perform: scheduleChromeHide)
-            .task {
-                // Sidecar first (it also records the companion images); siblings fill any gaps.
-                let restored = await model.restoreFromSidecar()
-                if !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
-                    await model.discoverSiblings()
-                }
-                if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
-            }
-            .onChange(of: model.sidecarSettings) { model.scheduleSidecarSave() }
-            .onChange(of: model.segmentation.map?.id) { model.saveSidecarMaps() }
-            .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
-            .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
-            .onChange(of: model.plane) { scheduleChromeHide() }
-            .onChange(of: model.slices) { scheduleChromeHide() }
-            .onChange(of: model.mirrored) { scheduleChromeHide() }
             .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar)
             .background(NavigationBarHider(hidden: chromeHidden))
             .toolbarColorScheme(.dark, for: .navigationBar) // content is always black
             .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .statusBarHidden(chromeHidden)
-            .inspector(isPresented: $showInspector) {
-                InspectorView(model: model, belowBar: !shiftsToolbar)
-                    .inspectorColumnWidth(Self.inspectorWidth)
-            }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
     }
 }
 
