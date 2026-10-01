@@ -55,7 +55,8 @@ is picked up automatically when the scan opens.
 and mass (typical tissue densities) and, given the subject's weight and which body segments
 lie outside the scan (Dempster/Winter mass fractions; thighs as a percentage), checks the
 imaged mass against the expected share and extrapolates muscle and fat to the whole body,
-assuming the missing limbs share the imaged composition.
+assuming the missing limbs share the imaged composition. A tap on the class list switches its
+masses between kg and percent of the subject's weight.
 
 **Image role and companions.** The Image section says what the opened file is (Water / Fat /
 Other, inferred from a `_W` / `_F` suffix) and holds the companion Dixon image(s) the tissue

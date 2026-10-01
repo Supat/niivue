@@ -8,6 +8,9 @@ import SwiftUI
 struct BodyCompositionSection: View {
     @Bindable var model: BodyCompositionViewModel
     let map: SegmentationMap
+    /// The class list shows masses in kg, or as a percentage of the subject's weight; a tap
+    /// anywhere on the list switches.
+    @AppStorage("bodyCompositionPercent") private var percent = false
 
     var body: some View {
         let e = model.estimate(for: map)
@@ -37,27 +40,36 @@ struct BodyCompositionSection: View {
             Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 6) {
                 GridRow {
                     Text("Class").gridColumnAlignment(.leading)
-                    Text("L"); Text("kg"); Text("kg, body")
+                    Text("L"); Text(percent ? "%" : "kg"); Text(percent ? "%, body" : "kg, body")
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 ForEach(e.rows, id: \.label) { row in
                     GridRow {
                         Text(row.name).gridColumnAlignment(.leading).lineLimit(1)
                         Text(String(format: "%.2f", row.litres))
-                        Text(String(format: "%.2f", row.kg))
-                        Text(row.wholeBodyKg.map { String(format: "%.2f", $0) } ?? "–")
+                        Text(mass(row.kg))
+                        Text(row.wholeBodyKg.map(mass) ?? "–")
                     }
                     .font(.footnote.monospacedDigit())
                 }
                 GridRow {
                     Text("other tissue").gridColumnAlignment(.leading).foregroundStyle(.secondary)
                     Text(String(format: "%.2f", e.otherLitres))
-                    Text(String(format: "%.2f", e.otherKg)); Text("–")
+                    Text(mass(e.otherKg)); Text("–")
                 }
                 .font(.footnote.monospacedDigit())
             }
+            .contentShape(Rectangle())
+            .onTapGesture { percent.toggle() }
+            .accessibilityAction(named: percent ? "Show kilograms" : "Show percentage of body weight") { percent.toggle() }
             Text("Masses use typical tissue densities (adipose 0.92, muscle 1.06, organs ~1.05, lungs 0.3, bone 1.4 g/mL). Whole-body muscle and fat assume the missing limbs share the imaged composition.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+    /// A mass in the list's current unit; percentages need the subject's weight.
+    private func mass(_ kg: Double) -> String {
+        guard percent else { return String(format: "%.2f", kg) }
+        return model.weightKg > 0 ? String(format: "%.1f%%", kg / model.weightKg * 100) : "–"
     }
 }
