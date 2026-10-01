@@ -68,5 +68,15 @@ struct SidecarStore {
         return SegmentationMap(labels: labels, name: name, volume: volume)
     }
 
+    /// A profile photo's bytes; nil data removes the file.
+    func savePhoto(_ data: Data?, name: String) throws {
+        let url = folder.appendingPathComponent(name)
+        guard let data else { try? FileManager.default.removeItem(at: url); return }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func loadPhoto(_ name: String) -> Data? { try? Data(contentsOf: folder.appendingPathComponent(name)) }
+
     func delete() { try? FileManager.default.removeItem(at: folder) }
 }

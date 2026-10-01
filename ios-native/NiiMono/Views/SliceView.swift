@@ -27,6 +27,9 @@ struct SliceView: UIViewRepresentable {
     var crosshair: CGPoint? = nil
     /// If set, a tap reports its position (same fractions) instead of calling onTap.
     var onLocate: ((CGPoint) -> Void)? = nil
+    /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
+    /// moves it, so another pane can follow.
+    var onViewport: ((CGRect) -> Void)? = nil
     let onTap: () -> Void
     let onScrub: (Int) -> Void
 
@@ -54,6 +57,7 @@ struct SliceView: UIViewRepresentable {
         view.onLocate = onLocate
         view.crosshair = crosshair
         view.onZoom = onZoom
+        view.onViewport = onViewport
         if let zoom, abs(zoom - view.zoomScale) > 0.001, !view.isZooming, !view.isTracking {
             // Following another pane: don't echo the zoom back into the model mid-update.
             view.applyingSharedZoom = true
@@ -104,6 +108,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)?
+    var onViewport: ((CGRect) -> Void)? { didSet { reported = nil; reportViewport() } }
+    private var reported: CGRect?
     var imageKey: SliceView.ImageKey?
     var applyingSharedZoom = false
     private var animatingZoom = false
@@ -174,6 +180,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             imageView.frame.origin = CGPoint(x: max(0, (bounds.width - imageView.frame.width) / 2),
                                              y: max(0, (bounds.height - imageView.frame.height) / 2))
             layoutCrosshair()
+            reportViewport()
         }
         if glide {
             // Our bounds have already jumped to the new width; let the image overflow them
@@ -203,7 +210,13 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             x: min(max(o.x + centre.x * scale - bounds.width / 2, 0), max(0, contentSize.width - bounds.width)),
             y: min(max(o.y + centre.y * scale - bounds.height / 2, 0), max(0, contentSize.height - bounds.height)))
     }
-    func scrollViewDidScroll(_ scrollView: UIScrollView) { layoutCrosshair() } // viewport moved
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { layoutCrosshair(); reportViewport() } // viewport moved
+
+    private func reportViewport() {
+        guard let onViewport, bounds.width > 0 else { return }
+        let f = imageView.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+        if f != reported { reported = f; onViewport(f) }
+    }
 
     /// Crosshair lines in content coordinates (the scroll view's own layer scrolls with the
     /// content), spanning the visible viewport, at a constant 1 pt whatever the zoom.

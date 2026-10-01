@@ -1,6 +1,6 @@
 //
 //  InspectorView.swift — the side panel: window level, 3D rendering, clip planes,
-//  segmentation, body composition, volume info.
+//  segmentation, body composition, profile photos, volume info.
 //
 
 import SwiftUI
@@ -43,6 +43,7 @@ struct InspectorView: View {
             if let map = model.segmentation.map {
                 BodyCompositionSection(model: model.bodyComposition, map: map)
             }
+            ProfileSection(model: model.profile)
             if let sidecar = model.sidecar {
                 Section("Sidecar") {
                     LabeledContent("Location", value: sidecar.besideScan ? "Beside the scan" : "In the app's library")
@@ -50,7 +51,7 @@ struct InspectorView: View {
                     if model.segmentation.map != nil {
                         LabeledContent("Segmentation", value: model.sidecarMapsSaved ? "saved" : "saving…")
                     }
-                    Text("Settings, the segmentation maps and the companion images are remembered here and restored when the scan is opened again.")
+                    Text("Settings, the segmentation maps, the companion images and the profile photos are remembered here and restored when the scan is opened again.")
                         .font(.caption2).foregroundStyle(.secondary)
                     Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
                 }

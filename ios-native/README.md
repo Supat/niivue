@@ -66,11 +66,28 @@ Other). The networks run on the water image when there is one.
 **Sidecar.** Everything in the inspector — view, window, clip planes, segmentation
 visibility and opacity, body-composition inputs, the image role, the companion images (as
 bookmarks) and the segmentation maps themselves — is saved to `<scan>.niimono/`
-(`settings.json`, `shown.nii.gz`, `kept.nii.gz`) beside the scan when that folder is
+(`settings.json`, `shown.nii.gz`, `kept.nii.gz`, `profile-<view>.jpg`) beside the scan when that folder is
 writable, else under the app's Application Support keyed by the scan's name, size and date.
 Settings save 1.5 s after the last change, maps when they appear; opening the scan again
 restores all of it, so a generated segmentation is never recomputed. The Sidecar section
 shows where it lives and can delete it.
+
+**Profile.** The inspector's Profile section holds six photos of the subject: axial top and
+bottom, coronal front and back, sagittal left and right, picked from the photo library (no library permission is
+needed: the system picker runs out of process) or from Files; a green check mark after the
+view's name means a person was detected in its photo (Vision's human detector). Each is stored upright, at most 2048 px on
+its longest side, as a JPEG in the sidecar.
+
+**Side by side.** In landscape, a slice view can show its profile photo beside it (the toolbar
+button before Snapshot; enabled once that photo exists): Axial ↔ Axial Top, Coronal ↔ Coronal
+Back, Sagittal ↔ Sagittal Right, and with Mirror on Axial Bottom, Coronal Front, Sagittal Left.
+The photo is placed so the same anatomy sits at the same spot in both panes and follows the
+slice's zoom and pan (`ProfileAlignment.swift`): shoulder and hip joints are matched when the
+scan has segmented bones (the tops of the humeri and femora in a `total_mr` map) and Vision
+finds the body pose in the photo; failing that, the body outlines' width and centre; failing
+that, the photo is fitted to the slice. Axial slices only ever use the outline. A tap on the
+photo drops a marker there and at the matching position on the slice. Snapshot captures
+both panes.
 
 **Launch screen.** The screen in front of the document browser offers "Open <last scan>",
 a one-tap return to the last file opened (a security-scoped bookmark; the file is handed to
@@ -104,7 +121,7 @@ with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-comm
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
-the last scan by itself).
+the last scan by itself), `-sideBySide YES`.
 
 ## Files (MVVM)
 
@@ -114,7 +131,7 @@ the last scan by itself).
 | `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` and the slice compositing; `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
 | `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs). |
 | `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
-| `NiiMono/Services` | `SidecarStore`; `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
+| `NiiMono/Services` | `SidecarStore`; `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |

@@ -12,6 +12,7 @@ import Observation
     let fileURL: URL?
     let segmentation: SegmentationViewModel
     let bodyComposition = BodyCompositionViewModel()
+    let profile: ProfileViewModel
     /// Where this scan's settings and maps persist; nil for a document without a file URL.
     let sidecar: SidecarStore?
     /// What the open-time restore is doing right now (shown as a banner), nil when done.
@@ -47,6 +48,19 @@ import Observation
     /// pressed against the lens.
     var cameraClip = false
     var cameraClipDepth: Float = 0.5
+    /// Side-by-side: a slice next to its paired profile photo. Only shown in landscape, for a
+    /// slice plane whose photo exists; the request itself is remembered across those.
+    var sideBySide = UserDefaults.standard.bool(forKey: "sideBySide") // `-sideBySide YES` for checks
+    var landscape = false // the window is wider than tall (set by ViewerView)
+    var pairedProfileView: ProfileView? { plane.axis.map { ProfileView.paired(axis: $0, mirrored: mirrored) } }
+    var canSideBySide: Bool { landscape && pairedProfileView.flatMap { profile.photos[$0] } != nil }
+    var showsSideBySide: Bool { sideBySide && canSideBySide }
+    /// Where the slice image currently is in its pane (zoom and pan included); the photo follows it.
+    var sliceViewport = CGRect.zero
+    /// Marker dropped by a tap on the photo, as fractions of the displayed slice (x right,
+    /// y down; outside 0...1 where the photo reaches past the slice). Drawn in both panes.
+    var photoMarker: CGPoint?
+    private(set) var scanLandmarks: ScanLandmarks?
     // 3D camera preset request: RenderView applies `preset` whenever `presetTick` changes.
     var preset: ViewPreset?
     var presetTick = 0
@@ -56,6 +70,7 @@ import Observation
         self.fileURL = fileURL
         segmentation = SegmentationViewModel(volume: volume, role: fileURL.map(ImageRole.inferred) ?? .other)
         sidecar = fileURL.map(SidecarStore.init)
+        profile = ProfileViewModel(sidecar: sidecar)
         slices = (0..<3).map { volume.count(axis: $0) / 2 }
         lo = volume.displayMin
         hi = volume.displayMax
@@ -107,6 +122,7 @@ import Observation
         openingStage = "Restoring settings…"
         defer { openingStage = nil }
         apply(s)
+        await profile.restore()
         let volume = volume
         if s.segmentation.shownName != nil {
             openingStage = "Loading saved segmentation…"
@@ -165,11 +181,18 @@ import Observation
         }
     }
 
+    /// The scan's landmarks for aligning profile photos; redone when the segmentation changes.
+    func updateScanLandmarks() async {
+        let volume = volume, maps = [segmentation.map, segmentation.kept].compactMap { $0 }
+        scanLandmarks = await Task.detached(priority: .utility) { ProfileAlignment.scanLandmarks(volume: volume, maps: maps) }.value
+    }
+
     func deleteSidecar() {
         sidecarSaveTask?.cancel()
         sidecar?.delete()
         sidecarSavedAt = nil
         sidecarMapsSaved = false
+        profile.clear()
     }
 
     var dims: [Int] { [volume.dims.0, volume.dims.1, volume.dims.2] }

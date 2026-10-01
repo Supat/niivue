@@ -29,7 +29,7 @@ struct ViewerView: View {
 
     var body: some View {
         let volume = model.volume
-        VolumeCanvas(model: model,
+        VolumeCanvas(model: model, labelInset: chromeHidden ? 0 : 64,
                      onTap: { withAnimation { chromeHidden.toggle() } },
                      onInteract: { if chromeHidden { withAnimation { chromeHidden = false } } })
             // Full-bleed under the bars, but not under the inspector column (a trailing
@@ -37,11 +37,6 @@ struct ViewerView: View {
             .ignoresSafeArea(edges: .vertical)
             .background(.black)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { canvasWidth = $0 }
-            .overlay {
-                if let axis = model.plane.axis {
-                    DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: chromeHidden ? 0 : 64)
-                }
-            }
             .overlay(alignment: .top) {
                 // Open-time restore (sidecar settings, saved segmentation, companion images).
                 if let stage = model.openingStage {
@@ -72,8 +67,13 @@ struct ViewerView: View {
                 }
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
             }
+            .task(id: [model.segmentation.map?.id, model.segmentation.kept?.id]) { await model.updateScanLandmarks() }
+            .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { model.landscape = $0 }
+            .onChange(of: model.pairedProfileView) { model.photoMarker = nil } // another photo: the marker no longer applies
             .onChange(of: model.sidecarSettings) { model.scheduleSidecarSave() }
             .onChange(of: model.segmentation.map?.id) { model.saveSidecarMaps() }
+            // A photo alone must still leave a settings.json, or the sidecar isn't found on reopening.
+            .onChange(of: model.profile.photos.keys.sorted { $0.rawValue < $1.rawValue }) { model.scheduleSidecarSave() }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
             .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
             .onChange(of: model.plane) { scheduleChromeHide() }
@@ -111,6 +111,11 @@ struct ViewerView: View {
                             }
                         }
                     }
+                    if model.plane.axis != nil {
+                        Toggle("Side by Side with Photo", systemImage: "rectangle.split.2x1",
+                               isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
+                            .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
+                    }
                     Button("Snapshot", systemImage: "camera") {
                         SnapshotPanes.captureAndShare(documentName: fileURL?.deletingPathExtension().deletingPathExtension().lastPathComponent ?? "Snapshot")
                     }
@@ -144,6 +149,8 @@ struct ViewerView: View {
 /// The canvas: one slice, the multiplanar grid, or the 3D render.
 private struct VolumeCanvas: View {
     let model: ViewerViewModel
+    /// Room the bottom direction label leaves for the scrubber.
+    let labelInset: CGFloat
     let onTap: () -> Void
     /// A tap that does something else (moves the crosshair) still brings hidden chrome back.
     let onInteract: () -> Void
@@ -160,7 +167,34 @@ private struct VolumeCanvas: View {
             }
             .background(Color(white: 0.25))
         default:
-            slice(model.plane.axis!)
+            let axis = model.plane.axis!
+            let pane = slice(axis).overlay { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: labelInset) }
+            if model.showsSideBySide, let view = model.pairedProfileView, let photo = model.profile.photos[view] {
+                // Slice | its profile photo, the photo placed to line up with the slice.
+                let e = model.volume.sliceExtent(axis: axis)
+                let unit = ProfileAlignment.photoFrame(axis: axis, mirrored: model.mirrored,
+                                                       extent: CGSize(width: CGFloat(e.0), height: CGFloat(e.1)), photoSize: photo.size,
+                                                       scan: model.scanLandmarks, photo: model.profile.landmarks[view])
+                let v = model.sliceViewport
+                HStack(spacing: 1) {
+                    pane
+                    // Both panes are the same size, so a point of one is the same point of the other.
+                    ProfilePhotoPane(image: photo, frame: CGRect(x: v.minX + unit.minX * v.width, y: v.minY + unit.minY * v.height,
+                                                                 width: unit.width * v.width, height: unit.height * v.height),
+                                     marker: model.photoMarker.map { CGPoint(x: v.minX + $0.x * v.width, y: v.minY + $0.y * v.height) }) { p in
+                        guard v.width > 0, v.height > 0 else { return }
+                        onInteract()
+                        model.photoMarker = CGPoint(x: (p.x - v.minX) / v.width, y: (p.y - v.minY) / v.height)
+                    }
+                        .overlay(alignment: .bottomTrailing) {
+                            Text(view.rawValue).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.45))
+                                .padding(10).padding(.bottom, labelInset).allowsHitTesting(false)
+                        }
+                }
+                .background(Color(white: 0.25))
+            } else {
+                pane
+            }
         }
     }
 
@@ -179,8 +213,9 @@ private struct VolumeCanvas: View {
                          fitExtent: multi ? model.sliceEnvelope : nil,
                          zoom: multi ? model.multiZoom : nil, zoomAnimated: model.multiZoomAnimated,
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,
-                         crosshair: multi ? model.crosshair(in: axis) : nil,
+                         crosshair: multi ? model.crosshair(in: axis) : model.showsSideBySide ? model.photoMarker : nil,
                          onLocate: multi ? { p in onInteract(); model.locate(p, in: axis) } : nil,
+                         onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }
             .overlay {
                 if multi { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: 0) }
