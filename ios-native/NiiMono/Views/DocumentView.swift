@@ -15,7 +15,7 @@ struct DocumentView: View {
         Group {
             switch result {
             case .success(let volume):
-                ViewerView(model: ViewerViewModel(volume: volume), fileURL: fileURL)
+                ViewerView(model: ViewerViewModel(volume: volume, fileURL: fileURL))
             case .failure(let error):
                 ContentUnavailableView("Can’t Open File", systemImage: "exclamationmark.triangle",
                                        description: Text(error.localizedDescription))

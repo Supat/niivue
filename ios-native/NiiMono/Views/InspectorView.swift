@@ -17,6 +17,7 @@ struct InspectorView: View {
         let range = volume.dataMin...max(volume.dataMax, volume.dataMin + 1)
         let unit = (range.upperBound - range.lowerBound) / 100 // one tap on the track = 1% of the range
         Form {
+            ImageSection(model: model.segmentation)
             Section("Adjust") {
                 LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
                 LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
@@ -32,6 +33,18 @@ struct InspectorView: View {
             SegmentationSection(model: model.segmentation)
             if let map = model.segmentation.map {
                 BodyCompositionSection(model: model.bodyComposition, map: map)
+            }
+            if let sidecar = model.sidecar {
+                Section("Sidecar") {
+                    LabeledContent("Location", value: sidecar.besideScan ? "Beside the scan" : "In the app's library")
+                    LabeledContent("Settings", value: model.sidecarSavedAt.map { "saved " + $0.formatted(date: .omitted, time: .shortened) } ?? "not saved yet")
+                    if model.segmentation.map != nil {
+                        LabeledContent("Segmentation", value: model.sidecarMapsSaved ? "saved" : "saving…")
+                    }
+                    Text("Settings, the segmentation maps and the companion images are remembered here and restored when the scan is opened again.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
+                }
             }
             Section("Info") {
                 LabeledContent("Dimensions", value: "\(volume.dims.0) × \(volume.dims.1) × \(volume.dims.2)")
@@ -103,6 +116,41 @@ private struct ClipPlaneSections: View {
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { value.wrappedValue = 0 } // double-tap the readout to zero it
             StepSlider(value: value, in: -90...90, unit: 1)
+        }
+    }
+}
+
+/// What the opened file is, and the companion Dixon images the tissue classes need.
+private struct ImageSection: View {
+    @Bindable var model: SegmentationViewModel
+    @State private var choosing: ImageRole?
+
+    var body: some View {
+        Section("Image") {
+            Picker("This image is", selection: $model.role) {
+                ForEach(ImageRole.allCases) { Text($0.rawValue).tag($0) }
+            }
+            if model.role != .water { companionRow(.water, name: model.waterURL?.lastPathComponent, loaded: model.water != nil) }
+            if model.role != .fat { companionRow(.fat, name: model.fatURL?.lastPathComponent, loaded: model.fat != nil) }
+            if !model.canClassifyTissue {
+                Text(model.role == .other
+                     ? "Muscle and fat classes need both Dixon images (water and fat) on this grid."
+                     : "Muscle and fat classes need the other Dixon image; it is picked up automatically when it lies beside this one.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .fileImporter(isPresented: Binding(get: { choosing != nil }, set: { if !$0 { choosing = nil } }),
+                      allowedContentTypes: [.nifti, .gzip, .data]) { result in
+            if case .success(let url) = result, let which = choosing { Task { await model.loadCompanion(which, from: url, scoped: true) } }
+        }
+    }
+
+    private func companionRow(_ which: ImageRole, name: String?, loaded: Bool) -> some View {
+        LabeledContent("\(which.rawValue) image") {
+            HStack(spacing: 8) {
+                if loaded { Text(name ?? "loaded").lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
+                Button(loaded ? "Change…" : "Choose…") { choosing = which }
+            }
         }
     }
 }

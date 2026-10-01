@@ -38,16 +38,17 @@ enum SegmentationPipeline {
         return v
     }
 
-    /// Run the bundled TotalSegmentator models (organs, then muscles/bones), merge them, and
-    /// — with the fat image — derive the 14 tissue classes. Returns the map to show and,
-    /// when a tissue map was made, the structure map to keep alongside it.
-    static func generate(volume: NiftiVolume, fat: NiftiVolume?, progress: @escaping (String, Double) -> Void,
+    /// Run the bundled TotalSegmentator models (organs, then muscles/bones) on `modelInput`,
+    /// merge them, and — given both Dixon images — derive the 14 tissue classes. Returns the
+    /// map to show and, when a tissue map was made, the structure map to keep alongside it.
+    static func generate(volume: NiftiVolume, modelInput: NiftiVolume, water: NiftiVolume?, fat: NiftiVolume?,
+                         progress: @escaping (String, Double) -> Void,
                          cancel: CancelFlag) throws -> (shown: SegmentationMap, kept: SegmentationMap?) {
         guard let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else { throw SegmenterError.noMetal }
         func run(_ model: String, classes: Int, stage: String, from: Double, to: Double) throws -> LabelVolume {
             guard let url = Bundle.main.url(forResource: model, withExtension: "mlmodelc") else { throw SegmenterError.missingModel(model) }
             let seg = try OrganSegmenter(modelURL: url, library: library, classes: classes)
-            return try seg.segment(volume, progress: { progress(stage, from + (to - from) * $0) }, isCancelled: { cancel.isSet })
+            return try seg.segment(modelInput, progress: { progress(stage, from + (to - from) * $0) }, isCancelled: { cancel.isSet })
         }
         let organs = try run("Organs", classes: TotalMR.organCount + 1, stage: "organs", from: 0, to: 0.45)
         let muscles = try run("Muscles", classes: TotalMR.names.count - TotalMR.organCount + 1, stage: "muscles and bones", from: 0.45, to: 0.9)
@@ -60,9 +61,9 @@ enum SegmentationPipeline {
         }
         let all = LabelVolume(dims: volume.dims, data: merged, maxLabel: TotalMR.names.count)
         let structures = SegmentationMap(labels: all, name: "structures (total_mr)", volume: volume)
-        guard let fat else { return (structures, nil) }
+        guard let water, let fat else { return (structures, nil) }
         progress("tissue classes", 0.9)
-        let tissue = try TissueClassifier.classify(water: volume, fat: fat, labels: all, library: library,
+        let tissue = try TissueClassifier.classify(water: water, fat: fat, labels: all, library: library,
                                                    progress: { progress("tissue classes", 0.9 + 0.1 * $0) })
         return (SegmentationMap(labels: tissue, name: "tissues (generated)", volume: volume), structures)
     }
@@ -78,11 +79,12 @@ enum SegmentationPipeline {
         return tags
     }
 
-    /// The Dixon fat image beside a `<tag>_W` scan, if present.
-    static func siblingFat(of fileURL: URL) -> URL? {
-        guard fileURL.lastPathComponent.contains("_W.nii") else { return nil }
-        let tag = tags(of: fileURL).last!, dir = fileURL.deletingLastPathComponent()
-        return ["\(tag)_F.nii.gz", "\(tag)_F.nii"].map(dir.appendingPathComponent).first { FileManager.default.fileExists(atPath: $0.path) }
+    /// The other Dixon image (`<tag>_W` or `<tag>_F`) beside a scan that has a Dixon suffix.
+    static func siblingDixon(of fileURL: URL, suffix: String) -> URL? {
+        let tags = tags(of: fileURL)
+        guard tags.count > 1 else { return nil } // no Dixon suffix on the opened file
+        let dir = fileURL.deletingLastPathComponent(), tag = tags.last!
+        return ["\(tag)_\(suffix).nii.gz", "\(tag)_\(suffix).nii"].map(dir.appendingPathComponent).first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     /// A tissue map beside the scan or in a `seg/` folder, if present.

@@ -9,8 +9,14 @@ import Observation
 
 @Observable @MainActor final class ViewerViewModel {
     let volume: NiftiVolume
+    let fileURL: URL?
     let segmentation: SegmentationViewModel
     let bodyComposition = BodyCompositionViewModel()
+    /// Where this scan's settings and maps persist; nil for a document without a file URL.
+    let sidecar: SidecarStore?
+    private(set) var sidecarSavedAt: Date?
+    private(set) var sidecarMapsSaved = false
+    @ObservationIgnored private var sidecarSaveTask: Task<Void, Never>?
 
     // Opens in 3D. Launch argument `-plane Axial` (etc.) picks another view, for simulator checks.
     var plane = Plane(rawValue: UserDefaults.standard.string(forKey: "plane") ?? "") ?? .render
@@ -38,12 +44,108 @@ import Observation
     var preset: ViewPreset?
     var presetTick = 0
 
-    init(volume: NiftiVolume) {
+    init(volume: NiftiVolume, fileURL: URL?) {
         self.volume = volume
-        segmentation = SegmentationViewModel(volume: volume)
+        self.fileURL = fileURL
+        segmentation = SegmentationViewModel(volume: volume, role: fileURL.map(ImageRole.inferred) ?? .other)
+        sidecar = fileURL.map(SidecarStore.init)
         slices = (0..<3).map { volume.count(axis: $0) / 2 }
         lo = volume.displayMin
         hi = volume.displayMax
+    }
+
+    // MARK: Sidecar
+
+    /// Everything the sidecar records (maps and companions are written separately).
+    var sidecarSettings: SidecarSettings {
+        SidecarSettings(
+            role: segmentation.role,
+            viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
+                          clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y]) },
+                          clipCutaway: clipCutaway, clipHighlight: clipHighlight),
+            segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
+                                shownName: segmentation.map?.name, keptName: segmentation.kept?.name),
+            water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
+            fat: segmentation.fatURL.flatMap(SidecarSettings.Companion.init),
+            body: .init(weightKg: bodyComposition.weightKg, missing: bodyComposition.missing.map(\.rawValue).sorted(),
+                        thighsMissingPercent: bodyComposition.thighsMissingPercent))
+    }
+
+    private func apply(_ s: SidecarSettings) {
+        segmentation.role = s.role
+        plane = Plane(rawValue: s.viewer.plane) ?? plane
+        if s.viewer.slices.count == 3 { slices = zip(s.viewer.slices, dims).map { max(0, min($1 - 1, $0)) } }
+        (lo, hi) = (s.viewer.lo, s.viewer.hi)
+        mirrored = s.viewer.mirrored
+        renderMode = RenderMode(rawValue: s.viewer.renderMode) ?? renderMode
+        clips = s.viewer.clips.prefix(ClipSetting.maxCount).compactMap { c in
+            ClipSetting.Plane(rawValue: c.plane).map { ClipSetting(plane: $0, pos: c.pos, flip: c.flip, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0)) }
+        }
+        clipCutaway = s.viewer.clipCutaway
+        clipHighlight = s.viewer.clipHighlight
+        segmentation.opacity = s.segmentation.opacity
+        segmentation.ghost = s.segmentation.ghost
+        bodyComposition.weightKg = s.body.weightKg
+        bodyComposition.missing = Set(s.body.missing.compactMap(BodySegment.init))
+        bodyComposition.thighsMissingPercent = s.body.thighsMissingPercent
+    }
+
+    /// On open: settings, maps and companion images from the sidecar if there is one; else
+    /// whatever lies beside the scan. Returns true when a sidecar was used.
+    func restoreFromSidecar() async -> Bool {
+        guard let sidecar, let s = sidecar.loadSettings() else { return false }
+        apply(s)
+        let volume = volume
+        let maps = await Task.detached(priority: .userInitiated) { () -> (SegmentationMap?, SegmentationMap?) in
+            (s.segmentation.shownName.flatMap { sidecar.loadMap(slot: "shown", name: $0, volume: volume) },
+             s.segmentation.keptName.flatMap { sidecar.loadMap(slot: "kept", name: $0, volume: volume) })
+        }.value
+        segmentation.restore(shown: maps.0, kept: maps.1, visible: s.segmentation.visible)
+        sidecarMapsSaved = maps.0 != nil || s.segmentation.shownName == nil
+        for (which, companion) in [(ImageRole.water, s.water), (.fat, s.fat)] {
+            guard let companion, let url = companion.resolve() else { continue }
+            await segmentation.loadCompanion(which, from: url, scoped: true, quiet: true)
+        }
+        sidecarSavedAt = (try? sidecar.settingsURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return true
+    }
+
+    /// Write the settings a moment after the last change (coalesces slider drags).
+    func scheduleSidecarSave() {
+        guard let sidecar else { return }
+        sidecarSaveTask?.cancel()
+        sidecarSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled, let self else { return }
+            let settings = sidecarSettings
+            await Task.detached { try? sidecar.save(settings) }.value
+            sidecarSavedAt = .now
+        }
+    }
+
+    /// Write the current maps (after a generation, load, swap or removal) in the background.
+    func saveSidecarMaps() {
+        guard let sidecar else { return }
+        let shown = segmentation.map, kept = segmentation.kept, voxel = volume.voxelSize
+        sidecarMapsSaved = false
+        Task { [weak self] in
+            let ok = await Task.detached(priority: .utility) { () -> Bool in
+                do {
+                    try sidecar.saveMap(shown, slot: "shown", voxelSize: voxel)
+                    try sidecar.saveMap(kept, slot: "kept", voxelSize: voxel)
+                    return true
+                } catch { return false }
+            }.value
+            self?.sidecarMapsSaved = ok
+            self?.scheduleSidecarSave() // the names in settings.json must match the files
+        }
+    }
+
+    func deleteSidecar() {
+        sidecarSaveTask?.cancel()
+        sidecar?.delete()
+        sidecarSavedAt = nil
+        sidecarMapsSaved = false
     }
 
     var dims: [Int] { [volume.dims.0, volume.dims.1, volume.dims.2] }

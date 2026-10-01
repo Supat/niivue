@@ -91,4 +91,11 @@ big[352 + 2 * 7] = UInt8(300 & 0xff); big[352 + 2 * 7 + 1] = UInt8(300 >> 8)
 let labBig = try NIfTI.parseLabels(big)
 assert(labBig.data[7] == 0 && labBig.maxLabel == 6, "label 300 → 0, max label \(labBig.maxLabel)")
 
+// 4. Writer round trip: a label map written as .nii.gz reads back identical (and Python-readable).
+print("== writer ==")
+let written = NIfTI.labelFile(lab, voxelSize: (1.3, 1.3, 1.3))
+let back = try NIfTI.parseLabels(NIfTI.gunzip(written))
+assert(back.dims == lab.dims && back.data == lab.data && back.maxLabel == lab.maxLabel, "label map survives write + read")
+if CommandLine.arguments.count > 2 { try written.write(to: URL(fileURLWithPath: CommandLine.arguments[2])); print("  wrote \(CommandLine.arguments[2])") }
+
 print("ALL CHECKS PASSED")

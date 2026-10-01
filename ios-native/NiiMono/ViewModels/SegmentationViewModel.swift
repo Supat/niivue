@@ -20,13 +20,23 @@ import Observation
     var error: String?
     var progress: Double?         // non-nil while the models run
     var stage = ""
-    /// The Dixon fat image, needed for the muscle/fat tissue classes; found beside the scan
-    /// (`<tag>_F.nii.gz`) or chosen by hand.
+    /// Which Dixon contrast the opened file is. The tissue classes need both the water and
+    /// the fat image; the one that isn't the opened file comes from beside it or by hand.
+    var role: ImageRole
+    private(set) var water: NiftiVolume?
+    private(set) var waterURL: URL?
     private(set) var fat: NiftiVolume?
     private(set) var fatURL: URL?
+    /// Water / fat as the tissue classifier needs them, from the opened file and companions.
+    var waterImage: NiftiVolume? { role == .water ? volume : water }
+    var fatImage: NiftiVolume? { role == .fat ? volume : fat }
+    var canClassifyTissue: Bool { waterImage != nil && fatImage != nil }
+    /// The networks run on the water image where there is one (what TotalSegmentator's
+    /// total_mr was used on), else on the opened file.
+    var modelInput: NiftiVolume { waterImage ?? volume }
     @ObservationIgnored nonisolated(unsafe) private var cancel: CancelFlag? // touched from deinit
 
-    init(volume: NiftiVolume) { self.volume = volume }
+    init(volume: NiftiVolume, role: ImageRole) { self.volume = volume; self.role = role }
 
     /// Closing the document must not leave a minutes-long model run going.
     deinit { cancel?.set() }
@@ -75,19 +85,29 @@ import Observation
         }
     }
 
-    func loadFat(from url: URL, scoped: Bool, quiet: Bool = false) async {
+    /// Load a companion Dixon image (must share the scan's grid).
+    func loadCompanion(_ which: ImageRole, from url: URL, scoped: Bool, quiet: Bool = false) async {
         let volume = volume
         let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume) } }.value
         switch result {
-        case .success(let v): fat = v; fatURL = url
+        case .success(let v):
+            if which == .fat { fat = v; fatURL = url } else { water = v; waterURL = url }
         case .failure(let e): if !quiet { error = e.localizedDescription }
         }
     }
 
-    /// Pick up the fat image and a tissue map lying beside the scan, without complaint if absent.
+    /// Pick up companion images and a tissue map lying beside the scan, without complaint if absent.
     func discoverSiblings(of fileURL: URL) async {
-        if fat == nil, let url = SegmentationPipeline.siblingFat(of: fileURL) { await loadFat(from: url, scoped: false, quiet: true) }
+        if role != .fat, fat == nil, let url = SegmentationPipeline.siblingDixon(of: fileURL, suffix: "F") { await loadCompanion(.fat, from: url, scoped: false, quiet: true) }
+        if role != .water, water == nil, let url = SegmentationPipeline.siblingDixon(of: fileURL, suffix: "W") { await loadCompanion(.water, from: url, scoped: false, quiet: true) }
         if map == nil, let url = SegmentationPipeline.siblingLabels(of: fileURL) { await load(from: url, scoped: false, quiet: true) }
+    }
+
+    /// Install maps read from the sidecar (no file access, no error reporting).
+    func restore(shown: SegmentationMap?, kept: SegmentationMap?, visible: [Bool]) {
+        show(shown)
+        self.kept = kept
+        if visible.count == self.visible.count { self.visible = visible }
     }
 
     // MARK: - Generating
@@ -101,11 +121,11 @@ import Observation
         progress = 0
         let flag = CancelFlag()
         cancel = flag
-        let volume = volume, fat = fat
+        let volume = volume, input = modelInput, water = waterImage, fat = fatImage
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 Result {
-                    try SegmentationPipeline.generate(volume: volume, fat: fat, progress: { stage, p in
+                    try SegmentationPipeline.generate(volume: volume, modelInput: input, water: water, fat: fat, progress: { stage, p in
                         Task { @MainActor in self?.stage = stage; self?.progress = p }
                     }, cancel: flag)
                 }

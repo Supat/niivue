@@ -7,7 +7,7 @@ import SwiftUI
 
 struct ViewerView: View {
     @State var model: ViewerViewModel
-    let fileURL: URL?
+    private var fileURL: URL? { model.fileURL }
     @State private var chromeHidden = false
     @State private var hideChromeTask: Task<Void, Never>?
     @State private var showInspector = UserDefaults.standard.bool(forKey: "inspector") // `-inspector YES` for checks
@@ -97,9 +97,15 @@ struct ViewerView: View {
             // video player; a tap brings it back. It stays while the inspector is open.
             .onAppear(perform: scheduleChromeHide)
             .task {
-                if let fileURL { await model.segmentation.discoverSiblings(of: fileURL) }
+                // Sidecar first (it also records the companion images); siblings fill any gaps.
+                let restored = await model.restoreFromSidecar()
+                if let fileURL, !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
+                    await model.segmentation.discoverSiblings(of: fileURL)
+                }
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
             }
+            .onChange(of: model.sidecarSettings) { model.scheduleSidecarSave() }
+            .onChange(of: model.segmentation.map?.id) { model.saveSidecarMaps() }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
             .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
             .onChange(of: model.plane) { scheduleChromeHide() }

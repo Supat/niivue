@@ -10,6 +10,7 @@
 import Accelerate
 import Compression
 import Foundation
+import zlib
 
 /// Voxels are reoriented to the closest RAS+ layout at load time (x → Right,
 /// y → Anterior, z → Superior), so nothing downstream deals with orientation.
@@ -354,6 +355,48 @@ enum NIfTI {
         case 64:  return (8, { b, i in Float(Double(bitPattern: swap64(b.loadUnaligned(fromByteOffset: i*8, as: UInt64.self)))) })
         default:  throw NiftiError.unsupportedDatatype(datatype)
         }
+    }
+
+    // MARK: - Writing
+
+    /// Serialise an 8-bit label map as NIfTI-1 (RAS+, sform = voxel size on the diagonal),
+    /// gzipped. Reads back through `parseLabels` unchanged.
+    static func labelFile(_ labels: LabelVolume, voxelSize: (Float, Float, Float)) -> Data {
+        var h = Data(count: 352)
+        func put<T: FixedWidthInteger>(_ off: Int, _ v: T) { var x = v.littleEndian; withUnsafeBytes(of: &x) { h.replaceSubrange(off..<off + MemoryLayout<T>.size, with: $0) } }
+        func putF(_ off: Int, _ v: Float) { put(off, v.bitPattern) }
+        put(0, Int32(348))
+        put(40, Int16(3)); put(42, Int16(labels.dims.0)); put(44, Int16(labels.dims.1)); put(46, Int16(labels.dims.2))
+        for off in stride(from: 48, through: 54, by: 2) { put(off, Int16(1)) }
+        put(70, Int16(2)); put(72, Int16(8))                       // DT_UINT8, bitpix
+        putF(76, 1); putF(80, voxelSize.0); putF(84, voxelSize.1); putF(88, voxelSize.2)
+        for off in stride(from: 92, through: 104, by: 4) { putF(off, 1) }
+        putF(108, 352); putF(112, 1)                               // vox_offset, scl_slope
+        put(123, UInt8(2))                                         // xyzt_units: mm
+        put(254, Int16(1))                                         // sform_code: scanner
+        putF(280, voxelSize.0); putF(300, voxelSize.1); putF(320, voxelSize.2) // srow diagonals
+        h.replaceSubrange(344..<348, with: [0x6e, 0x2b, 0x31, 0x00]) // "n+1\0"
+        return gzip(h + Data(labels.data))
+    }
+
+    /// gzip-wrap raw deflate from the Compression framework (header, body, CRC-32, size).
+    static func gzip(_ d: Data) -> Data {
+        var out = Data([0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0x03])
+        let cap = d.count + d.count / 100 + 1024
+        let dst = UnsafeMutablePointer<UInt8>.allocate(capacity: cap)
+        defer { dst.deallocate() }
+        let n = d.withUnsafeBytes { src in
+            compression_encode_buffer(dst, cap, src.baseAddress!.assumingMemoryBound(to: UInt8.self), d.count, nil, COMPRESSION_ZLIB)
+        }
+        if n > 0 { out.append(dst, count: n) } else { // incompressible: a stored block would be needed; fall back to level 0 via zlib
+            out.append(contentsOf: [1, UInt8(d.count & 0xff), UInt8((d.count >> 8) & 0xff), UInt8(~d.count & 0xff), UInt8((~d.count >> 8) & 0xff)])
+            out.append(d) // ponytail: single stored block, valid only below 64 KiB; deflate never fails on real volumes
+        }
+        var crc = d.withUnsafeBytes { UInt32(crc32(0, $0.baseAddress!.assumingMemoryBound(to: Bytef.self), uInt(d.count))) }.littleEndian
+        var size = UInt32(truncatingIfNeeded: d.count).littleEndian
+        withUnsafeBytes(of: &crc) { out.append(contentsOf: $0) }
+        withUnsafeBytes(of: &size) { out.append(contentsOf: $0) }
+        return out
     }
 
     // MARK: - gzip

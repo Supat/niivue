@@ -56,6 +56,20 @@ lie outside the scan (Dempster/Winter mass fractions; thighs as a percentage), c
 imaged mass against the expected share and extrapolates muscle and fat to the whole body,
 assuming the missing limbs share the imaged composition.
 
+**Image role and companions.** The Image section says what the opened file is (Water / Fat /
+Other, inferred from a `_W` / `_F` suffix) and holds the companion Dixon image(s) the tissue
+classes need: the other one of the pair, found beside the scan or chosen by hand (both for
+Other). The networks run on the water image when there is one.
+
+**Sidecar.** Everything in the inspector — view, window, clip planes, segmentation
+visibility and opacity, body-composition inputs, the image role, the companion images (as
+bookmarks) and the segmentation maps themselves — is saved to `<scan>.niimono/`
+(`settings.json`, `shown.nii.gz`, `kept.nii.gz`) beside the scan when that folder is
+writable, else under the app's Application Support keyed by the scan's name, size and date.
+Settings save 1.5 s after the last change, maps when they appear; opening the scan again
+restores all of it, so a generated segmentation is never recomputed. The Sidecar section
+shows where it lives and can delete it.
+
 **On-device segmentation.** "Generate Segmentation" in the Segmentation section runs both
 TotalSegmentator `total_mr` networks (Dataset850 organs, Dataset851 muscles/bones; nnU-Net
 3d_fullres, fold 0) as Core ML models bundled in the app (`NiiMono/Organs.mlpackage`,
@@ -82,10 +96,10 @@ Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipC
 | Folder | Contents |
 |---|---|
 | `NiiMono/App` | `NiiMonoApp` (DocumentGroup) and `MRIDocument`. |
-| `NiiMono/Models` | `NIfTI` reader + `NiftiVolume`/`LabelVolume`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` and the slice compositing; `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
+| `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` and the slice compositing; `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
 | `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs). |
 | `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
-| `NiiMono/Services` | `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
+| `NiiMono/Services` | `SidecarStore`; `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist` | Document types (`.nii`, gzip) and document-browser keys. |

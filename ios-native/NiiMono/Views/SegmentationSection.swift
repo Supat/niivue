@@ -9,7 +9,6 @@ import UniformTypeIdentifiers
 struct SegmentationSection: View {
     @Bindable var model: SegmentationViewModel
     @State private var importing = false
-    @State private var importingFat = false
 
     var body: some View {
         Section("Segmentation") {
@@ -31,13 +30,10 @@ struct SegmentationSection: View {
                     // TotalSegmentator total_mr models (non-commercial licence), run on device.
                     Button("Generate Segmentation", systemImage: "brain") { model.generate() }
                         .disabled(model.isLoading)
-                    if model.fat == nil {
-                        Text("Muscle and fat classes need the Dixon fat image; without it only organs, bones and muscle groups are labelled.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button("Choose Fat Image…", systemImage: "drop") { importingFat = true }
-                    } else {
-                        LabeledContent("Fat image", value: model.fatURL?.lastPathComponent ?? "loaded").lineLimit(1).truncationMode(.middle)
-                    }
+                    Text(model.canClassifyTissue
+                         ? "Organs, bones and muscle groups from the TotalSegmentator models, then the 14 tissue classes from the Dixon images."
+                         : "Organs, bones and muscle groups only: the tissue classes need both Dixon images (see Image above).")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 if model.isLoading { ProgressView("Loading segmentation…") }
                 if let error = model.error {
@@ -48,9 +44,6 @@ struct SegmentationSection: View {
         // ponytail: .gzip admits any .gz and .data any file; a bad pick fails with the reader's error.
         .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
             if case .success(let url) = result { Task { await model.load(from: url, scoped: true) } }
-        }
-        .fileImporter(isPresented: $importingFat, allowedContentTypes: [.nifti, .gzip, .data]) { result in
-            if case .success(let url) = result { Task { await model.loadFat(from: url, scoped: true) } }
         }
     }
 
