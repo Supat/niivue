@@ -1,0 +1,50 @@
+{
+  "fill" : {
+    "solid" : "extended-gray:0.25000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "Scan Image.png",
+          "name" : "Scan Image",
+          "position" : {
+            "scale" : 0.3,
+            "translation-in-points" : [
+              241.19999999999993,
+              78.14999999999986
+            ]
+          }
+        },
+        {
+          "glass" : true,
+          "image-name" : "Normal Image.png",
+          "name" : "Normal Image",
+          "position" : {
+            "scale" : 0.3,
+            "translation-in-points" : [
+              -210.29999999999995,
+              -28.650000000000034
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
