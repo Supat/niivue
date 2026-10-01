@@ -70,6 +70,12 @@ Settings save 1.5 s after the last change, maps when they appear; opening the sc
 restores all of it, so a generated segmentation is never recomputed. The Sidecar section
 shows where it lives and can delete it.
 
+**Files locations.** Scans kept in *On My iPad › NiiMono* or *iCloud Drive › NiiMono* (the
+app's own containers; the iCloud one comes from the CloudDocuments entitlement in
+`NiiMono.entitlements` + `NSUbiquitousContainers` in Info.plist) get their sidecar written
+right beside them; files picked from anywhere else are reachable only individually, so
+their sidecars go to the fallback location.
+
 **On-device segmentation.** "Generate Segmentation" in the Segmentation section runs both
 TotalSegmentator `total_mr` networks (Dataset850 organs, Dataset851 muscles/bones; nnU-Net
 3d_fullres, fold 0) as Core ML models bundled in the app (`NiiMono/Organs.mlpackage`,
@@ -102,7 +108,7 @@ Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipC
 | `NiiMono/Services` | `SidecarStore`; `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
-| `Info.plist` | Document types (`.nii`, gzip) and document-browser keys. |
+| `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
 | `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 
