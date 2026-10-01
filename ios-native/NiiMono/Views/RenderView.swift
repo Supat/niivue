@@ -17,6 +17,8 @@ struct RenderView: UIViewRepresentable {
     /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
     var crosshair: SIMD3<Float>? = nil
     var overlay: SegmentationOverlay? = nil
+    /// Station FOVs to outline, in voxel edges of the volume.
+    var fov: [FOVBox] = []
     var cameraClip: Float = 0 // fraction of the eye→pivot distance, 0 = off
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
@@ -165,6 +167,11 @@ struct RenderView: UIViewRepresentable {
         renderer.clipCutaway = clipCutaway
         renderer.clipHighlight = clipHighlight
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
+        // Voxel edges → box space, cut to the volume (the render stops at its faces).
+        let dims = SIMD3(Double(volume.dims.0), Double(volume.dims.1), Double(volume.dims.2))
+        renderer.fov = fov.flatMap { b in
+            [b.lo, b.hi].map { simd_float4((SIMD3<Float>(simd_clamp($0 / dims, .zero, .one)) - 0.5) * 2 * renderer.boxHalf, 0) }
+        }
         renderer.setOverlay(overlay)
         renderer.cameraClipFraction = cameraClip
         if presetTick != c.presetTick, let preset {

@@ -104,12 +104,12 @@ struct ViewerView: View {
                     if model.plane != .render {
                         Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                                isOn: $model.mirrored)
-                        // Station fields of view from the acquisition metadata (Inspector › Image).
-                        // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
-                        Toggle("Field of View", systemImage: "viewfinder",
-                               isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
-                            .disabled(model.fovBoxes.isEmpty)
                     }
+                    // Station fields of view from the acquisition metadata (Inspector › Image).
+                    // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
+                    Toggle("Field of View", systemImage: "viewfinder",
+                           isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
+                        .disabled(model.fovBoxes.isEmpty)
                     if model.plane.axis == nil { // 3D and multiplanar
                         Menu("View", systemImage: "cube") {
                             ForEach(ViewPreset.allCases) { preset in
@@ -212,7 +212,7 @@ private struct VolumeCanvas: View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: model.clips, clipCutaway: model.clipCutaway, clipHighlight: model.clipHighlight,
                    crosshair: model.plane == .multi ? model.crosshairFractions : nil,
-                   overlay: model.segmentation.overlay, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
+                   overlay: model.segmentation.overlay, fov: model.showFOV ? model.fovBoxes : [], cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)
             .overlay {
                 if model.showsProfile, let face = model.profile.faceCutout {

@@ -29,6 +29,7 @@ struct Uniforms {
     var overlayOpacity: Float
     var overlayGhost: Int32
     var cameraClip: Float
+    var fovCount: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -54,6 +55,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var clipCutaway = false
     var clipHighlight = false
     var crosshair: simd_float3? // box-space point, or nil for none
+    /// Station FOV boxes as [lo, hi] pairs in box space (see RenderView), drawn as wireframes.
+    var fov: [simd_float4] = []
     /// Fraction of the eye→pivot distance in front of which nothing is drawn (0 = off).
     var cameraClipFraction: Float = 0
 
@@ -249,6 +252,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         var u = makeUniforms(aspect: Float(size.width / max(size.height, 1)))
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
+        let boxes = fov.isEmpty ? [simd_float4.zero] : fov // the slot must be bound
+        enc.setFragmentBytes(boxes, length: boxes.count * MemoryLayout<simd_float4>.stride, index: 1)
         enc.setFragmentTexture(volumeTex, index: 0)
         enc.setFragmentTexture(cmapTex, index: 1)
         enc.setFragmentTexture(labelTex ?? noLabels, index: 2)
@@ -313,7 +318,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         clipHighlight: clipHighlight ? 1 : 0,
                         crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
                         overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0,
-                        cameraClip: cameraClipFraction * distance(aspect: aspect))
+                        cameraClip: cameraClipFraction * distance(aspect: aspect),
+                        fovCount: Int32(fov.count / 2))
     }
 }
 

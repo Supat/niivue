@@ -26,6 +26,7 @@ struct Uniforms {
     float    overlayOpacity;
     int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through
     float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
+    int      fovCount;      // station FOV boxes at buffer(1): [lo, hi] pairs in box space
 };
 
 struct VSOut {
@@ -170,6 +171,7 @@ constant float3 kClipColors[6] = {
 
 fragment float4 frag(VSOut in [[stage_in]],
                      constant Uniforms& u   [[buffer(0)]],
+                     constant float4 *fov    [[buffer(1)]],
                      texture3d<float> vol    [[texture(0)]],
                      texture1d<float> cmap   [[texture(1)]],
                      texture3d<uint> labels  [[texture(2)]],
@@ -201,6 +203,25 @@ fragment float4 frag(VSOut in [[stage_in]],
             float3 toFace = u.boxHalf - abs(ro + rd * t);
             float edge = min(toFace.x, min(toFace.y, toFace.z));
             color.rgb = mix(color.rgb, kClipColors[i], edge < 0.006 ? 0.9 : 0.16);
+        }
+    }
+    // Station FOVs: yellow wireframes, drawn on top like the plane highlight. A ray shows an
+    // edge where it enters or leaves a box within a line's width of two faces at once;
+    // edges behind the tissue surface are fainter.
+    for (int i = 0; i < u.fovCount; ++i) {
+        float3 lo = fov[2 * i].xyz, hi = fov[2 * i + 1].xyz;
+        float3 c = 0.5 * (lo + hi);
+        float2 h = intersectBox(ro - c, rd, 0.5 * (hi - lo));
+        if (h.x > h.y) { continue; }
+        for (int k = 0; k < 2; ++k) {
+            float t = k == 0 ? h.x : h.y;
+            if (t <= 0.0) { continue; }
+            float3 p = ro + rd * t;
+            float3 d = min(p - lo, hi - p);                                 // distance to each face pair
+            float mid = max(min(d.x, d.y), min(max(d.x, d.y), d.z));        // second smallest
+            float thick = 0.002 * t;
+            float a = (t > tSurface ? 0.3 : 0.85) * (1.0 - smoothstep(0.5 * thick, thick, mid));
+            color.rgb = mix(color.rgb, float3(1.0, 0.84, 0.0), a);
         }
     }
     if (u.crosshairOn != 0) {
