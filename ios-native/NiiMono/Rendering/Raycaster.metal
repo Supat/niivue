@@ -25,6 +25,7 @@ struct Uniforms {
     int      overlayOn;     // 1 = a label volume is bound at texture(2), its LUT at texture(3)
     float    overlayOpacity;
     int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through
+    float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
 };
 
 struct VSOut {
@@ -83,7 +84,10 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     }
     if (!cutaway || u.clipCount == 0) { cut1 = -1e20; } // empty interval: nothing skipped
     if (hit.x > hit.y || hit.y < 0.0) { return float4(0, 0, 0, 1); } // miss
-    float tIn = max(hit.x, 0.0);
+    // Camera clip: nothing nearer than cameraClip is drawn, so zooming into the volume
+    // looks inside instead of at the tissue pressed against the lens.
+    float tIn = max(hit.x, u.cameraClip);
+    if (tIn >= hit.y) { return float4(0, 0, 0, 1); }
     float window = max(u.dataMax - u.dataMin, 1e-6);
 
     if (u.mode == 1) {

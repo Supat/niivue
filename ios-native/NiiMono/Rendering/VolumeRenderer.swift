@@ -28,6 +28,7 @@ struct Uniforms {
     var overlayOn: Int32
     var overlayOpacity: Float
     var overlayGhost: Int32
+    var cameraClip: Float
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -53,6 +54,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var clipCutaway = false
     var clipHighlight = false
     var crosshair: simd_float3? // box-space point, or nil for none
+    /// Fraction of the eye→pivot distance in front of which nothing is drawn (0 = off).
+    var cameraClipFraction: Float = 0
 
     // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
@@ -309,7 +312,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0,
                         clipHighlight: clipHighlight ? 1 : 0,
                         crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
-                        overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0)
+                        overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0,
+                        cameraClip: cameraClipFraction * distance(aspect: aspect))
     }
 }
 

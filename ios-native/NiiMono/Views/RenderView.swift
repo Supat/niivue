@@ -17,6 +17,7 @@ struct RenderView: UIViewRepresentable {
     /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
     var crosshair: SIMD3<Float>? = nil
     var overlay: SegmentationOverlay? = nil
+    var cameraClip: Float = 0 // fraction of the eye→pivot distance, 0 = off
     /// Latest preset request; applied when `presetTick` changes.
     let preset: ViewPreset?
     let presetTick: Int
@@ -150,6 +151,7 @@ struct RenderView: UIViewRepresentable {
         renderer.clipHighlight = clipHighlight
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
         renderer.setOverlay(overlay)
+        renderer.cameraClipFraction = cameraClip
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }

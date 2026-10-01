@@ -42,6 +42,11 @@ import Observation
     var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
     /// Draw each clip plane as a tinted, outlined sheet so its position is visible.
     var clipHighlight = UserDefaults.standard.bool(forKey: "clipHighlight") // `-clipHighlight YES` for checks
+    /// Camera clip: discard everything nearer than this fraction of the way from the eye to
+    /// the orbit pivot, so zooming into the volume shows its inside instead of the tissue
+    /// pressed against the lens.
+    var cameraClip = false
+    var cameraClipDepth: Float = 0.5
     // 3D camera preset request: RenderView applies `preset` whenever `presetTick` changes.
     var preset: ViewPreset?
     var presetTick = 0
@@ -64,7 +69,8 @@ import Observation
             role: segmentation.role,
             viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
                           clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y]) },
-                          clipCutaway: clipCutaway, clipHighlight: clipHighlight),
+                          clipCutaway: clipCutaway, clipHighlight: clipHighlight,
+                          cameraClip: cameraClip, cameraClipDepth: cameraClipDepth),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
                                 shownName: segmentation.map?.name, keptName: segmentation.kept?.name),
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
@@ -85,6 +91,8 @@ import Observation
         }
         clipCutaway = s.viewer.clipCutaway
         clipHighlight = s.viewer.clipHighlight
+        cameraClip = s.viewer.cameraClip ?? false
+        cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         bodyComposition.weightKg = s.body.weightKg

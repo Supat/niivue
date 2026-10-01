@@ -27,6 +27,7 @@ struct SidecarSettings: Codable, Equatable {
         var plane: String, slices: [Int], lo: Float, hi: Float, mirrored: Bool, renderMode: String
         struct Clip: Codable, Equatable { var plane: String, pos: Float, flip: Bool, tilt: [Float] }
         var clips: [Clip], clipCutaway: Bool, clipHighlight: Bool
+        var cameraClip: Bool?, cameraClipDepth: Float? // absent in older sidecars
     }
     var viewer: Viewer
 

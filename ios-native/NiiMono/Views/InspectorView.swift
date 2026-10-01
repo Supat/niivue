@@ -28,6 +28,15 @@ struct InspectorView: View {
                     ForEach(RenderMode.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                Toggle("Clip at Camera", isOn: $model.cameraClip)
+                if model.cameraClip {
+                    VStack(alignment: .leading) {
+                        LabeledContent("Clip depth", value: "\(Int(model.cameraClipDepth * 100))% of the way to the pivot")
+                        StepSlider(value: $model.cameraClipDepth, in: 0...0.95, unit: 0.05)
+                    }
+                    Text("Nothing nearer the camera than this is drawn, so zooming into the volume shows its inside.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             ClipPlaneSections(model: model)
             SegmentationSection(model: model.segmentation)

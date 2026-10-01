@@ -34,6 +34,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | 3D: two-finger drag, or secondary-button drag | Pan |
 | 3D: pinch, or scroll | Zoom towards the fingers / pointer |
 | 3D: double-tap | Reset to the fitted starting view |
+| 3D Rendering › Clip at Camera | Nothing nearer the camera than a chosen fraction of the way to the orbit pivot is drawn, so zooming into the volume shows its inside |
 | Multi: tap a slice pane | Move the crosshair (and the other two slices) to that point |
 
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
