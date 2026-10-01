@@ -50,8 +50,11 @@ enum SegmentationPipeline {
             let seg = try OrganSegmenter(modelURL: url, library: library, classes: classes)
             return try seg.segment(modelInput, progress: { progress(stage, from + (to - from) * $0) }, isCancelled: { cancel.isSet })
         }
+        MemoryLog.mark("pipeline: start")
         let organs = try run("Organs", classes: TotalMR.organCount + 1, stage: "organs", from: 0, to: 0.45)
+        MemoryLog.mark("pipeline: organs done")
         let muscles = try run("Muscles", classes: TotalMR.names.count - TotalMR.organCount + 1, stage: "muscles and bones", from: 0.45, to: 0.9)
+        MemoryLog.mark("pipeline: muscles done")
         // Merge like TotalSegmentator: the later part overwrites where both claim a voxel.
         var merged = organs.data
         muscles.data.withUnsafeBufferPointer { m in
@@ -61,10 +64,11 @@ enum SegmentationPipeline {
         }
         let all = LabelVolume(dims: volume.dims, data: merged, maxLabel: TotalMR.names.count)
         let structures = SegmentationMap(labels: all, name: "structures (total_mr)", volume: volume)
-        guard let water, let fat else { return (structures, nil) }
+        guard let water, let fat else { MemoryLog.mark("pipeline: done (structures only)"); return (structures, nil) }
         progress("tissue classes", 0.9)
         let tissue = try TissueClassifier.classify(water: water, fat: fat, labels: all, library: library,
                                                    progress: { progress("tissue classes", 0.9 + 0.1 * $0) })
+        MemoryLog.mark("pipeline: done")
         return (SegmentationMap(labels: tissue, name: "tissues (generated)", volume: volume), structures)
     }
 

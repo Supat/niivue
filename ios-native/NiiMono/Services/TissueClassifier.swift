@@ -202,6 +202,7 @@ enum TissueClassifier {
         var body = Mask(nx: nx, ny: ny, nz: nz) { W[$0] + F[$0] > 0.12 * s99 }
         body = morph.open(body, 2).holesFilled()
         progress(0.1)
+        MemoryLog.mark("tissue: body mask")
 
         // Skeletal-muscle candidate: inside the eroded body (drops the water-bright skin),
         // water-dominant (fat fraction < 0.5 ⇔ F < W), above noise.
@@ -217,10 +218,12 @@ enum TissueClassifier {
         let cavHalf = morph.close(Mask(nx: nx, ny: ny, nz: nz) { cavityLabels.contains(Int(L[$0])) }.downsampled2(), 14)
         let cav = cavHalf.upsampled2(nx: nx, ny: ny, nz: nz).holesFilled()
         progress(0.35)
+        MemoryLog.mark("tissue: exclusion + cavity")
         musc = musc.minus(exclude).minus(cav).minus(Mask(nx: nx, ny: ny, nz: nz) { boneLabels.contains(Int(L[$0])) })
         musc = musc | Mask(nx: nx, ny: ny, nz: nz) { muscleLabels.contains(Int(L[$0])) && F[$0] < W[$0] }
         musc = morph.open(musc, 1).withoutComponents(smallerThan: Int(2.0 / voxelML))
         progress(0.55)
+        MemoryLog.mark("tissue: muscle")
 
         // Organ / bone / vessel classes from the labels (later groups overwrite earlier).
         let groups: [(Int, Set<Int>)] = [
@@ -256,6 +259,7 @@ enum TissueClassifier {
         // Drop hull jumps thinner than ~20 mm along S–I (station seams).
         interior = interior.openedAlongZ(length: 15)
         progress(0.9)
+        MemoryLog.mark("tissue: hull")
         let visc = fat & interior
         for i in 0..<tissue.count {
             if fat.v[i] == 1 { tissue[i] = visc.v[i] == 1 ? 3 : 2 }

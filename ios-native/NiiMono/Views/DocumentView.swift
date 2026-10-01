@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct DocumentView: View {
-    let data: Data
+    let document: MRIDocument
     let fileURL: URL?
     @State private var result: Result<NiftiVolume, Error>?
     @Environment(\.colorScheme) private var colorScheme
@@ -29,10 +29,11 @@ struct DocumentView: View {
         }
         .environment(\.colorScheme, result == nil ? .dark : colorScheme)
         .task {
-            let data = data
+            guard result == nil, let data = document.data else { return }
             result = await Task.detached(priority: .userInitiated) {
                 Result { try NIfTI.parse(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data) }
             }.value
+            document.data = nil // decoded: the file's bytes are no longer needed
         }
     }
 }

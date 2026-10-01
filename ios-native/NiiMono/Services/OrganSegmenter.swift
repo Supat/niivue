@@ -67,8 +67,10 @@ final class OrganSegmenter {
         throw SegmenterError.simulator
         #endif
         let P = Self.patch
-        // 1. Resample to 1.5 mm.
-        let (rd, resampled) = Self.resample(volume, to: Self.spacing)
+        MemoryLog.mark("segment: start")
+        // 1. Resample to 1.5 mm. (Intermediates are released as soon as the next stage has
+        // consumed them: a whole-body scan is ~165 MB per copy at 1.5 mm.)
+        var (rd, resampled) = Self.resample(volume, to: Self.spacing)
         progress(0.03)
         // 2. Crop to the non-zero bounding box.
         let (lo, hi) = Self.nonZeroBox(resampled, dims: rd)
@@ -81,6 +83,7 @@ final class OrganSegmenter {
                 d.baseAddress!.advanced(by: dst).update(from: s.baseAddress!.advanced(by: src), count: cd.x)
             } }
         } }
+        resampled = []
         // 3. Z-score over the cropped image.
         var mean: Float = 0, meanSq: Float = 0
         vDSP_meanv(cropped, 1, &mean, vDSP_Length(cropped.count))
@@ -99,7 +102,9 @@ final class OrganSegmenter {
                 d.baseAddress!.advanced(by: dst).update(from: s.baseAddress!.advanced(by: src), count: cd.x)
             } }
         } }
+        cropped = []
         progress(0.05)
+        MemoryLog.mark("segment: padded input ready (\(pd.x)×\(pd.y)×\(pd.z))")
 
         // 5. Sliding window over the padded image.
         let stepsZ = Self.steps(size: pd.z, patch: P.z), stepsY = Self.steps(size: pd.y, patch: P.y), stepsX = Self.steps(size: pd.x, patch: P.x)
@@ -110,6 +115,7 @@ final class OrganSegmenter {
               let gaussBuf = device.makeBuffer(bytes: Self.gaussian(), length: P.z * P.y * P.x * 4, options: .storageModeShared),
               let labelsBuf = device.makeBuffer(length: pd.x * pd.y * pd.z, options: .storageModeShared) else { throw SegmenterError.noMetal }
         memset(ring.contents(), 0, ring.length)
+        MemoryLog.mark("segment: GPU buffers allocated")
         let input = try MLMultiArray(shape: [1, 1, P.z, P.y, P.x] as [NSNumber], dataType: .float32)
         let inPtr = input.dataPointer.assumingMemoryBound(to: Float.self)
         var done = 0
@@ -136,6 +142,7 @@ final class OrganSegmenter {
                     enc.setBuffer(gaussBuf, offset: 0, index: 2); enc.setBytes(&ap, length: MemoryLayout<AccParams>.stride, index: 3)
                 }
                 done += 1
+                if done == 1 { MemoryLog.mark("segment: after first patch") }
                 progress(0.05 + 0.9 * Double(done) / Double(total))
             } }
             // Slabs no later patch touches are final: up to the next z step, or the window end.
@@ -171,6 +178,7 @@ final class OrganSegmenter {
             }
         }
         progress(1)
+        MemoryLog.mark("segment: done")
         return LabelVolume(dims: volume.dims, data: out, maxLabel: Int(maxLabel))
     }
 
