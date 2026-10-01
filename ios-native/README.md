@@ -71,6 +71,11 @@ Settings save 1.5 s after the last change, maps when they appear; opening the sc
 restores all of it, so a generated segmentation is never recomputed. The Sidecar section
 shows where it lives and can delete it.
 
+**Launch screen.** The screen in front of the document browser offers "Open <last scan>",
+a one-tap return to the last file opened (a security-scoped bookmark; the file is handed to
+the system, which routes it back into the app). The browser itself is the system's and runs
+out of process on iPadOS 26, so its folder can't be steered from the app.
+
 **Files locations.** Scans kept in *On My iPad › NiiMono* or *iCloud Drive › NiiMono* (the
 app's own containers; the iCloud one comes from the CloudDocuments entitlement in
 `NiiMono.entitlements` + `NSUbiquitousContainers` in Info.plist) get their sidecar written

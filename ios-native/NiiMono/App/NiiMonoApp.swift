@@ -11,6 +11,59 @@ struct NiiMonoApp: App {
     var body: some Scene {
         DocumentGroup(viewing: MRIDocument.self) { file in
             DocumentView(document: file.document, fileURL: file.fileURL)
+                .onAppear { LastLocation.remember(file.fileURL) }
+        }
+        // The launch screen in front of the system document browser. The browser itself
+        // is out of process on iPadOS 26 (no UIDocumentBrowserViewController to steer:
+        // revealDocument(at:) was tried and there is nothing to call it on), so the way
+        // back to the last scan is a one-tap action here.
+        DocumentGroupLaunchScene("NiiMono") {
+            OpenLastScanButton()
+        } background: {
+            Color.black
+        }
+    }
+}
+
+/// The last opened scan, so it can be reopened with one tap from the launch screen.
+enum LastLocation {
+    private static let key = "lastOpenedBookmark"
+    private static let nameKey = "lastOpenedName"
+
+    static func remember(_ url: URL?) {
+        guard let url else { return }
+        // Documents from other providers are only reachable inside their security scope.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            UserDefaults.standard.set(try url.bookmarkData(), forKey: key)
+            UserDefaults.standard.set(url.lastPathComponent, forKey: nameKey)
+        } catch {
+            MemoryLog.log.notice("last location: bookmark failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    static var name: String? { UserDefaults.standard.string(forKey: nameKey) }
+
+    static var url: URL? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        var stale = false
+        return try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+}
+
+private struct OpenLastScanButton: View {
+    var body: some View {
+        if let url = LastLocation.url, FileManager.default.fileExists(atPath: url.path) {
+            // SwiftUI's openDocument action is macOS-only; handing the file URL to the system
+            // routes it back into this app's DocumentGroup, as opening it from Files would.
+            Button("Open \(LastLocation.name ?? url.lastPathComponent)", systemImage: "clock.arrow.circlepath") {
+                UIApplication.shared.open(url)
+            }
+        } else {
+            // An actions block with nothing in it falls back to a "Create Document" button,
+            // which a viewer has no use for.
+            Text("Open a scan from the browser below").foregroundStyle(.secondary)
         }
     }
 }
