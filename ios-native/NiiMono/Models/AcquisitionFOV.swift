@@ -21,38 +21,48 @@ enum AcquisitionFOV {
         case notFound, noGeometry, otherGrid
         var errorDescription: String? {
             switch self {
-            case .notFound: return "No <subject>_metadata.json beside the scan (or the app can't read that folder)."
+            case .notFound: return "No metadata in the file, and no readable *_metadata.json beside it."
             case .noGeometry: return "The metadata has no per-station placement for this scan."
             case .otherGrid: return "The metadata describes a different grid than this file."
             }
         }
     }
 
-    /// Boxes from the metadata JSON beside the scan, or from `extra` (a copy kept in the sidecar).
+    /// Boxes from the metadata embedded in the file, else any `*_metadata.json` beside the scan
+    /// that places stations on this grid, else `extra` (a copy kept in the sidecar).
     static func boxes(for fileURL: URL, volume: NiftiVolume, extra: URL? = nil) -> Result<[FOVBox], Failure> {
-        let dir = fileURL.deletingLastPathComponent()
-        // `S_S_W.nii.gz` → tags ["S_S_W", "S_S"]; the metadata is per subject and its placement
-        // entries are keyed by the stitched volume's tag.
-        let tags = SegmentationPipeline.tags(of: fileURL)
-        let candidates = tags.reversed().map { dir.appendingPathComponent("\($0)_metadata.json") } + [extra].compactMap { $0 }
+        // `S_S_W.nii.gz` → tags ["S_S_W", "S_S"]; placement entries are keyed by the stitched
+        // volume's tag, but the grid check is what decides, so a renamed scan still matches.
+        let keys = Array(SegmentationPipeline.tags(of: fileURL).reversed())
         var failure = Failure.notFound
-        for url in candidates {
-            guard let data = read(url) else { continue }
-            switch boxes(json: data, keys: tags.reversed(), volume: volume) {
-            case .success(let b): return .success(b)
-            case .failure(let f): failure = f
+        func attempt(_ data: Data?) -> [FOVBox]? {
+            guard let data else { return nil }
+            switch boxes(json: data, keys: keys, volume: volume) {
+            case .success(let b): return b
+            case .failure(let f): failure = f; return nil
             }
         }
-        return .failure(failure)
+        // Embedded first: a file opened from the browser is readable when its folder isn't.
+        if let b = attempt(volume.embeddedJSON) { return .success(b) }
+        let dir = fileURL.deletingLastPathComponent(), fm = FileManager.default
+        let named = keys.map { "\($0)_metadata.json" }
+        // iCloud lists a file that isn't downloaded as `.name.icloud`.
+        let listed = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).map {
+            $0.hasPrefix(".") && $0.hasSuffix(".icloud") ? String($0.dropFirst().dropLast(7)) : $0
+        }.filter { $0.hasSuffix("_metadata.json") }.sorted()
+        // A session's metadata places only its own stations on the whole-body grid, so of the
+        // files that match, the one with the most stations wins (the scan's own name on a tie).
+        var tried = Set<String>(), best = [FOVBox]()
+        for name in named + listed where tried.insert(name).inserted {
+            if let b = attempt(read(dir.appendingPathComponent(name))), b.count > best.count { best = b }
+        }
+        if best.isEmpty, let extra, let b = attempt(read(extra)) { best = b }
+        return best.isEmpty ? .failure(failure) : .success(best)
     }
 
     static func boxes(json data: Data, keys: [String], volume: NiftiVolume) -> Result<[FOVBox], Failure> {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let stations = json["stations"] as? [[String: Any]] else { return .failure(.noGeometry) }
-        // Any placement keyed by one of the tags, else the only one there is.
-        var keys = keys
-        if let any = stations.lazy.compactMap({ (($0["geometry"] as? [String: Any])?["placement_in_stitched_volumes"] as? [String: Any])?.keys }).first,
-           any.count == 1, let only = any.first { keys.append(only) }
         let found = boxes(stations: stations, keys: keys, volume: volume)
         if !found.isEmpty { return .success(found) }
         let hasGeometry = stations.contains { ($0["geometry"] as? [String: Any])?["placement_in_stitched_volumes"] != nil }
@@ -61,7 +71,9 @@ enum AcquisitionFOV {
 
     /// Read a file that may be an iCloud placeholder: ask for the download and wait briefly.
     private static func read(_ url: URL) -> Data? {
-        if let d = try? Data(contentsOf: url) { return d }
+        do { return try Data(contentsOf: url) } catch {
+            MemoryLog.log.notice("fov: \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         let fm = FileManager.default
         guard (try? fm.startDownloadingUbiquitousItem(at: url)) != nil else { return nil }
         for _ in 0..<20 { // up to ~10 s
@@ -79,11 +91,12 @@ enum AcquisitionFOV {
             let role = s["role"] as? String ?? "", step = (s["step"] as? Int) ?? 0
             guard seen.insert("\(role)#\(step)").inserted,
                   let placements = (s["geometry"] as? [String: Any])?["placement_in_stitched_volumes"] as? [String: Any],
-                  let placement = keys.lazy.compactMap({ placements[$0] as? [String: Any] }).first,
-                  let edges = placement["voxel_edges_xyz"] as? [String: Any],
+                  // The placement on this file's grid: by tag first, then whichever matches.
+                  let edges = (keys + placements.keys.sorted()).lazy
+                      .compactMap({ (placements[$0] as? [String: Any])?["voxel_edges_xyz"] as? [String: Any] })
+                      .first(where: { ($0["volume_size_xyz"] as? [Int]) == fileDims }),
                   let mn = (edges["min"] as? [NSNumber])?.map(\.doubleValue), mn.count == 3,
-                  let mx = (edges["max"] as? [NSNumber])?.map(\.doubleValue), mx.count == 3,
-                  (edges["volume_size_xyz"] as? [Int]) == fileDims // same grid as the opened file
+                  let mx = (edges["max"] as? [NSNumber])?.map(\.doubleValue), mx.count == 3
             else { continue }
             // File index order → RAS: permute, and mirror the range on flipped axes.
             var lo = SIMD3<Double>(), hi = SIMD3<Double>()

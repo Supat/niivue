@@ -29,6 +29,9 @@ struct NiftiVolume: @unchecked Sendable {
     /// the file (e.g. FOV boxes in a metadata JSON) be placed on the displayed grid.
     var filePerm = [0, 1, 2]
     var fileFlip = [false, false, false]
+    /// A JSON document carried in the header extension (the stitching pipeline embeds its
+    /// acquisition metadata there), so it travels with the file.
+    var embeddedJSON: Data?
 
     var voxelCount: Int { dims.0 * dims.1 * dims.2 }
 
@@ -147,6 +150,22 @@ enum NiftiError: LocalizedError, CustomStringConvertible {
 }
 
 enum NIfTI {
+    /// The first header extension whose body is a JSON object (8-byte esize/ecode, then text).
+    static func embeddedJSON(in d: Data, voxOffset: Int) -> Data? {
+        let b = d.startIndex
+        guard d.count >= 360, d[b + 348] != 0, voxOffset <= d.count else { return nil }
+        var at = 352
+        while at + 8 <= voxOffset {
+            // ponytail: esize read little-endian; a big-endian file just finds no JSON.
+            let esize = (0..<4).reduce(0) { $0 | Int(d[b + at + $1]) << (8 * $1) }
+            guard esize >= 8, at + esize <= voxOffset else { return nil }
+            let body = d[b + at + 8..<b + at + esize]
+            if body.first == UInt8(ascii: "{"), let end = body.lastIndex(of: UInt8(ascii: "}")) { return Data(body[...end]) }
+            at += esize
+        }
+        return nil
+    }
+
 
     /// Load a NIfTI-1 volume from a .nii or .nii.gz file.
     static func load(contentsOf url: URL) throws -> NiftiVolume {
@@ -369,7 +388,8 @@ enum NIfTI {
             dataMin: lo, dataMax: hi,
             displayMin: winLo, displayMax: winHi,
             subject: SubjectInfo(headerOf: d, voxOffset: L.voxOffset),
-            filePerm: L.perm, fileFlip: L.flip
+            filePerm: L.perm, fileFlip: L.flip,
+            embeddedJSON: embeddedJSON(in: d, voxOffset: L.voxOffset)
         )
     }
 
