@@ -27,6 +27,7 @@ struct Uniforms {
     int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through
     float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
     int      fovCount;      // station FOV boxes at buffer(1): [lo, hi] pairs in box space
+    float    crosshairStep; // box-space spacing of the crosshair's scale ticks (0 = none)
 };
 
 struct VSOut {
@@ -254,8 +255,14 @@ fragment float4 frag(VSOut in [[stage_in]],
             float3 q = u.crosshair + e * s;
             if (t <= 0.0 || any(abs(q) > u.boxHalf + 1e-4)) { continue; }
             float dist = abs(dot(w, n)) / sqrt(nn), thick = 0.0015 * t;
+            // Scale ticks every crosshairStep out from the point: short, wider bands.
+            float reach = thick, strength = 0.45;
+            if (u.crosshairStep > 0.0) {
+                float k = round(s / u.crosshairStep);
+                if (k != 0.0 && abs(s - k * u.crosshairStep) < 1.2 * thick) { reach = 6.0 * thick; strength = 0.8; }
+            }
             float3 tint = t > tSurface ? green : red;
-            color.rgb = mix(color.rgb, tint, 0.45 * (1.0 - smoothstep(0.5 * thick, thick, dist)));
+            color.rgb = mix(color.rgb, tint, strength * (1.0 - smoothstep(0.5 * reach, reach, dist)));
         }
     }
     return color;

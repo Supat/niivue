@@ -30,6 +30,7 @@ struct RenderView: UIViewRepresentable {
         var onTap: () -> Void = {}
         var presetTick = 0
         let gizmo = OrientationGizmo()
+        let scaleBar = ScaleBarView()
         let orbit = UIPanGestureRecognizer()
         let mousePan = UIPanGestureRecognizer()
         let pinch = UIPinchGestureRecognizer()
@@ -142,6 +143,13 @@ struct RenderView: UIViewRepresentable {
             v.addGestureRecognizer(g)
         }
 
+        // Scale bar beside the orientation indicator, measured at the orbit pivot.
+        c.scaleBar.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(c.scaleBar)
+        c.renderer?.onDraw = { [weak c, weak v] in
+            guard let c, let v, let r = c.renderer else { return }
+            c.scaleBar.show(r.scaleStep(size: v.bounds.size))
+        }
         c.gizmo.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(c.gizmo)
         NSLayoutConstraint.activate([
@@ -149,6 +157,10 @@ struct RenderView: UIViewRepresentable {
             c.gizmo.bottomAnchor.constraint(equalTo: v.safeAreaLayoutGuide.bottomAnchor, constant: -12),
             c.gizmo.widthAnchor.constraint(equalToConstant: 76),
             c.gizmo.heightAnchor.constraint(equalToConstant: 76),
+            c.scaleBar.leadingAnchor.constraint(equalTo: c.gizmo.trailingAnchor, constant: 8),
+            c.scaleBar.centerYAnchor.constraint(equalTo: c.gizmo.centerYAnchor, constant: 8),
+            c.scaleBar.widthAnchor.constraint(equalToConstant: 130),
+            c.scaleBar.heightAnchor.constraint(equalToConstant: 24),
         ])
         host.renderer = c.renderer
         return host
@@ -175,6 +187,7 @@ struct RenderView: UIViewRepresentable {
         }
         renderer.setOverlay(overlay)
         renderer.cameraClipFraction = cameraClip
+        renderer.pointScale = view.contentScaleFactor
         if presetTick != c.presetTick, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }

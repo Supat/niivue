@@ -354,12 +354,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     /// current zoom, in mm and on-screen points. The crosshair ticks use the same step.
     private var scaleStep: (mm: CGFloat, pt: CGFloat)? {
         let f = imageView.frame
-        guard f.width > 0, extent.width > 0 else { return nil }
-        let ptPerMM = f.width / extent.width
-        let target = 80 / ptPerMM
-        let decade = pow(10, floor(log10(target)))
-        let mm = [5, 2, 1].map { $0 * decade }.first { $0 <= target } ?? decade
-        return (mm, (mm * ptPerMM).rounded())
+        guard extent.width > 0 else { return nil }
+        return ScaleStep.nice(pointsPerMM: f.width / extent.width)
     }
 
     /// A bar of a round length (1, 2 or 5 × 10ⁿ mm) about 80 pt long at the current zoom,
@@ -374,7 +370,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         path.move(to: CGPoint(x: right - length, y: y - tick)); path.addLine(to: CGPoint(x: right - length, y: y))
         path.addLine(to: CGPoint(x: right, y: y)); path.addLine(to: CGPoint(x: right, y: y - tick))
         scaleBar.path = path.cgPath
-        scaleLabel.string = String(format: "%g cm", mm / 10)
+        scaleLabel.string = ScaleStep.label(mm: mm)
         scaleLabel.isHidden = false
         scaleLabel.frame = CGRect(x: right - length / 2 - 40, y: y - tick - 16, width: 80, height: 14)
     }

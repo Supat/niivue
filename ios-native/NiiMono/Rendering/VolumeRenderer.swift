@@ -30,6 +30,7 @@ struct Uniforms {
     var overlayGhost: Int32
     var cameraClip: Float
     var fovCount: Int32
+    var crosshairStep: Float
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -46,6 +47,12 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var overlayOpacity: Float = 0.65
     var overlayGhost = false
     let boxHalf: simd_float3
+    /// Millimetres per box-space unit (the box's longest side is 2 units).
+    let mmPerUnit: Float
+    /// Points per drawable pixel, so the scale can be measured in points.
+    var pointScale: CGFloat = 1
+    /// Called after each on-screen frame, for overlays that follow the camera.
+    var onDraw: (() -> Void)?
 
     // Display window, normalized to the volume's full intensity range (0...1).
     var windowLo: Float = 0
@@ -144,6 +151,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                                Float(ny) * volume.voxelSize.1,
                                Float(nz) * volume.voxelSize.2)
         boxHalf = 0.5 * phys / max(phys.x, max(phys.y, phys.z))
+        mmPerUnit = max(phys.x, max(phys.y, phys.z)) / 2
         super.init()
     }
 
@@ -245,11 +253,14 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         encode(into: rpd, size: view.drawableSize, on: cmd)
         cmd.present(drawable)
         cmd.commit()
+        onDraw?()
     }
 
     private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, on cmd: MTLCommandBuffer) {
         guard let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
         var u = makeUniforms(aspect: Float(size.width / max(size.height, 1)))
+        u.crosshairStep = scaleStep(size: CGSize(width: size.width / max(pointScale, 1), height: size.height / max(pointScale, 1)))
+            .map { Float($0.mm) / mmPerUnit } ?? 0
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
         let boxes = fov.isEmpty ? [simd_float4.zero] : fov // the slot must be bound
@@ -319,7 +330,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
                         overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0,
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
-                        fovCount: Int32(fov.count / 2))
+                        fovCount: Int32(fov.count / 2), crosshairStep: 0)
     }
 }
 
@@ -330,6 +341,14 @@ extension VolumeRenderer {
     }
 
     fileprivate func distance(aspect: Float) -> Float { fitDistance(aspect: aspect) / zoom }
+
+    /// The scale at the orbit pivot (perspective: nearer is larger, farther smaller) for a
+    /// view of `size` points, as the round step shared by the scale bar and crosshair ticks.
+    func scaleStep(size: CGSize) -> (mm: CGFloat, pt: CGFloat)? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        let units = 2 * distance(aspect: Float(size.width / size.height)) * glideScale * tan(Self.fovY / 2) // box units across the height
+        return ScaleStep.nice(pointsPerMM: size.height / CGFloat(units * mmPerUnit))
+    }
 
     /// Screen-right, screen-up and towards-the-viewer unit vectors in volume (RAS) space.
     var basis: (right: simd_float3, up: simd_float3, toward: simd_float3) {
