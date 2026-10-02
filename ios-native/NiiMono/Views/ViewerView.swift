@@ -110,6 +110,7 @@ struct ViewerView: View {
                     Toggle("Field of View", systemImage: "viewfinder",
                            isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
                         .disabled(model.fovBoxes.isEmpty)
+                    Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $model.showCrosshair)
                     if model.plane.axis == nil { // 3D and multiplanar
                         Menu("View", systemImage: "cube") {
                             ForEach(ViewPreset.allCases) { preset in
@@ -177,17 +178,7 @@ private struct VolumeCanvas: View {
             }
             .background(Color(white: 0.25))
             .overlay(alignment: .bottomTrailing) {
-                Button(model.crosshairLocked ? "Unlock Crosshair" : "Lock Crosshair",
-                       systemImage: model.crosshairLocked ? "lock.fill" : "lock.open") {
-                    onInteract()
-                    model.crosshairLocked.toggle()
-                }
-                .labelStyle(.iconOnly)
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(model.crosshairLocked ? 0.7 : 0.35))
-                .frame(width: 44, height: 44) // hit target; the glyph stays small
-                .contentShape(.rect)
-                .padding(8)
+                if model.showCrosshair { lockButton }
             }
         default:
             let axis = model.plane.axis!
@@ -221,10 +212,25 @@ private struct VolumeCanvas: View {
         }
     }
 
+    /// Multi view: stops taps on a slice from moving the crosshair.
+    private var lockButton: some View {
+        Button(model.crosshairLocked ? "Unlock Crosshair" : "Lock Crosshair",
+               systemImage: model.crosshairLocked ? "lock.fill" : "lock.open") {
+            onInteract()
+            model.crosshairLocked.toggle()
+        }
+        .labelStyle(.iconOnly)
+        .font(.footnote)
+        .foregroundStyle(.white.opacity(model.crosshairLocked ? 0.7 : 0.35))
+        .frame(width: 44, height: 44) // hit target; the glyph stays small
+        .contentShape(.rect)
+        .padding(8)
+    }
+
     private var render: some View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: model.clips, clipCutaway: model.clipCutaway, clipHighlight: model.clipHighlight,
-                   crosshair: model.plane == .multi ? model.crosshairFractions : nil,
+                   crosshair: model.showCrosshair ? model.crosshairFractions : nil,
                    overlay: model.segmentation.overlay, fov: model.visibleFOVBoxes, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)
             .overlay {
@@ -269,9 +275,11 @@ private struct VolumeCanvas: View {
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,
                          centre: multi ? model.panCentre(in: axis) : nil,
                          onPan: multi ? { model.setPanCentre($0, in: axis); model.multiZoomAnimated = $1 } : nil,
-                         crosshair: multi ? model.crosshair(in: axis) : model.showsSideBySide ? model.photoMarker : nil,
+                         // Side by side: a marker dropped on the photo takes the crosshair's place.
+                         crosshair: !multi && model.showsSideBySide && model.photoMarker != nil ? model.photoMarker
+                             : model.showCrosshair ? model.crosshair(in: axis) : nil,
                          fov: model.fovRects(in: axis),
-                         onLocate: multi && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
+                         onLocate: multi && model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          scaleBarInset: multi ? 0 : labelInset,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }

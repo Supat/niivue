@@ -43,6 +43,10 @@ import Observation
     var showFOV = UserDefaults.standard.bool(forKey: "showFOV") { // `-showFOV YES` for checks
         didSet { UserDefaults.standard.set(showFOV, forKey: "showFOV") }
     }
+    /// Draw the crosshair (the current slice positions) in every slice and 3D view.
+    var showCrosshair = UserDefaults.standard.object(forKey: "showCrosshair") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showCrosshair, forKey: "showCrosshair") }
+    }
     /// Multi view: taps on a slice leave the crosshair where it is.
     var crosshairLocked = UserDefaults.standard.bool(forKey: "crosshairLocked") {
         didSet { UserDefaults.standard.set(crosshairLocked, forKey: "crosshairLocked") }
