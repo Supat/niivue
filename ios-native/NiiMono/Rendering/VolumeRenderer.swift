@@ -59,6 +59,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var fov: [simd_float4] = []
     /// Fraction of the eye→pivot distance in front of which nothing is drawn (0 = off).
     var cameraClipFraction: Float = 0
+    /// Called after each on-screen frame, for overlays that follow the camera.
+    var onDraw: (() -> Void)?
 
     // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
@@ -245,6 +247,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         encode(into: rpd, size: view.drawableSize, on: cmd)
         cmd.present(drawable)
         cmd.commit()
+        onDraw?()
     }
 
     private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, on cmd: MTLCommandBuffer) {
@@ -287,7 +290,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 
-    private func makeUniforms(aspect: Float) -> Uniforms {
+    /// The camera for a view of `aspect` (width / height): position and view-projection.
+    private func camera(aspect: Float) -> (eye: simd_float3, viewProj: simd_float4x4) {
         let eye = target + distance(aspect: aspect) * glideScale * Self.direction(yaw: yaw, pitch: pitch)
         let view = lookAt(eye: eye, center: target, up: simd_float3(0, 0, 1))
         var proj = perspective(fovy: Self.fovY, aspect: aspect, near: 0.05, far: 100)
@@ -296,7 +300,23 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             slide.columns.3.x = glideShift
             proj = slide * proj
         }
-        let invVP = (proj * view).inverse
+        return (eye, proj * view)
+    }
+
+    /// Where a box-space point appears in a view of `size` (any unit, y down), and how far it
+    /// is from the camera; nil behind the camera.
+    func project(_ p: simd_float3, in size: CGSize) -> (point: CGPoint, depth: Float)? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        let cam = camera(aspect: Float(size.width / size.height))
+        let c = cam.viewProj * simd_float4(p, 1)
+        guard c.w > 1e-4 else { return nil }
+        return (CGPoint(x: CGFloat((c.x / c.w + 1) / 2) * size.width, y: CGFloat((1 - c.y / c.w) / 2) * size.height),
+                simd_distance(p, cam.eye))
+    }
+
+    private func makeUniforms(aspect: Float) -> Uniforms {
+        let (eye, viewProj) = camera(aspect: aspect)
+        let invVP = viewProj.inverse
         // Clip plane normal: the chosen axis, tilted about the other two. Depth runs along
         // the normal across the box's full extent in that direction, so the slider always
         // sweeps the whole volume whatever the tilt. Flip = same plane, opposite side kept.
