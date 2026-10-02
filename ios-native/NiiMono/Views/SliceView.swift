@@ -390,10 +390,6 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 
 private func - (a: CGPoint, b: CGPoint) -> CGPoint { CGPoint(x: a.x - b.x, y: a.y - b.y) }
 
-extension CGPoint: @retroactive Hashable {
-    public func hash(into h: inout Hasher) { h.combine(x); h.combine(y) }
-}
-
 extension UIColor {
     convenience init(_ rgb: SIMD3<Float>) { self.init(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1) }
 }
