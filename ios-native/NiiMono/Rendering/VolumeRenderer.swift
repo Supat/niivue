@@ -47,7 +47,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var overlayOpacity: Float = 0.65
     var overlayGhost = false
     let boxHalf: simd_float3
-    /// Millimetres per box-space unit (the box's longest side is 2 units).
+    /// Millimetres per box-space unit (the box's longest side is 1 unit: boxHalf ≤ 0.5).
     let mmPerUnit: Float
     /// Points per drawable pixel, so the scale can be measured in points.
     var pointScale: CGFloat = 1
@@ -151,7 +151,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                                Float(ny) * volume.voxelSize.1,
                                Float(nz) * volume.voxelSize.2)
         boxHalf = 0.5 * phys / max(phys.x, max(phys.y, phys.z))
-        mmPerUnit = max(phys.x, max(phys.y, phys.z)) / 2
+        mmPerUnit = max(phys.x, max(phys.y, phys.z))
         super.init()
     }
 
