@@ -179,11 +179,16 @@ private struct VolumeCanvas: View {
             }
             .background(Color(white: 0.25))
             .overlay(alignment: .bottomTrailing) {
-                if model.showCrosshair { lockButton }
+                if model.showCrosshair { lockButton(bottom: 0) }
             }
         default:
             let axis = model.plane.axis!
-            let pane = slice(axis).overlay { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: labelInset) }
+            let pane = slice(axis)
+                .overlay { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: labelInset) }
+                .overlay(alignment: .bottomTrailing) {
+                    // Above the scale bar, which sits in this corner.
+                    if model.showCrosshair && !model.showsSideBySide { lockButton(bottom: labelInset + 32) }
+                }
             if model.showsSideBySide, let view = model.pairedProfileView, let photo = model.profile.photos[view] {
                 // Slice | its profile photo, the photo placed to line up with the slice.
                 let e = model.volume.sliceExtent(axis: axis)
@@ -213,8 +218,8 @@ private struct VolumeCanvas: View {
         }
     }
 
-    /// Multi view: stops taps on a slice from moving the crosshair.
-    private var lockButton: some View {
+    /// Stops taps on a slice from moving the crosshair.
+    private func lockButton(bottom: CGFloat) -> some View {
         Button(model.crosshairLocked ? "Unlock Crosshair" : "Lock Crosshair",
                systemImage: model.crosshairLocked ? "lock.fill" : "lock.open") {
             onInteract()
@@ -226,6 +231,7 @@ private struct VolumeCanvas: View {
         .frame(width: 44, height: 44) // hit target; the glyph stays small
         .contentShape(.rect)
         .padding(8)
+        .padding(.bottom, bottom)
     }
 
     private var render: some View {
@@ -280,7 +286,7 @@ private struct VolumeCanvas: View {
                          crosshair: !multi && model.showsSideBySide && model.photoMarker != nil ? model.photoMarker
                              : model.showCrosshair ? model.crosshair(in: axis) : nil,
                          fov: model.fovRects(in: axis),
-                         onLocate: multi && model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
+                         onLocate: (multi || !model.showsSideBySide) && model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          scaleBarInset: multi ? 0 : labelInset,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }
