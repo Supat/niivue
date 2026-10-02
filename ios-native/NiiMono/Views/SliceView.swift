@@ -147,7 +147,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         crosshairLayer.lineWidth = 1
         crosshairLayer.fillColor = nil
         fovLayer.strokeColor = UIColor.systemYellow.withAlphaComponent(0.85).cgColor
-        fovLayer.lineWidth = 1.5
+        fovLayer.lineWidth = 1 // as thin as the crosshair
         fovLayer.fillColor = nil
         layer.addSublayer(fovLayer)
         layer.addSublayer(crosshairLayer)

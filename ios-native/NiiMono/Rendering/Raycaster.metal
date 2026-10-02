@@ -205,23 +205,29 @@ fragment float4 frag(VSOut in [[stage_in]],
             color.rgb = mix(color.rgb, kClipColors[i], edge < 0.006 ? 0.9 : 0.16);
         }
     }
-    // Station FOVs: yellow wireframes, drawn on top like the plane highlight. A ray shows an
-    // edge where it enters or leaves a box within a line's width of two faces at once;
-    // edges behind the tissue surface are fainter.
+    // Station FOVs: yellow wireframes of each box's 12 edges, drawn on top like the plane
+    // highlight with the crosshair's line test and width; edges behind the tissue surface
+    // are fainter.
     for (int i = 0; i < u.fovCount; ++i) {
         float3 lo = fov[2 * i].xyz, hi = fov[2 * i + 1].xyz;
-        float3 c = 0.5 * (lo + hi);
-        float2 h = intersectBox(ro - c, rd, 0.5 * (hi - lo));
-        if (h.x > h.y) { continue; }
-        for (int k = 0; k < 2; ++k) {
-            float t = k == 0 ? h.x : h.y;
-            if (t <= 0.0) { continue; }
-            float3 p = ro + rd * t;
-            float3 d = min(p - lo, hi - p);                                 // distance to each face pair
-            float mid = max(min(d.x, d.y), min(max(d.x, d.y), d.z));        // second smallest
-            float thick = 0.002 * t;
-            float a = (t > tSurface ? 0.3 : 0.85) * (1.0 - smoothstep(0.5 * thick, thick, mid));
-            color.rgb = mix(color.rgb, float3(1.0, 0.84, 0.0), a);
+        for (int a = 0; a < 3; ++a) {
+            float3 e = float3(a == 0, a == 1, a == 2);
+            float3 n = cross(rd, e);
+            float nn = dot(n, n);
+            if (nn < 1e-8) { continue; }
+            for (int k = 0; k < 4; ++k) {
+                // Edge along axis a at the (lo|hi, lo|hi) corners of the other two axes.
+                float3 p0 = lo;
+                p0[(a + 1) % 3] = (k & 1) ? hi[(a + 1) % 3] : lo[(a + 1) % 3];
+                p0[(a + 2) % 3] = (k & 2) ? hi[(a + 2) % 3] : lo[(a + 2) % 3];
+                float3 w = p0 - ro;
+                float t = dot(cross(w, e), n) / nn;
+                float s = dot(cross(w, rd), n) / nn + p0[a]; // position along the edge
+                if (t <= 0.0 || s < lo[a] || s > hi[a]) { continue; }
+                float dist = abs(dot(w, n)) / sqrt(nn), thick = 0.0015 * t;
+                float alpha = (t > tSurface ? 0.3 : 0.85) * (1.0 - smoothstep(0.5 * thick, thick, dist));
+                color.rgb = mix(color.rgb, float3(1.0, 0.84, 0.0), alpha);
+            }
         }
     }
     if (u.crosshairOn != 0) {
