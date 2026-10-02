@@ -30,11 +30,6 @@ struct RenderView: UIViewRepresentable {
         var onTap: () -> Void = {}
         var presetTick = 0
         let gizmo = OrientationGizmo()
-        let fovLabels = FOVLabelOverlay()
-        /// What the FOV labels are drawn from (set in updateUIView).
-        var fovBoxes: [FOVBox] = []
-        var dims = SIMD3<Double>(1, 1, 1)
-        var voxelSize = SIMD3<Double>(1, 1, 1)
         let orbit = UIPanGestureRecognizer()
         let mousePan = UIPanGestureRecognizer()
         let pinch = UIPinchGestureRecognizer()
@@ -45,44 +40,6 @@ struct RenderView: UIViewRepresentable {
         /// motion, so its scale is damped by this exponent. The slice views' UIScrollView
         /// zoom is fine as is.
         private static let trackpadPinchDamping: Float = 0.18
-
-        /// Edge lengths of the FOV wireframes: for each box and axis, of the two of its four
-        /// parallel edges nearer the camera, the one further out on screen (so the text sits on
-        /// the box's outline rather than over the tissue), labelled at its projected midpoint
-        /// and nudged outward. Edges that look too short on screen go unlabelled, and a
-        /// length already shown at about the same spot (stations share faces) isn't repeated.
-        func updateFOVLabels() {
-            guard let renderer else { return }
-            let size = fovLabels.bounds.size, half = renderer.boxHalf
-            var items = [(text: String, color: UIColor, at: CGPoint)]()
-            func box(_ v: SIMD3<Double>) -> simd_float3 { (simd_float3(simd_clamp(v / dims, .zero, .one)) - 0.5) * 2 * half }
-            for b in fovBoxes {
-                let lo = box(b.lo), hi = box(b.hi), color = UIColor(FOVSession.color(b.session))
-                guard let centre = renderer.project((lo + hi) / 2, in: size) else { continue }
-                for a in 0..<3 {
-                    var edges = [(mid: CGPoint, depth: Float, length: CGFloat)]()
-                    for k in 0..<4 {
-                        var p0 = lo, p1 = lo
-                        let u = (a + 1) % 3, v = (a + 2) % 3
-                        p0[u] = (k & 1) != 0 ? hi[u] : lo[u]; p0[v] = (k & 2) != 0 ? hi[v] : lo[v]
-                        p1 = p0; p1[a] = hi[a]
-                        guard let s0 = renderer.project(p0, in: size), let s1 = renderer.project(p1, in: size),
-                              let m = renderer.project((p0 + p1) / 2, in: size) else { continue }
-                        edges.append((m.point, m.depth, hypot(s1.point.x - s0.point.x, s1.point.y - s0.point.y)))
-                    }
-                    func out(_ p: CGPoint) -> CGFloat { hypot(p.x - centre.point.x, p.y - centre.point.y) }
-                    guard let e = edges.sorted(by: { $0.depth < $1.depth }).prefix(2).max(by: { out($0.mid) < out($1.mid) }),
-                          e.length > 50 else { continue }
-                    // Outward from the box centre, so the text sits beside the line, not on it.
-                    let dx = e.mid.x - centre.point.x, dy = e.mid.y - centre.point.y, n = max(hypot(dx, dy), 1)
-                    let at = CGPoint(x: e.mid.x + dx / n * 12, y: e.mid.y + dy / n * 10)
-                    let text = FOVRect.cm((b.hi[a] - b.lo[a]) * voxelSize[a])
-                    if items.contains(where: { $0.text == text && hypot($0.at.x - at.x, $0.at.y - at.y) < 24 }) { continue }
-                    items.append((text, color, at))
-                }
-            }
-            fovLabels.show(items)
-        }
 
         /// Redraw the volume and the orientation indicator after any camera change.
         func cameraChanged(_ view: UIView?) {
@@ -185,13 +142,6 @@ struct RenderView: UIViewRepresentable {
             v.addGestureRecognizer(g)
         }
 
-        c.fovLabels.translatesAutoresizingMaskIntoConstraints = false
-        v.addSubview(c.fovLabels)
-        NSLayoutConstraint.activate([
-            c.fovLabels.leadingAnchor.constraint(equalTo: v.leadingAnchor), c.fovLabels.trailingAnchor.constraint(equalTo: v.trailingAnchor),
-            c.fovLabels.topAnchor.constraint(equalTo: v.topAnchor), c.fovLabels.bottomAnchor.constraint(equalTo: v.bottomAnchor),
-        ])
-        c.renderer?.onDraw = { [weak c] in c?.updateFOVLabels() } // follows orbit, zoom, pan and glides
         c.gizmo.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(c.gizmo)
         NSLayoutConstraint.activate([
@@ -219,9 +169,6 @@ struct RenderView: UIViewRepresentable {
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
         // Voxel edges → box space, cut to the volume (the render stops at its faces).
         let dims = SIMD3(Double(volume.dims.0), Double(volume.dims.1), Double(volume.dims.2))
-        c.fovBoxes = fov
-        c.dims = dims
-        c.voxelSize = SIMD3(Double(volume.voxelSize.0), Double(volume.voxelSize.1), Double(volume.voxelSize.2))
         renderer.fov = fov.flatMap { b in
             // w carries the session (the shader's colour index).
             [b.lo, b.hi].map { simd_float4((SIMD3<Float>(simd_clamp($0 / dims, .zero, .one)) - 0.5) * 2 * renderer.boxHalf, Float(b.session)) }
@@ -251,15 +198,7 @@ final class RenderHost: UIView, SnapshotPane {
 
     func snapshotImage() -> UIImage? {
         guard let cg = renderer?.snapshot(size: mtk.drawableSize) else { return nil }
-        let image = UIImage(cgImage: cg, scale: mtk.contentScaleFactor, orientation: .up)
-        // The FOV edge lengths are UIKit text over the render: draw them on top.
-        guard let labels = mtk.subviews.first(where: { $0 is FOVLabelOverlay }) else { return image }
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = mtk.contentScaleFactor
-        return UIGraphicsImageRenderer(size: mtk.bounds.size, format: format).image { ctx in
-            image.draw(in: mtk.bounds)
-            labels.layer.render(in: ctx.cgContext)
-        }
+        return UIImage(cgImage: cg, scale: mtk.contentScaleFactor, orientation: .up)
     }
 
     override init(frame: CGRect) {
