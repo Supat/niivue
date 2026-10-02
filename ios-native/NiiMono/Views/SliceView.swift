@@ -130,7 +130,16 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onPan: ((CGPoint, _ animated: Bool) -> Void)?
     var onViewport: ((CGRect) -> Void)? { didSet { reported = nil; reportViewport() } }
     private var reported: CGRect?
-    var imageKey: SliceView.ImageKey?
+    var imageKey: SliceView.ImageKey? {
+        // A measurement belongs to one slice as displayed.
+        didSet { if (oldValue?.axis, oldValue?.index, oldValue?.mirrored) != (imageKey?.axis, imageKey?.index, imageKey?.mirrored) { measure = nil } }
+    }
+    /// Apple Pencil ruler: end points in image points at zoom 1 (imageView's own space),
+    /// so it follows zoom and pan; `done` once the Pencil has lifted.
+    private var measure: (a: CGPoint, b: CGPoint, done: Bool)? { didSet { layoutMeasure() } }
+    private let measureLayer = CAShapeLayer()
+    private let measureLabel = CATextLayer()
+    private let measurePress = UILongPressGestureRecognizer()
     var applyingSharedZoom = false
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
@@ -168,8 +177,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         crosshairLayer.lineWidth = 1
         crosshairLayer.fillColor = nil
         layer.addSublayer(crosshairLayer)
-        // Scale bar: white with a dark halo, like the direction labels but legible on tissue.
-        for l in [scaleBar, scaleLabel] as [CALayer] {
+        // Scale bar and Pencil ruler: white with a dark halo, legible on tissue.
+        for l in [scaleBar, scaleLabel, measureLayer, measureLabel] as [CALayer] {
             l.shadowColor = UIColor.black.cgColor; l.shadowOpacity = 0.9; l.shadowRadius = 1.5; l.shadowOffset = .zero
             layer.addSublayer(l)
         }
@@ -179,6 +188,13 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scaleLabel.fontSize = 11
         scaleLabel.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
         scaleLabel.alignmentMode = .center
+        measureLayer.strokeColor = UIColor.white.cgColor
+        measureLayer.fillColor = UIColor.white.cgColor
+        measureLayer.lineWidth = 1.5
+        measureLabel.fontSize = 13
+        measureLabel.foregroundColor = UIColor.white.cgColor
+        measureLabel.alignmentMode = .center
+        measureLabel.isHidden = true
 
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
         double.numberOfTapsRequired = 2
@@ -190,7 +206,11 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scrub.maximumNumberOfTouches = 1
         scrub.allowedScrollTypesMask = .all
         panGestureRecognizer.require(toFail: scrub)
-        [double, single, scrub].forEach(addGestureRecognizer)
+        // Pencil touch-and-hold starts a ruler; fingers keep panning and zooming.
+        measurePress.addTarget(self, action: #selector(measured))
+        measurePress.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
+        measurePress.minimumPressDuration = 0.3
+        [double, single, scrub, measurePress].forEach(addGestureRecognizer)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -220,6 +240,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             imageView.frame.origin = CGPoint(x: max(0, (bounds.width - imageView.frame.width) / 2),
                                              y: max(0, (bounds.height - imageView.frame.height) / 2))
             layoutCrosshair()
+            layoutMeasure()
             layoutFOV()
             layoutScaleBar()
             reportViewport()
@@ -253,7 +274,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             y: min(max(o.y + centre.y * scale - bounds.height / 2, 0), max(0, contentSize.height - bounds.height)))
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) { // viewport moved
-        layoutCrosshair(); layoutScaleBar(); reportViewport()
+        layoutCrosshair(); layoutScaleBar(); layoutMeasure(); reportViewport()
         // Only this pane's own pans, pinches and double-taps, not follows or layout.
         // ponytail: one SwiftUI update per scroll tick, like the shared zoom; route through a
         // UIKit bridge between the panes if Multi view panning ever stutters.
@@ -375,6 +396,56 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scaleLabel.frame = CGRect(x: right - length / 2 - 40, y: y - tick - 16, width: 80, height: 14)
     }
 
+    @objc private func measured(_ g: UILongPressGestureRecognizer) {
+        let p = g.location(in: imageView)
+        switch g.state {
+        case .began: measure = (p, p, false)
+        case .changed: measure?.b = p
+        case .ended: measure?.b = p; measure?.done = true
+        default: measure = nil // cancelled
+        }
+    }
+
+    /// Dots at the ends, the line between, and once finished, ticks every scale-bar step
+    /// from the start and the length beside the middle.
+    private func layoutMeasure() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let m = measure else { measureLayer.path = nil; measureLabel.isHidden = true; return }
+        let a = imageView.convert(m.a, to: self), b = imageView.convert(m.b, to: self)
+        let path = UIBezierPath()
+        let r: CGFloat = 3.5
+        path.append(UIBezierPath(ovalIn: CGRect(x: a.x - r, y: a.y - r, width: 2 * r, height: 2 * r)))
+        if m.done { path.append(UIBezierPath(ovalIn: CGRect(x: b.x - r, y: b.y - r, width: 2 * r, height: 2 * r))) }
+        let line = UIBezierPath(); line.move(to: a); line.addLine(to: b)
+        let dx = b.x - a.x, dy = b.y - a.y, len = hypot(dx, dy)
+        measureLabel.isHidden = true
+        if m.done, len > 0, imageView.bounds.width > 0 {
+            let u = CGPoint(x: dx / len, y: dy / len), n = CGPoint(x: -u.y, y: u.x)
+            // Length in mm: image points at zoom 1 → mm along each axis (aspect-fit, so equal).
+            let mmPerPoint = extent.width / imageView.bounds.width
+            let mm = hypot((m.b.x - m.a.x) * mmPerPoint, (m.b.y - m.a.y) * mmPerPoint)
+            if let step = scaleStep, step.pt >= 4 {
+                var d = step.pt
+                let t: CGFloat = 4 // half length
+                while d < len {
+                    let c = CGPoint(x: a.x + u.x * d, y: a.y + u.y * d)
+                    line.move(to: CGPoint(x: c.x - n.x * t, y: c.y - n.y * t)); line.addLine(to: CGPoint(x: c.x + n.x * t, y: c.y + n.y * t))
+                    d += step.pt
+                }
+            }
+            // Beside the middle, on the side away from the line (whichever is higher on screen).
+            let side: CGFloat = n.y > 0 ? -1 : 1, mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            let c = CGPoint(x: mid.x + n.x * side * 16, y: mid.y + n.y * side * 16)
+            measureLabel.contentsScale = traitCollection.displayScale
+            measureLabel.string = String(format: "%.1f cm", mm / 10)
+            measureLabel.frame = CGRect(x: c.x - 40, y: c.y - 8, width: 80, height: 17)
+            measureLabel.isHidden = false
+        }
+        path.append(line)
+        measureLayer.path = path.cgPath
+    }
+
     private func layoutCrosshair() {
         guard let c = crosshair else { crosshairLayer.path = nil; return }
         let f = imageView.frame, v = bounds, gap: CGFloat = 7
@@ -404,6 +475,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     }
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        // While the Pencil draws a ruler nothing else may scroll, zoom or scrub.
+        if measurePress.state == .began || measurePress.state == .changed, g !== measurePress { return false }
         if g === scrub { return zoomScale <= minimumZoomScale + 0.01 }
         return super.gestureRecognizerShouldBegin(g)
     }
