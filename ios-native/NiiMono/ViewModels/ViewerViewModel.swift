@@ -34,6 +34,10 @@ import Observation
     var showFOV = UserDefaults.standard.bool(forKey: "showFOV") { // `-showFOV YES` for checks
         didSet { UserDefaults.standard.set(showFOV, forKey: "showFOV") }
     }
+    /// Multi view: taps on a slice leave the crosshair where it is.
+    var crosshairLocked = UserDefaults.standard.bool(forKey: "crosshairLocked") {
+        didSet { UserDefaults.standard.set(crosshairLocked, forKey: "crosshairLocked") }
+    }
     var mirrored = UserDefaults.standard.bool(forKey: "mirrored") {
         didSet { UserDefaults.standard.set(mirrored, forKey: "mirrored") }
     }

@@ -176,6 +176,19 @@ private struct VolumeCanvas: View {
                 GridRow { slice(2); render }
             }
             .background(Color(white: 0.25))
+            .overlay(alignment: .bottomTrailing) {
+                Button(model.crosshairLocked ? "Unlock Crosshair" : "Lock Crosshair",
+                       systemImage: model.crosshairLocked ? "lock.fill" : "lock.open") {
+                    onInteract()
+                    model.crosshairLocked.toggle()
+                }
+                .labelStyle(.iconOnly)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(model.crosshairLocked ? 0.7 : 0.35))
+                .frame(width: 44, height: 44) // hit target; the glyph stays small
+                .contentShape(.rect)
+                .padding(8)
+            }
         default:
             let axis = model.plane.axis!
             let pane = slice(axis).overlay { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: labelInset) }
@@ -256,7 +269,7 @@ private struct VolumeCanvas: View {
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,
                          crosshair: multi ? model.crosshair(in: axis) : model.showsSideBySide ? model.photoMarker : nil,
                          fov: model.fovRects(in: axis),
-                         onLocate: multi ? { p in onInteract(); model.locate(p, in: axis) } : nil,
+                         onLocate: multi && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }
             .overlay {
