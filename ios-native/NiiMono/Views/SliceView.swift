@@ -179,7 +179,6 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scaleLabel.fontSize = 11
         scaleLabel.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
         scaleLabel.alignmentMode = .center
-        scaleLabel.contentsScale = UIScreen.main.scale
 
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
         double.numberOfTapsRequired = 2
@@ -370,6 +369,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         path.move(to: CGPoint(x: right - length, y: y - tick)); path.addLine(to: CGPoint(x: right - length, y: y))
         path.addLine(to: CGPoint(x: right, y: y)); path.addLine(to: CGPoint(x: right, y: y - tick))
         scaleBar.path = path.cgPath
+        scaleLabel.contentsScale = traitCollection.displayScale // the screen this view is on
         scaleLabel.string = ScaleStep.label(mm: mm)
         scaleLabel.isHidden = false
         scaleLabel.frame = CGRect(x: right - length / 2 - 40, y: y - tick - 16, width: 80, height: 14)
