@@ -206,10 +206,15 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scrub.maximumNumberOfTouches = 1
         scrub.allowedScrollTypesMask = .all
         panGestureRecognizer.require(toFail: scrub)
-        // Pencil touch-and-hold starts a ruler; fingers keep panning and zooming.
+        // The Pencil always draws a ruler (from touch-down, no hold); fingers, mouse and
+        // trackpad keep panning, zooming, scrubbing and tapping.
         measurePress.addTarget(self, action: #selector(measured))
         measurePress.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
-        measurePress.minimumPressDuration = 0.3
+        measurePress.minimumPressDuration = 0
+        measurePress.allowableMovement = .greatestFiniteMagnitude
+        let notPencil = [UITouch.TouchType.direct, .indirect, .indirectPointer].map { $0.rawValue as NSNumber }
+        for g in [double, single, scrub, panGestureRecognizer] as [UIGestureRecognizer] { g.allowedTouchTypes = notPencil }
+        pinchGestureRecognizer?.allowedTouchTypes = notPencil
         [double, single, scrub, measurePress].forEach(addGestureRecognizer)
     }
 
@@ -401,7 +406,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         switch g.state {
         case .began: measure = (p, p, false)
         case .changed: measure?.b = p
-        case .ended: measure?.b = p; measure?.done = true
+        case .ended:
+            measure?.b = p; measure?.done = true
+            // A Pencil tap (no drag) clears the ruler instead of leaving a dot.
+            if let m = measure, hypot(m.b.x - m.a.x, m.b.y - m.a.y) * zoomScale < 4 { measure = nil }
         default: measure = nil // cancelled
         }
     }
