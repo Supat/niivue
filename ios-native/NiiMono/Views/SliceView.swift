@@ -29,8 +29,8 @@ struct SliceView: UIViewRepresentable {
     var onPan: ((CGPoint, _ animated: Bool) -> Void)? = nil
     /// Crosshair position as fractions of the displayed image (0...1, x right, y down), or nil.
     var crosshair: CGPoint? = nil
-    /// Acquisition FOV boxes in image fractions (x right, y down), with labels.
-    var fov: [(rect: CGRect, label: String)] = []
+    /// Acquisition FOV boxes in image fractions (x right, y down), with labels and edge lengths.
+    var fov: [FOVRect] = []
     /// If set, a tap reports its position (same fractions) instead of calling onTap.
     var onLocate: ((CGPoint) -> Void)? = nil
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
@@ -132,11 +132,11 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()
-    var fov: [(rect: CGRect, label: String)] = [] {
-        didSet { if fov.map(\.rect) != oldValue.map(\.rect) || fov.map(\.label) != oldValue.map(\.label) { layoutFOV() } }
-    }
+    var fov: [FOVRect] = [] { didSet { if fov != oldValue { layoutFOV() } } }
     private let fovLayer = CAShapeLayer()
     private var fovLabels: [CATextLayer] = []
+    /// Edge lengths: one along the bottom edge, one up the right edge of each box.
+    private var fovSizeLabels: [CATextLayer] = []
     /// Physical size of the slice (mm); only its aspect ratio matters.
     var extent = CGSize(width: 1, height: 1) { didSet { if extent != oldValue { setNeedsLayout() } } }
     /// Extent whose aspect-fit sets the scale (see SliceView.fitExtent); nil = `extent`.
@@ -274,17 +274,34 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     /// Crosshair lines in content coordinates (the scroll view's own layer scrolls with the
     /// content), spanning the visible viewport, at a constant 1 pt whatever the zoom.
     /// FOV rectangles over the image (content coordinates, so they follow zoom and pan),
-    /// each labelled with its station at the top-left corner.
+    /// each labelled with its station at the top-left corner and its width and height (cm)
+    /// along the bottom and right edges. Labels stay 11 pt whatever the zoom.
     private func layoutFOV() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         let f = imageView.frame, path = UIBezierPath()
         var cornerUse = [CGPoint: Int]() // overlapping boxes (axial slices in a station overlap) share a corner
-        while fovLabels.count < fov.count {
+        func label(_ alignment: CATextLayerAlignmentMode) -> CATextLayer {
             let t = CATextLayer()
             t.fontSize = 11; t.foregroundColor = UIColor.systemYellow.cgColor
-            t.contentsScale = traitCollection.displayScale; t.alignmentMode = .left
-            layer.addSublayer(t); fovLabels.append(t)
+            t.contentsScale = traitCollection.displayScale; t.alignmentMode = alignment
+            // A dark halo keeps yellow text legible over bright tissue.
+            t.shadowColor = UIColor.black.cgColor; t.shadowOpacity = 0.9; t.shadowRadius = 1.5; t.shadowOffset = .zero
+            layer.addSublayer(t); return t
+        }
+        while fovLabels.count < fov.count { fovLabels.append(label(.left)) }
+        while fovSizeLabels.count < 2 * fov.count { fovSizeLabels.append(label(.center)) }
+        // Stations overlap, and an axial slice through an overlap cuts two near-identical
+        // boxes: an edge length already shown at (about) the same place isn't repeated.
+        var shown = [(String, CGPoint)]()
+        func place(_ t: CATextLayer, _ text: String, centre: CGPoint, vertical: Bool) {
+            if shown.contains(where: { $0.0 == text && hypot($0.1.x - centre.x, $0.1.y - centre.y) < 20 }) { t.isHidden = true; return }
+            shown.append((text, centre))
+            t.string = text; t.isHidden = false
+            t.setAffineTransform(.identity)
+            t.bounds = CGRect(x: 0, y: 0, width: 60, height: 14)
+            t.position = centre
+            if vertical { t.setAffineTransform(CGAffineTransform(rotationAngle: -.pi / 2)) } // reads bottom to top
         }
         for (i, t) in fovLabels.enumerated() {
             guard i < fov.count else { t.isHidden = true; continue }
@@ -295,7 +312,15 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             t.string = fov[i].label; t.isHidden = false
             let n = cornerUse[box.origin, default: 0]; cornerUse[box.origin] = n + 1
             t.frame = CGRect(x: box.minX + 3 + CGFloat(n) * 16, y: box.minY + 2, width: 24, height: 14)
+            // Inside the box, so neighbouring stations' labels don't land on each other.
+            let w = fovSizeLabels[2 * i], h = fovSizeLabels[2 * i + 1]
+            place(w, FOVRect.cm(fov[i].widthMM), centre: CGPoint(x: box.midX, y: box.maxY - 9), vertical: false)
+            place(h, FOVRect.cm(fov[i].heightMM), centre: CGPoint(x: box.maxX - 9, y: box.midY), vertical: true)
+            // Too small to fit a label: leave the edge bare.
+            if box.width < 64 { w.isHidden = true }
+            if box.height < 64 { h.isHidden = true }
         }
+        for t in fovSizeLabels.dropFirst(2 * fov.count) { t.isHidden = true }
         fovLayer.path = fov.isEmpty ? nil : path.cgPath
     }
 

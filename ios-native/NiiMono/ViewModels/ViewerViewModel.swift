@@ -256,8 +256,8 @@ import Observation
     }
 
     /// The FOV boxes cut by the current slice of a pane, as rectangles in image fractions
-    /// (x right, y down, mirror applied), with their station labels.
-    func fovRects(in axis: Int) -> [(rect: CGRect, label: String)] {
+    /// (x right, y down, mirror applied), with their station labels and edge lengths.
+    func fovRects(in axis: Int) -> [FOVRect] {
         guard showFOV else { return [] }
         let (c, r) = sliceAxes(axis), k = Double(slices[axis]) + 0.5
         return fovBoxes.compactMap { b in
@@ -265,7 +265,9 @@ import Observation
             var x0 = b.lo[c] / Double(dims[c]), x1 = b.hi[c] / Double(dims[c])
             if mirrored { (x0, x1) = (1 - x1, 1 - x0) }
             let y0 = 1 - b.hi[r] / Double(dims[r]), y1 = 1 - b.lo[r] / Double(dims[r])
-            return (CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), b.label)
+            let size = [Double(volume.voxelSize.0), Double(volume.voxelSize.1), Double(volume.voxelSize.2)]
+            return FOVRect(rect: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), label: b.label,
+                           widthMM: (b.hi[c] - b.lo[c]) * size[c], heightMM: (b.hi[r] - b.lo[r]) * size[r])
         }
     }
 

@@ -4,6 +4,7 @@
 //  .placement_in_stitched_volumes[<tag>].voxel_edges_xyz, in the NIfTI file's index order).
 //
 
+import CoreGraphics
 import Foundation
 
 /// One station's FOV as voxel edges on the displayed (RAS) grid: voxel i spans [i, i+1).
@@ -11,6 +12,17 @@ struct FOVBox: Equatable {
     let label: String
     let lo: SIMD3<Double>
     let hi: SIMD3<Double>
+}
+
+/// A station's FOV cut by a slice: where it lies in the displayed image (fractions, x right,
+/// y down) and its physical size along the image's width and height.
+struct FOVRect: Equatable {
+    let rect: CGRect
+    let label: String
+    let widthMM: Double, heightMM: Double
+
+    /// "34.5 cm": one decimal, as scanner FOVs are set in whole millimetres.
+    static func cm(_ mm: Double) -> String { String(format: "%.1f cm", mm / 10) }
 }
 
 enum AcquisitionFOV {
