@@ -267,6 +267,8 @@ private struct VolumeCanvas: View {
                          fitExtent: multi ? model.sliceEnvelope : nil,
                          zoom: multi ? model.multiZoom : nil, zoomAnimated: model.multiZoomAnimated,
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,
+                         centre: multi ? model.panCentre(in: axis) : nil,
+                         onPan: multi ? { model.setPanCentre($0, in: axis); model.multiZoomAnimated = $1 } : nil,
                          crosshair: multi ? model.crosshair(in: axis) : model.showsSideBySide ? model.photoMarker : nil,
                          fov: model.fovRects(in: axis),
                          onLocate: multi && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,

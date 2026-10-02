@@ -26,6 +26,9 @@ import Observation
     var slices: [Int]
     var multiZoom: CGFloat = 1        // zoom shared by the multiplanar slice panes
     var multiZoomAnimated = false     // whether the last change came from an animated (double-tap) zoom
+    /// Point of the volume (fractions along x, y, z) the multiplanar panes keep centred, so
+    /// panning one pans the others along the axes they share.
+    var multiCentre = SIMD3<Double>(repeating: 0.5)
     var lo: Float
     var hi: Float
     // Remembered across documents and launches.
@@ -289,6 +292,19 @@ import Observation
         let u = (CGFloat(slices[c]) + 0.5) / CGFloat(dims[c])
         let v = 1 - (CGFloat(slices[r]) + 0.5) / CGFloat(dims[r])
         return CGPoint(x: mirrored ? 1 - u : u, y: v)
+    }
+
+    /// The shared pan centre in a slice pane, as fractions of the displayed image (x right, y down).
+    func panCentre(in axis: Int) -> CGPoint {
+        let (c, r) = sliceAxes(axis)
+        let u = CGFloat(multiCentre[c])
+        return CGPoint(x: mirrored ? 1 - u : u, y: 1 - CGFloat(multiCentre[r]))
+    }
+
+    func setPanCentre(_ p: CGPoint, in axis: Int) {
+        let (c, r) = sliceAxes(axis)
+        multiCentre[c] = Double(mirrored ? 1 - p.x : p.x)
+        multiCentre[r] = Double(1 - p.y)
     }
 
     /// Tap in a slice pane at image fractions `p`: move the other two slices to that voxel.

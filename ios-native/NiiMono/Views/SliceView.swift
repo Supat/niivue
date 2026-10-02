@@ -23,6 +23,10 @@ struct SliceView: UIViewRepresentable {
     var zoom: CGFloat? = nil
     var zoomAnimated = false // follow with the same animation a double-tap uses
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)? = nil
+    /// Shared pan: the image point (fractions, x right, y down) to keep centred, followed like
+    /// `zoom`; the user's own pans are reported through onPan. nil = independent.
+    var centre: CGPoint? = nil
+    var onPan: ((CGPoint, _ animated: Bool) -> Void)? = nil
     /// Crosshair position as fractions of the displayed image (0...1, x right, y down), or nil.
     var crosshair: CGPoint? = nil
     /// Acquisition FOV boxes in image fractions (x right, y down), with labels.
@@ -60,18 +64,27 @@ struct SliceView: UIViewRepresentable {
         view.crosshair = crosshair
         view.fov = fov
         view.onZoom = onZoom
+        view.onPan = onPan
         view.onViewport = onViewport
-        if let zoom, abs(zoom - view.zoomScale) > 0.001, !view.isZooming, !view.isTracking {
-            // Following another pane: don't echo the zoom back into the model mid-update.
-            view.applyingSharedZoom = true
-            defer { view.applyingSharedZoom = false }
-            if zoomAnimated {
-                UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
-                    view.setZoomScale(zoom, keepingCentre: true)
-                }
-            } else {
-                view.setZoomScale(zoom, keepingCentre: true)
-            }
+        // Following another pane, never fighting this one's own gesture.
+        guard !view.isZooming, !view.isTracking, !view.isDecelerating else { return }
+        let newZoom = zoom.flatMap { abs($0 - view.zoomScale) > 0.001 ? $0 : nil }
+        let newCentre = centre.flatMap { c in
+            let v = view.centreFraction
+            return abs(c.x - v.x) > 0.001 || abs(c.y - v.y) > 0.001 ? c : nil
+        }
+        guard newZoom != nil || newCentre != nil else { return }
+        // Don't echo the follow back into the model mid-update.
+        view.applyingSharedZoom = true
+        defer { view.applyingSharedZoom = false }
+        let follow = {
+            if let newZoom { view.setZoomScale(newZoom, keepingCentre: true) }
+            if let newCentre { view.centreFraction = newCentre }
+        }
+        if zoomAnimated {
+            UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut, animations: follow)
+        } else {
+            follow()
         }
     }
 
@@ -111,6 +124,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)?
+    var onPan: ((CGPoint, _ animated: Bool) -> Void)?
     var onViewport: ((CGRect) -> Void)? { didSet { reported = nil; reportViewport() } }
     private var reported: CGRect?
     var imageKey: SliceView.ImageKey?
@@ -223,7 +237,33 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             x: min(max(o.x + centre.x * scale - bounds.width / 2, 0), max(0, contentSize.width - bounds.width)),
             y: min(max(o.y + centre.y * scale - bounds.height / 2, 0), max(0, contentSize.height - bounds.height)))
     }
-    func scrollViewDidScroll(_ scrollView: UIScrollView) { layoutCrosshair(); reportViewport() } // viewport moved
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { // viewport moved
+        layoutCrosshair(); reportViewport()
+        // Only this pane's own pans, pinches and double-taps, not follows or layout.
+        // ponytail: one SwiftUI update per scroll tick, like the shared zoom; route through a
+        // UIKit bridge between the panes if Multi view panning ever stutters.
+        if !applyingSharedZoom, isTracking || isDecelerating || isZooming || animatingZoom {
+            onPan?(centreFraction, animatingZoom)
+        }
+    }
+
+    /// The image point at the middle of the viewport, as fractions of the image (x right,
+    /// y down); setting it scrolls there as far as the edges allow.
+    var centreFraction: CGPoint {
+        get {
+            let s = imageView.bounds.size // unzoomed
+            guard s.width > 0, s.height > 0 else { return CGPoint(x: 0.5, y: 0.5) }
+            return CGPoint(x: (bounds.midX - imageView.frame.minX) / zoomScale / s.width,
+                           y: (bounds.midY - imageView.frame.minY) / zoomScale / s.height)
+        }
+        set {
+            layoutIfNeeded()
+            let o = imageView.frame.origin, s = imageView.frame.size
+            contentOffset = CGPoint(
+                x: min(max(o.x + newValue.x * s.width - bounds.width / 2, 0), max(0, contentSize.width - bounds.width)),
+                y: min(max(o.y + newValue.y * s.height - bounds.height / 2, 0), max(0, contentSize.height - bounds.height)))
+        }
+    }
 
     private func reportViewport() {
         guard let onViewport, bounds.width > 0 else { return }
