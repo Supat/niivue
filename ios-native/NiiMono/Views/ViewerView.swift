@@ -111,6 +111,7 @@ struct ViewerView: View {
                            isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
                         .disabled(model.fovBoxes.isEmpty)
                     Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $model.showCrosshair)
+                    if model.plane != .render { BookmarkMenu(model: model) }
                     if model.plane.axis == nil { // 3D and multiplanar
                         Menu("View", systemImage: "cube") {
                             ForEach(ViewPreset.allCases) { preset in
@@ -355,6 +356,32 @@ private struct NavigationBarHider: UIViewRepresentable {
                     return
                 }
                 r = next
+            }
+        }
+    }
+}
+
+/// Saved slice positions: add the current one, recall one into every slice view, or remove.
+private struct BookmarkMenu: View {
+    let model: ViewerViewModel
+
+    var body: some View {
+        Menu("Bookmarks", systemImage: model.bookmarks.isEmpty ? "bookmark" : "bookmark.fill") {
+            Button("Add Bookmark", systemImage: "plus") { model.addBookmark() }
+            if !model.bookmarks.isEmpty {
+                Section {
+                    ForEach(model.bookmarks) { b in
+                        Button { model.recall(b) } label: {
+                            Text(b.name)
+                            Text(model.describe(b))
+                        }
+                    }
+                }
+                Menu("Remove", systemImage: "trash") {
+                    ForEach(model.bookmarks) { b in
+                        Button(b.name, role: .destructive) { model.bookmarks.removeAll { $0.id == b.id } }
+                    }
+                }
             }
         }
     }

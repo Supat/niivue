@@ -18,6 +18,13 @@ enum ImageRole: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// A saved slice position (the x, y, z slice indices), recalled in every slice view.
+struct SliceBookmark: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var slices: [Int]
+}
+
 struct SidecarSettings: Codable, Equatable {
     static let currentVersion = 1
     var version = currentVersion
@@ -28,6 +35,7 @@ struct SidecarSettings: Codable, Equatable {
         struct Clip: Codable, Equatable { var plane: String, pos: Float, flip: Bool, tilt: [Float]; var enabled: Bool? } // enabled absent in older sidecars
         var clips: [Clip], clipCutaway: Bool, clipHighlight: Bool
         var cameraClip: Bool?, cameraClipDepth: Float? // absent in older sidecars
+        var bookmarks: [SliceBookmark]? // absent in older sidecars
     }
     var viewer: Viewer
 

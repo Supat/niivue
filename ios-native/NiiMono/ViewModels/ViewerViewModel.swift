@@ -24,6 +24,8 @@ import Observation
     // Opens in 3D. Launch argument `-plane Axial` (etc.) picks another view, for simulator checks.
     var plane = Plane(rawValue: UserDefaults.standard.string(forKey: "plane") ?? "") ?? .render
     var slices: [Int]
+    /// Saved slice positions, kept in the sidecar.
+    var bookmarks: [SliceBookmark] = []
     var multiZoom: CGFloat = 1        // zoom shared by the multiplanar slice panes
     var multiZoomAnimated = false     // whether the last change came from an animated (double-tap) zoom
     /// Point of the volume (fractions along x, y, z) the multiplanar panes keep centred, so
@@ -117,7 +119,7 @@ import Observation
             viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
                           clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y], enabled: $0.enabled) },
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
-                          cameraClip: cameraClip, cameraClipDepth: cameraClipDepth),
+                          cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
                                 shownName: segmentation.map?.name, keptName: segmentation.kept?.name),
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
@@ -142,6 +144,7 @@ import Observation
         clipHighlight = s.viewer.clipHighlight
         cameraClip = s.viewer.cameraClip ?? false
         cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
+        bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         bodyComposition.weightKg = s.body.weightKg
@@ -321,6 +324,21 @@ import Observation
         let (c, r) = sliceAxes(axis)
         multiCentre[c] = Double(mirrored ? 1 - p.x : p.x)
         multiCentre[r] = Double(1 - p.y)
+    }
+
+    func addBookmark() {
+        // Next unused number, so deleting one doesn't produce a duplicate name.
+        let n = (bookmarks.compactMap { Int($0.name.split(separator: " ").last ?? "") }.max() ?? 0) + 1
+        bookmarks.append(SliceBookmark(name: "Bookmark \(n)", slices: slices))
+    }
+
+    func recall(_ b: SliceBookmark) {
+        slices = zip(b.slices, dims).map { max(0, min($1 - 1, $0)) }
+    }
+
+    /// "Axial 120 · Coronal 300 · Sagittal 190", 1-based like the scrubber.
+    func describe(_ b: SliceBookmark) -> String {
+        [(2, "Axial"), (1, "Coronal"), (0, "Sagittal")].map { "\($1) \(b.slices[$0] + 1)" }.joined(separator: " · ")
     }
 
     /// Tap in a slice pane at image fractions `p`: move the other two slices to that voxel.
