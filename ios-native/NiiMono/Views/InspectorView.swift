@@ -1,15 +1,13 @@
 //
-//  InspectorView.swift — the side panel: window level, 3D rendering, clip planes,
-//  segmentation, body composition, profile photos, volume info.
+//  InspectorView.swift — the side panel, in pages: image (window level, FOV), 3D rendering
+//  and clip planes, segmentation and body composition, profile photos, sidecar and info.
 //
 
 import SwiftUI
 
 struct InspectorView: View {
     @Bindable var model: ViewerViewModel
-    /// Keep the empty strip under the navigation bar. False once the toolbar buttons have
-    /// moved off the panel, so the controls can start at the top.
-    let belowBar: Bool
+    @AppStorage("inspectorPage") private var page = InspectorPage.image
 
     var body: some View {
         let volume = model.volume
@@ -17,58 +15,88 @@ struct InspectorView: View {
         let range = volume.dataMin...max(volume.dataMax, volume.dataMin + 1)
         let unit = (range.upperBound - range.lowerBound) / 100 // one tap on the track = 1% of the range
         Form {
-            ImageSection(model: model.segmentation)
-            FOVSection(model: model)
-            Section("Adjust") {
-                LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
-                LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
-                Button("Reset") { model.resetWindow() }
-            }
-            Section("3D Rendering") {
-                Picker("3D Rendering", selection: $model.renderMode) {
-                    ForEach(RenderMode.allCases) { Text($0.rawValue).tag($0) }
+            switch page {
+            case .image:
+                Section("Adjust") {
+                    LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
+                    LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
+                    Button("Reset") { model.resetWindow() }
                 }
-                .pickerStyle(.segmented)
-                Toggle("Clip at Camera", isOn: $model.cameraClip)
-                if model.cameraClip {
-                    VStack(alignment: .leading) {
-                        LabeledContent("Clip depth", value: "\(Int(model.cameraClipDepth * 100))% of the way to the pivot")
-                        StepSlider(value: $model.cameraClipDepth, in: 0...0.95, unit: 0.05)
+                FOVSection(model: model)
+            case .render:
+                Section("3D Rendering") {
+                    Picker("3D Rendering", selection: $model.renderMode) {
+                        ForEach(RenderMode.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    Text("Nothing nearer the camera than this is drawn, so zooming into the volume shows its inside.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            ClipPlaneSections(model: model)
-            SegmentationSection(model: model.segmentation)
-            if let map = model.segmentation.map {
-                BodyCompositionSection(model: model.bodyComposition, map: map)
-            }
-            ProfileSection(model: model.profile)
-            if let sidecar = model.sidecar {
-                Section("Sidecar") {
-                    LabeledContent("Location", value: sidecar.besideScan ? "Beside the scan" : "In the app's library")
-                    LabeledContent("Settings", value: model.sidecarSavedAt.map { "saved " + $0.formatted(date: .omitted, time: .shortened) } ?? "not saved yet")
-                    if model.segmentation.map != nil {
-                        LabeledContent("Segmentation", value: model.sidecarMapsSaved ? "saved" : "saving…")
+                    .pickerStyle(.segmented)
+                    Toggle("Clip at Camera", isOn: $model.cameraClip)
+                    if model.cameraClip {
+                        VStack(alignment: .leading) {
+                            LabeledContent("Clip depth", value: "\(Int(model.cameraClipDepth * 100))% of the way to the pivot")
+                            StepSlider(value: $model.cameraClipDepth, in: 0...0.95, unit: 0.05)
+                        }
+                        Text("Nothing nearer the camera than this is drawn, so zooming into the volume shows its inside.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
-                    Text("Settings, the segmentation maps, the companion images and the profile photos are remembered here and restored when the scan is opened again.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
                 }
-            }
-            Section("Info") {
-                LabeledContent("Dimensions", value: "\(volume.dims.0) × \(volume.dims.1) × \(volume.dims.2)")
-                LabeledContent("Voxel Size", value: String(format: "%.2f × %.2f × %.2f mm",
-                                                           volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2))
-                LabeledContent("Intensity", value: String(format: "%g – %g", volume.dataMin, volume.dataMax))
-                LabeledContent("Orientation", value: "RAS+")
+                ClipPlaneSections(model: model)
+            case .segmentation:
+                ImageSection(model: model.segmentation) // the Dixon role and companions the tissue classes need
+                SegmentationSection(model: model.segmentation)
+                if let map = model.segmentation.map {
+                    BodyCompositionSection(model: model.bodyComposition, map: map)
+                }
+            case .profile:
+                ProfileSection(model: model.profile)
+            case .info:
+                if let sidecar = model.sidecar {
+                    Section("Sidecar") {
+                        LabeledContent("Location", value: sidecar.besideScan ? "Beside the scan" : "In the app's library")
+                        LabeledContent("Settings", value: model.sidecarSavedAt.map { "saved " + $0.formatted(date: .omitted, time: .shortened) } ?? "not saved yet")
+                        if model.segmentation.map != nil {
+                            LabeledContent("Segmentation", value: model.sidecarMapsSaved ? "saved" : "saving…")
+                        }
+                        Text("Settings, the segmentation maps, the companion images and the profile photos are remembered here and restored when the scan is opened again.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
+                    }
+                }
+                Section("Info") {
+                    LabeledContent("Dimensions", value: "\(volume.dims.0) × \(volume.dims.1) × \(volume.dims.2)")
+                    LabeledContent("Voxel Size", value: String(format: "%.2f × %.2f × %.2f mm",
+                                                               volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2))
+                    LabeledContent("Intensity", value: String(format: "%g – %g", volume.dataMin, volume.dataMax))
+                    LabeledContent("Orientation", value: "RAS+")
+                }
             }
         }
-        .scrollEdgeEffectHidden(true, for: .top) // no blurred bar backdrop at the top of the panel
+        // Pages, like the tabs at the top of Preview's inspector. The panel keeps to the safe
+        // area so the tabs sit below the navigation bar: the bar spans this column, and over
+        // it the bar's buttons covered the tabs and took their touches.
+        .safeAreaBar(edge: .top, spacing: 0) {
+            Picker("Page", selection: $page) {
+                ForEach(InspectorPage.allCases) { Image(systemName: $0.symbol).accessibilityLabel($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+        }
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-        .ignoresSafeArea(edges: belowBar ? [] : .top)
-        .contentMargins(.top, belowBar ? 0 : 28, for: .scrollContent) // stay clear of the status bar icons
+    }
+}
+
+enum InspectorPage: String, CaseIterable, Identifiable {
+    case image = "Image", render = "3D", segmentation = "Segmentation", profile = "Profile", info = "Info"
+    var id: Self { self }
+    var symbol: String {
+        switch self {
+        case .image: return "photo"
+        case .render: return "cube"
+        case .segmentation: return "square.3.layers.3d"
+        case .profile: return "person.crop.rectangle"
+        case .info: return "info.circle"
+        }
     }
 }
 

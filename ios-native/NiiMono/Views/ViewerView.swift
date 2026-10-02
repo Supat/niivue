@@ -81,7 +81,7 @@ struct ViewerView: View {
             .onChange(of: model.slices) { scheduleChromeHide() }
             .onChange(of: model.mirrored) { scheduleChromeHide() }
             .inspector(isPresented: $showInspector) {
-                InspectorView(model: model, belowBar: !shiftsToolbar)
+                InspectorView(model: model)
                     .inspectorColumnWidth(Self.inspectorWidth)
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
