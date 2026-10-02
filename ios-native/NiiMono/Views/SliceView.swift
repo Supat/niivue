@@ -36,6 +36,8 @@ struct SliceView: UIViewRepresentable {
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
     /// moves it, so another pane can follow.
     var onViewport: ((CGRect) -> Void)? = nil
+    /// Room the scale bar leaves at the bottom (for the slice scrubber while it shows).
+    var scaleBarInset: CGFloat = 0
     let onTap: () -> Void
     let onScrub: (Int) -> Void
 
@@ -66,6 +68,7 @@ struct SliceView: UIViewRepresentable {
         view.onZoom = onZoom
         view.onPan = onPan
         view.onViewport = onViewport
+        view.scaleBarInset = scaleBarInset
         // Following another pane, never fighting this one's own gesture.
         guard !view.isZooming, !view.isTracking, !view.isDecelerating else { return }
         let newZoom = zoom.flatMap { abs($0 - view.zoomScale) > 0.001 ? $0 : nil }
@@ -132,6 +135,9 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private var animatingZoom = false
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()
+    var scaleBarInset: CGFloat = 0 { didSet { if scaleBarInset != oldValue { layoutScaleBar() } } }
+    private let scaleBar = CAShapeLayer()
+    private let scaleLabel = CATextLayer()
     var fov: [FOVRect] = [] { didSet { if fov != oldValue { layoutFOV() } } }
     /// One outline layer per session, in that session's colour.
     private var fovLayers: [CAShapeLayer] = []
@@ -162,6 +168,18 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         crosshairLayer.lineWidth = 1
         crosshairLayer.fillColor = nil
         layer.addSublayer(crosshairLayer)
+        // Scale bar: white with a dark halo, like the direction labels but legible on tissue.
+        for l in [scaleBar, scaleLabel] as [CALayer] {
+            l.shadowColor = UIColor.black.cgColor; l.shadowOpacity = 0.9; l.shadowRadius = 1.5; l.shadowOffset = .zero
+            layer.addSublayer(l)
+        }
+        scaleBar.strokeColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        scaleBar.lineWidth = 1.5
+        scaleBar.fillColor = nil
+        scaleLabel.fontSize = 11
+        scaleLabel.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        scaleLabel.alignmentMode = .center
+        scaleLabel.contentsScale = UIScreen.main.scale
 
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
         double.numberOfTapsRequired = 2
@@ -204,6 +222,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
                                              y: max(0, (bounds.height - imageView.frame.height) / 2))
             layoutCrosshair()
             layoutFOV()
+            layoutScaleBar()
             reportViewport()
         }
         if glide {
@@ -235,7 +254,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             y: min(max(o.y + centre.y * scale - bounds.height / 2, 0), max(0, contentSize.height - bounds.height)))
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) { // viewport moved
-        layoutCrosshair(); reportViewport()
+        layoutCrosshair(); layoutScaleBar(); reportViewport()
         // Only this pane's own pans, pinches and double-taps, not follows or layout.
         // ponytail: one SwiftUI update per scroll tick, like the shared zoom; route through a
         // UIKit bridge between the panes if Multi view panning ever stutters.
@@ -329,6 +348,29 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         }
         for t in fovSizeLabels.dropFirst(2 * fov.count) { t.isHidden = true }
         for (l, p) in zip(fovLayers, paths) { l.path = p.isEmpty ? nil : p.cgPath }
+    }
+
+    /// A bar of a round length (1, 2 or 5 × 10ⁿ mm) about 80 pt long at the current zoom,
+    /// pinned to the viewport's bottom-right corner (the scroll view's own layer moves with
+    /// the content, so it is placed relative to `bounds`).
+    private func layoutScaleBar() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let f = imageView.frame
+        guard f.width > 0, extent.width > 0, bounds.width > 120 else { scaleBar.path = nil; scaleLabel.isHidden = true; return }
+        let ptPerMM = f.width / extent.width
+        let target = 80 / ptPerMM // mm
+        let decade = pow(10, floor(log10(target)))
+        let mm = [5, 2, 1].map { $0 * decade }.first { $0 <= target } ?? decade
+        let length = (mm * ptPerMM).rounded()
+        let right = bounds.maxX - 16, y = (bounds.maxY - 16 - scaleBarInset).rounded() + 0.5, tick: CGFloat = 4
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: right - length, y: y - tick)); path.addLine(to: CGPoint(x: right - length, y: y))
+        path.addLine(to: CGPoint(x: right, y: y)); path.addLine(to: CGPoint(x: right, y: y - tick))
+        scaleBar.path = path.cgPath
+        scaleLabel.string = String(format: "%g cm", mm / 10)
+        scaleLabel.isHidden = false
+        scaleLabel.frame = CGRect(x: right - length / 2 - 40, y: y - tick - 16, width: 80, height: 14)
     }
 
     private func layoutCrosshair() {

@@ -273,6 +273,7 @@ private struct VolumeCanvas: View {
                          fov: model.fovRects(in: axis),
                          onLocate: multi && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
+                         scaleBarInset: multi ? 0 : labelInset,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }
             .overlay {
                 if multi { DirectionLabels(axis: axis, mirrored: model.mirrored, bottomInset: 0) }
