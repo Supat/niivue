@@ -225,7 +225,7 @@ private struct VolumeCanvas: View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: model.clips, clipCutaway: model.clipCutaway, clipHighlight: model.clipHighlight,
                    crosshair: model.plane == .multi ? model.crosshairFractions : nil,
-                   overlay: model.segmentation.overlay, fov: model.showFOV ? model.fovBoxes : [], cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
+                   overlay: model.segmentation.overlay, fov: model.visibleFOVBoxes, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)
             .overlay {
                 if model.showsProfile, let face = model.profile.faceCutout {

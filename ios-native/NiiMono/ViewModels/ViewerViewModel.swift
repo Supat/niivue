@@ -34,6 +34,12 @@ import Observation
     // Remembered across documents and launches.
     /// Station FOVs from the acquisition metadata beside the scan; [] when there is none.
     private(set) var fovBoxes: [FOVBox] = []
+    /// The sessions those stations were acquired in (index = FOVBox.session).
+    private(set) var fovSessions: [FOVSession] = []
+    /// Sessions switched off in the inspector.
+    var hiddenFOVSessions = Set<Int>()
+    /// The boxes to draw: all of them while the overlay is on, less any hidden sessions.
+    var visibleFOVBoxes: [FOVBox] { showFOV ? fovBoxes.filter { !hiddenFOVSessions.contains($0.session) } : [] }
     var showFOV = UserDefaults.standard.bool(forKey: "showFOV") { // `-showFOV YES` for checks
         didSet { UserDefaults.standard.set(showFOV, forKey: "showFOV") }
     }
@@ -232,9 +238,14 @@ import Observation
         let volume = volume, extra = sidecar?.folder.appendingPathComponent("metadata.json")
         let result = await Task.detached(priority: .utility) { AcquisitionFOV.boxes(for: fileURL, volume: volume, extra: extra) }.value
         switch result {
-        case .success(let b): fovBoxes = b; fovStatus = nil
-        case .failure(let f): fovBoxes = []; fovStatus = f.localizedDescription
+        case .success(let set): applyFOV(set)
+        case .failure(let f): applyFOV(FOVSet()); fovStatus = f.localizedDescription
         }
+    }
+
+    private func applyFOV(_ set: FOVSet) {
+        fovBoxes = set.boxes; fovSessions = set.sessions; hiddenFOVSessions = []
+        fovStatus = nil
     }
 
     /// A metadata JSON chosen by hand: checked against this scan, then kept in the sidecar
@@ -246,7 +257,7 @@ import Observation
         let keys = fileURL.map { SegmentationPipeline.tags(of: $0).reversed() } ?? []
         switch AcquisitionFOV.boxes(json: data, keys: Array(keys), volume: volume) {
         case .success(let b):
-            fovBoxes = b; fovStatus = nil; showFOV = true
+            applyFOV(b); showFOV = true
             if let sidecar {
                 try? FileManager.default.createDirectory(at: sidecar.folder, withIntermediateDirectories: true)
                 try? data.write(to: sidecar.folder.appendingPathComponent("metadata.json"), options: .atomic)
@@ -258,16 +269,15 @@ import Observation
     /// The FOV boxes cut by the current slice of a pane, as rectangles in image fractions
     /// (x right, y down, mirror applied), with their station labels and edge lengths.
     func fovRects(in axis: Int) -> [FOVRect] {
-        guard showFOV else { return [] }
         let (c, r) = sliceAxes(axis), k = Double(slices[axis]) + 0.5
-        return fovBoxes.compactMap { b in
+        return visibleFOVBoxes.compactMap { b in
             guard k > b.lo[axis], k < b.hi[axis] else { return nil }
             var x0 = b.lo[c] / Double(dims[c]), x1 = b.hi[c] / Double(dims[c])
             if mirrored { (x0, x1) = (1 - x1, 1 - x0) }
             let y0 = 1 - b.hi[r] / Double(dims[r]), y1 = 1 - b.lo[r] / Double(dims[r])
             let size = [Double(volume.voxelSize.0), Double(volume.voxelSize.1), Double(volume.voxelSize.2)]
             return FOVRect(rect: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), label: b.label,
-                           widthMM: (b.hi[c] - b.lo[c]) * size[c], heightMM: (b.hi[r] - b.lo[r]) * size[r])
+                           widthMM: (b.hi[c] - b.lo[c]) * size[c], heightMM: (b.hi[r] - b.lo[r]) * size[r], session: b.session)
         }
     }
 

@@ -133,7 +133,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var crosshair: CGPoint? { didSet { if crosshair != oldValue { layoutCrosshair() } } }
     private let crosshairLayer = CAShapeLayer()
     var fov: [FOVRect] = [] { didSet { if fov != oldValue { layoutFOV() } } }
-    private let fovLayer = CAShapeLayer()
+    /// One outline layer per session, in that session's colour.
+    private var fovLayers: [CAShapeLayer] = []
     private var fovLabels: [CATextLayer] = []
     /// Edge lengths: one along the bottom edge, one up the right edge of each box.
     private var fovSizeLabels: [CATextLayer] = []
@@ -160,10 +161,6 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         crosshairLayer.strokeColor = UIColor(red: 1, green: 0.25, blue: 0.2, alpha: 0.45).cgColor
         crosshairLayer.lineWidth = 1
         crosshairLayer.fillColor = nil
-        fovLayer.strokeColor = UIColor.systemYellow.withAlphaComponent(0.85).cgColor
-        fovLayer.lineWidth = 1 // as thin as the crosshair
-        fovLayer.fillColor = nil
-        layer.addSublayer(fovLayer)
         layer.addSublayer(crosshairLayer)
 
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
@@ -279,13 +276,22 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private func layoutFOV() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        let f = imageView.frame, path = UIBezierPath()
+        let f = imageView.frame
+        let sessionCount = (fov.map(\.session).max() ?? -1) + 1
+        while fovLayers.count < sessionCount {
+            let l = CAShapeLayer()
+            l.strokeColor = UIColor(FOVSession.color(fovLayers.count)).withAlphaComponent(0.85).cgColor
+            l.lineWidth = 1 // as thin as the crosshair
+            l.fillColor = nil
+            layer.addSublayer(l); fovLayers.append(l)
+        }
+        let paths = (0..<fovLayers.count).map { _ in UIBezierPath() }
         var cornerUse = [CGPoint: Int]() // overlapping boxes (axial slices in a station overlap) share a corner
         func label(_ alignment: CATextLayerAlignmentMode) -> CATextLayer {
             let t = CATextLayer()
-            t.fontSize = 11; t.foregroundColor = UIColor.systemYellow.cgColor
+            t.fontSize = 11
             t.contentsScale = traitCollection.displayScale; t.alignmentMode = alignment
-            // A dark halo keeps yellow text legible over bright tissue.
+            // A dark halo keeps the coloured text legible over bright tissue.
             t.shadowColor = UIColor.black.cgColor; t.shadowOpacity = 0.9; t.shadowRadius = 1.5; t.shadowOffset = .zero
             layer.addSublayer(t); return t
         }
@@ -294,10 +300,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         // Stations overlap, and an axial slice through an overlap cuts two near-identical
         // boxes: an edge length already shown at (about) the same place isn't repeated.
         var shown = [(String, CGPoint)]()
-        func place(_ t: CATextLayer, _ text: String, centre: CGPoint, vertical: Bool) {
+        func place(_ t: CATextLayer, _ text: String, centre: CGPoint, vertical: Bool, color: CGColor) {
             if shown.contains(where: { $0.0 == text && hypot($0.1.x - centre.x, $0.1.y - centre.y) < 20 }) { t.isHidden = true; return }
             shown.append((text, centre))
-            t.string = text; t.isHidden = false
+            t.string = text; t.isHidden = false; t.foregroundColor = color
             t.setAffineTransform(.identity)
             t.bounds = CGRect(x: 0, y: 0, width: 60, height: 14)
             t.position = centre
@@ -308,20 +314,21 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             let r = fov[i].rect
             let box = CGRect(x: f.minX + r.minX * f.width, y: f.minY + r.minY * f.height,
                              width: r.width * f.width, height: r.height * f.height).integral.insetBy(dx: 0.75, dy: 0.75)
-            path.append(UIBezierPath(rect: box))
-            t.string = fov[i].label; t.isHidden = false
+            paths[fov[i].session].append(UIBezierPath(rect: box))
+            let color = UIColor(FOVSession.color(fov[i].session)).cgColor
+            t.string = fov[i].label; t.isHidden = false; t.foregroundColor = color
             let n = cornerUse[box.origin, default: 0]; cornerUse[box.origin] = n + 1
             t.frame = CGRect(x: box.minX + 3 + CGFloat(n) * 16, y: box.minY + 2, width: 24, height: 14)
             // Inside the box, so neighbouring stations' labels don't land on each other.
             let w = fovSizeLabels[2 * i], h = fovSizeLabels[2 * i + 1]
-            place(w, FOVRect.cm(fov[i].widthMM), centre: CGPoint(x: box.midX, y: box.maxY - 9), vertical: false)
-            place(h, FOVRect.cm(fov[i].heightMM), centre: CGPoint(x: box.maxX - 9, y: box.midY), vertical: true)
+            place(w, FOVRect.cm(fov[i].widthMM), centre: CGPoint(x: box.midX, y: box.maxY - 9), vertical: false, color: color)
+            place(h, FOVRect.cm(fov[i].heightMM), centre: CGPoint(x: box.maxX - 9, y: box.midY), vertical: true, color: color)
             // Too small to fit a label: leave the edge bare.
             if box.width < 64 { w.isHidden = true }
             if box.height < 64 { h.isHidden = true }
         }
         for t in fovSizeLabels.dropFirst(2 * fov.count) { t.isHidden = true }
-        fovLayer.path = fov.isEmpty ? nil : path.cgPath
+        for (l, p) in zip(fovLayers, paths) { l.path = p.isEmpty ? nil : p.cgPath }
     }
 
     private func layoutCrosshair() {
@@ -385,4 +392,8 @@ private func - (a: CGPoint, b: CGPoint) -> CGPoint { CGPoint(x: a.x - b.x, y: a.
 
 extension CGPoint: @retroactive Hashable {
     public func hash(into h: inout Hasher) { h.combine(x); h.combine(y) }
+}
+
+extension UIColor {
+    convenience init(_ rgb: SIMD3<Float>) { self.init(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1) }
 }

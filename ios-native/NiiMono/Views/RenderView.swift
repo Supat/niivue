@@ -170,7 +170,8 @@ struct RenderView: UIViewRepresentable {
         // Voxel edges → box space, cut to the volume (the render stops at its faces).
         let dims = SIMD3(Double(volume.dims.0), Double(volume.dims.1), Double(volume.dims.2))
         renderer.fov = fov.flatMap { b in
-            [b.lo, b.hi].map { simd_float4((SIMD3<Float>(simd_clamp($0 / dims, .zero, .one)) - 0.5) * 2 * renderer.boxHalf, 0) }
+            // w carries the session (the shader's colour index).
+            [b.lo, b.hi].map { simd_float4((SIMD3<Float>(simd_clamp($0 / dims, .zero, .one)) - 0.5) * 2 * renderer.boxHalf, Float(b.session)) }
         }
         renderer.setOverlay(overlay)
         renderer.cameraClipFraction = cameraClip

@@ -169,6 +169,12 @@ constant float3 kClipColors[6] = {
     float3(1.00, 0.80, 0.00), float3(0.75, 0.35, 0.95), float3(0.39, 0.82, 1.00),
 };
 
+// Station FOV colour per session; mirrors FOVSession.colors.
+constant float3 kFOVColors[6] = {
+    float3(1.00, 0.84, 0.00), float3(0.20, 0.85, 1.00), float3(1.00, 0.40, 0.85),
+    float3(0.45, 0.95, 0.35), float3(1.00, 0.55, 0.15), float3(0.70, 0.55, 1.00),
+};
+
 fragment float4 frag(VSOut in [[stage_in]],
                      constant Uniforms& u   [[buffer(0)]],
                      constant float4 *fov    [[buffer(1)]],
@@ -205,11 +211,12 @@ fragment float4 frag(VSOut in [[stage_in]],
             color.rgb = mix(color.rgb, kClipColors[i], edge < 0.006 ? 0.9 : 0.16);
         }
     }
-    // Station FOVs: yellow wireframes of each box's 12 edges, drawn on top like the plane
+    // Station FOVs: wireframes of each box's 12 edges in their session's colour, drawn on top like the plane
     // highlight with the crosshair's line test and width; edges behind the tissue surface
     // are fainter.
     for (int i = 0; i < u.fovCount; ++i) {
         float3 lo = fov[2 * i].xyz, hi = fov[2 * i + 1].xyz;
+        float3 tint = kFOVColors[int(fov[2 * i].w) % 6];
         for (int a = 0; a < 3; ++a) {
             float3 e = float3(a == 0, a == 1, a == 2);
             float3 n = cross(rd, e);
@@ -226,7 +233,7 @@ fragment float4 frag(VSOut in [[stage_in]],
                 if (t <= 0.0 || s < lo[a] || s > hi[a]) { continue; }
                 float dist = abs(dot(w, n)) / sqrt(nn), thick = 0.0015 * t;
                 float alpha = (t > tSurface ? 0.3 : 0.85) * (1.0 - smoothstep(0.5 * thick, thick, dist));
-                color.rgb = mix(color.rgb, float3(1.0, 0.84, 0.0), alpha);
+                color.rgb = mix(color.rgb, tint, alpha);
             }
         }
     }

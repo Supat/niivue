@@ -144,6 +144,29 @@ private struct FOVSection: View {
                 if let status = model.fovStatus { Text(status).font(.footnote).foregroundStyle(.secondary) }
             } else {
                 Toggle("Show station FOVs (\(model.fovBoxes.count))", isOn: $model.showFOV)
+                // One row per scanning session, in its overlay colour; a tap shows or hides it.
+                ForEach(Array(model.fovSessions.enumerated()), id: \.offset) { i, session in
+                    let on = !model.hiddenFOVSessions.contains(i)
+                    Button {
+                        if on { model.hiddenFOVSessions.insert(i) } else { model.hiddenFOVSessions.remove(i) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            RoundedRectangle(cornerRadius: 2).strokeBorder(Color(FOVSession.color(i)), lineWidth: 2)
+                                .frame(width: 16, height: 12).opacity(on ? 1 : 0.3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.name).foregroundStyle(on ? .primary : .secondary)
+                                Text([session.date, "\(session.stationCount) station\(session.stationCount == 1 ? "" : "s")"]
+                                        .compactMap { $0 }.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: on ? "eye" : "eye.slash").foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.showFOV)
+                    .accessibilityValue(on ? "Shown" : "Hidden")
+                }
                 LabeledContent("Metadata") { Button("Change…") { choosing = true } }
             }
         }
