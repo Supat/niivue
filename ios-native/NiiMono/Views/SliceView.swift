@@ -350,19 +350,25 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         for (l, p) in zip(fovLayers, paths) { l.path = p.isEmpty ? nil : p.cgPath }
     }
 
+    /// The scale bar's length: a round distance (1, 2 or 5 × 10ⁿ mm) about 80 pt long at the
+    /// current zoom, in mm and on-screen points. The crosshair ticks use the same step.
+    private var scaleStep: (mm: CGFloat, pt: CGFloat)? {
+        let f = imageView.frame
+        guard f.width > 0, extent.width > 0 else { return nil }
+        let ptPerMM = f.width / extent.width
+        let target = 80 / ptPerMM
+        let decade = pow(10, floor(log10(target)))
+        let mm = [5, 2, 1].map { $0 * decade }.first { $0 <= target } ?? decade
+        return (mm, (mm * ptPerMM).rounded())
+    }
+
     /// A bar of a round length (1, 2 or 5 × 10ⁿ mm) about 80 pt long at the current zoom,
     /// pinned to the viewport's bottom-right corner (the scroll view's own layer moves with
     /// the content, so it is placed relative to `bounds`).
     private func layoutScaleBar() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        let f = imageView.frame
-        guard f.width > 0, extent.width > 0, bounds.width > 120 else { scaleBar.path = nil; scaleLabel.isHidden = true; return }
-        let ptPerMM = f.width / extent.width
-        let target = 80 / ptPerMM // mm
-        let decade = pow(10, floor(log10(target)))
-        let mm = [5, 2, 1].map { $0 * decade }.first { $0 <= target } ?? decade
-        let length = (mm * ptPerMM).rounded()
+        guard let (mm, length) = scaleStep, bounds.width > 120 else { scaleBar.path = nil; scaleLabel.isHidden = true; return }
         let right = bounds.maxX - 16, y = (bounds.maxY - 16 - scaleBarInset).rounded() + 0.5, tick: CGFloat = 4
         let path = UIBezierPath()
         path.move(to: CGPoint(x: right - length, y: y - tick)); path.addLine(to: CGPoint(x: right - length, y: y))
@@ -382,6 +388,20 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         path.move(to: CGPoint(x: x + gap, y: y)); path.addLine(to: CGPoint(x: v.maxX, y: y))
         path.move(to: CGPoint(x: x, y: v.minY)); path.addLine(to: CGPoint(x: x, y: y - gap))
         path.move(to: CGPoint(x: x, y: y + gap)); path.addLine(to: CGPoint(x: x, y: v.maxY))
+        // Ticks every scale-bar length out from the centre, so distances can be read off the lines.
+        if let step = scaleStep?.pt, step >= 8 {
+            let t: CGFloat = 3 // half length
+            var d = step
+            while x - d >= v.minX || x + d <= v.maxX || y - d >= v.minY || y + d <= v.maxY {
+                for px in [x - d, x + d] where px >= v.minX && px <= v.maxX {
+                    path.move(to: CGPoint(x: px, y: y - t)); path.addLine(to: CGPoint(x: px, y: y + t))
+                }
+                for py in [y - d, y + d] where py >= v.minY && py <= v.maxY {
+                    path.move(to: CGPoint(x: x - t, y: py)); path.addLine(to: CGPoint(x: x + t, y: py))
+                }
+                d += step
+            }
+        }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         crosshairLayer.path = path.cgPath
         CATransaction.commit()
