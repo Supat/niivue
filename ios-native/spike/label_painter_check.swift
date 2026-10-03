@@ -25,7 +25,7 @@ let rows = LabelPainter.stamp(g, plane: axial, at: SIMD2(10, 10), radius: SIMD2(
 precondition(rows == 8...12, "\(String(describing: rows))")
 let disk = count(g, 3)
 precondition((12...13).contains(disk), "disk \(disk)")
-precondition(LabelPainter.read(g, plane: SlicePlane(axis: 2, index: 5, dims: dims)).allSatisfy { $0 == 0 })
+precondition(LabelPainter.read(g, box: SlicePlane(axis: 2, index: 5, dims: dims).box).allSatisfy { $0 == 0 })
 // A tiny brush still paints the voxel under the tip.
 g = grid(); LabelPainter.stamp(g, plane: axial, at: SIMD2(0.2, 0.2), radius: SIMD2(0.1, 0.1), value: 1)
 precondition(count(g, 1) == 1 && g.data[axial.voxel(0, 0)] == 1)
@@ -44,10 +44,44 @@ precondition(g.data[axial.voxel(2, 2)] == 0)
 precondition(LabelPainter.fill(g, plane: axial, at: 10, 10, value: 1) == nil)
 
 // Undo round trip: read → paint → write restores the slice exactly.
-g = grid(); let before = LabelPainter.read(g, plane: coronal)
+g = grid(); let before = LabelPainter.read(g, box: coronal.box)
 LabelPainter.stamp(g, plane: coronal, at: SIMD2(5, 5), radius: SIMD2(3, 3), value: 4)
 precondition(count(g, 4) > 0)
-LabelPainter.write(g, plane: coronal, before)
+LabelPainter.write(g, box: coronal.box, before)
 precondition(count(g, 4) == 0)
 
 print("label painter ok")
+
+// Box read/write round trip, and a slice's box matches its plane.
+g = grid()
+LabelPainter.stamp(g, plane: coronal, at: SIMD2(5, 5), radius: SIMD2(3, 3), value: 4)
+let box = coronal.box
+precondition(box.lo == SIMD3(0, 7, 0) && box.hi == SIMD3(20, 8, 10))
+let saved = LabelPainter.read(g, box: box)
+LabelPainter.write(g, box: box, [UInt8](repeating: 0, count: box.count))
+precondition(count(g, 4) == 0)
+LabelPainter.write(g, box: box, saved)
+precondition(count(g, 4) > 0)
+
+// Smoothing: a 1-voxel spike on a cube goes, the cube stays (about the same volume), and a
+// second label elsewhere keeps its own voxels.
+let sd = (40, 40, 40)
+var vol = [UInt8](repeating: 0, count: 40 * 40 * 40)
+func at(_ x: Int, _ y: Int, _ z: Int) -> Int { x + 40 * (y + 40 * z) }
+for z in 10..<26 { for y in 10..<26 { for x in 10..<26 { vol[at(x, y, z)] = 1 } } }
+vol[at(26, 17, 17)] = 1; vol[at(27, 17, 17)] = 1 // spike
+for z in 30..<38 { for y in 30..<38 { for x in 30..<38 { vol[at(x, y, z)] = 2 } } }
+let cubeBefore = vol.filter { $0 == 1 }.count
+let sm = LabelPainter.smoothed(vol, dims: sd, voxelSize: SIMD3(1, 1, 1), sigmaMM: 1, labels: [1, 2])!
+var after = vol
+let sg = LabelGrid(LabelVolume(dims: sd, data: after, maxLabel: 2))
+LabelPainter.write(sg, box: sm.box, sm.values)
+after = sg.data
+precondition(after[at(27, 17, 17)] == 0 && after[at(26, 17, 17)] == 0, "spike survived")
+precondition(after[at(17, 17, 17)] == 1 && after[at(33, 33, 33)] == 2, "interiors lost")
+let cubeAfter = after.filter { $0 == 1 }.count
+precondition(Double(cubeAfter) > 0.85 * Double(cubeBefore) && cubeAfter <= cubeBefore, "cube \(cubeBefore) → \(cubeAfter)")
+precondition(after[at(5, 5, 5)] == 0 && after.filter { $0 == 2 }.count > 300)
+// Anisotropic voxels: σ in mm, so 3 mm slices blur less along z than 1 mm pixels along x.
+precondition(LabelPainter.smoothed([UInt8](repeating: 0, count: 8), dims: (2, 2, 2), voxelSize: SIMD3(1, 1, 3), sigmaMM: 1, labels: [1]) == nil)
+print("smoothing ok: cube \(cubeBefore) → \(cubeAfter)")

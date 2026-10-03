@@ -56,9 +56,9 @@ final class DrawingViewModel: Identifiable {
     private var flushTask: Task<Void, Never>?
 
     private var stroke: (plane: SlicePlane, last: SIMD2<Float>, before: [UInt8])?
-    private var undoStack: [(plane: SlicePlane, values: [UInt8])] = []
+    private var undoStack: [(box: VoxelBox, values: [UInt8])] = []
     private var lastCommit = Date.distantPast
-    private var redoStack: [(plane: SlicePlane, values: [UInt8])] = []
+    private var redoStack: [(box: VoxelBox, values: [UInt8])] = []
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
     private static let undoLimit = 50
@@ -120,7 +120,8 @@ final class DrawingViewModel: Identifiable {
         let value = tool == .eraser ? 0 : UInt8(active)
         switch phase {
         case .began:
-            let before = LabelPainter.read(grid, plane: plane)
+            guard !isSmoothing else { return } // the smoother is reading the grid
+            let before = LabelPainter.read(grid, box: plane.box)
             if tool == .fill {
                 guard let rows = LabelPainter.fill(grid, plane: plane, at: Int(pt.x.rounded(.down)), Int(pt.y.rounded(.down)), value: value) else { return }
                 commit(plane: plane, before: before, rows: rows)
@@ -153,11 +154,15 @@ final class DrawingViewModel: Identifiable {
 
     private func commit(plane: SlicePlane, before: [UInt8], rows: ClosedRange<Int>?) {
         if let rows { touched(plane, rows) }
-        undoStack.append((plane, before))
-        lastCommit = .now
+        pushUndo(plane.box, before)
+        lastCommit = .now // a finger-tap undo may still drop this stroke (see tapUndo)
+        flush()
+    }
+
+    private func pushUndo(_ box: VoxelBox, _ before: [UInt8]) {
+        undoStack.append((box, before))
         if undoStack.count > Self.undoLimit { undoStack.removeFirst() }
         redoStack = []
-        flush()
     }
 
     func undo() { swapSlice(from: &undoStack, to: &redoStack) }
@@ -170,27 +175,57 @@ final class DrawingViewModel: Identifiable {
 
     private func discardTapStroke() {
         guard drawsWithFinger else { return }
-        let step: (plane: SlicePlane, values: [UInt8])
+        let step: (box: VoxelBox, values: [UInt8])
         if let s = stroke { // still down: put its slice back and forget it
             stroke = nil
-            step = (s.plane, s.before)
+            step = (s.plane.box, s.before)
         } else if Date.now.timeIntervalSince(lastCommit) < 0.5, let last = undoStack.popLast() {
             step = last
             lastCommit = .distantPast
         } else {
             return
         }
-        LabelPainter.write(grid, plane: step.plane, step.values)
-        markDirty(step.plane.z(rows: 0...step.plane.height - 1))
+        LabelPainter.write(grid, box: step.box, step.values)
+        markDirty(step.box.z)
         flush()
     }
 
-    private func swapSlice(from: inout [(plane: SlicePlane, values: [UInt8])], to: inout [(plane: SlicePlane, values: [UInt8])]) {
-        guard let step = from.popLast() else { return }
-        to.append((step.plane, LabelPainter.read(grid, plane: step.plane)))
-        LabelPainter.write(grid, plane: step.plane, step.values)
+    private func swapSlice(from: inout [(box: VoxelBox, values: [UInt8])], to: inout [(box: VoxelBox, values: [UInt8])]) {
+        guard !isSmoothing, let step = from.popLast() else { return }
+        to.append((step.box, LabelPainter.read(grid, box: step.box)))
+        LabelPainter.write(grid, box: step.box, step.values)
         edited = true
-        markDirty(step.plane.z(rows: 0...step.plane.height - 1))
+        markDirty(step.box.z)
+        flush()
+    }
+
+    // MARK: Smoothing
+
+    enum Smoothing: Float, CaseIterable, Identifiable {
+        case light = 1, medium = 2, strong = 3.5 // σ in mm
+        var id: Self { self }
+        var name: String { switch self { case .light: "Light"; case .medium: "Medium"; case .strong: "Strong" } }
+    }
+
+    private(set) var isSmoothing = false
+
+    /// Smooths every label's surface in 3D (see LabelPainter.smoothed), as one undo step.
+    /// Runs in the background on a snapshot; drawing waits until it's done.
+    func smooth(_ strength: Smoothing) async {
+        guard !isSmoothing else { return }
+        flush()
+        isSmoothing = true
+        defer { isSmoothing = false }
+        let data = grid.data, dims = grid.dims, ids = labels.map(\.id)
+        let size = SIMD3(volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2)
+        let result = await Task.detached(priority: .userInitiated) {
+            LabelPainter.smoothed(data, dims: dims, voxelSize: size, sigmaMM: strength.rawValue, labels: ids)
+        }.value
+        guard let result else { return }
+        pushUndo(result.box, LabelPainter.read(grid, box: result.box))
+        LabelPainter.write(grid, box: result.box, result.values)
+        edited = true
+        markDirty(result.box.z)
         flush()
     }
 

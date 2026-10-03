@@ -129,7 +129,11 @@ labels (the eye button hides the scan so the labels stand alone). Apple Pencil p
 the brush, erases, or flood-fills a closed outline on the slice in view; fingers pan, zoom
 and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
 across zoom and anisotropic voxels. Labels are named and coloured from the label menu; undo
-and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). "Done" shows the drawing as the segmentation
+and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). The wand smooths every label's surface in 3D (tap:
+σ 2 mm; hold for light 1 mm or strong 3.5 mm): each label's mask is Gaussian-blurred (σ in mm
+per axis, so anisotropic voxels are handled) and kept where it is above one half, which removes
+the steps between drawn slices, bumps and pinholes, and also anything thinner than about σ (a
+lone painted slice). One undo step; vDSP throughout, ~1 s for a whole-body grid even in Debug. "Done" shows the drawing as the segmentation
 ("Custom drawing", alongside any generated or loaded maps in the Show picker; "Remove
 Segmentation" removes only the map on screen) and the sidecar
 saves it with its label names; "Edit Drawing…" reopens it. "Export…" shares the drawing as

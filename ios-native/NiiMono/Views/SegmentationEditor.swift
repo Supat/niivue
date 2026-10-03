@@ -102,6 +102,14 @@ struct SegmentationEditor: View {
                          scaleBarInset: 120,
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
+            .overlay(alignment: .top) {
+                if drawing.isSmoothing {
+                    HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Smoothing surfaces…").font(.footnote) }
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(.top, 12)
+                }
+            }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 8) {
                     if model.volume.count(axis: axis) > 1 {
@@ -198,6 +206,18 @@ struct SegmentationEditor: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 140)
+            // Tap: medium. Hold for the other strengths.
+            Menu {
+                ForEach(DrawingViewModel.Smoothing.allCases) { s in
+                    Button("\(s.name) (σ \(s.rawValue.formatted()) mm)") { Task { await drawing.smooth(s) } }
+                }
+            } label: {
+                Label("Smooth Surfaces", systemImage: "wand.and.sparkles")
+            } primaryAction: {
+                Task { await drawing.smooth(.medium) }
+            }
+            .labelStyle(.iconOnly)
+            .disabled(drawing.isSmoothing)
             HStack(spacing: 6) {
                 Image(systemName: "circle.fill").font(.system(size: 6))
                 StepSlider(value: $drawing.brushMM, in: 1...40, unit: 1).frame(width: 120)
