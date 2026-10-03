@@ -15,6 +15,9 @@ struct SegmentationMap: Identifiable, @unchecked Sendable {
     let unlabelledBodyVoxels: Int
     let voxelML: Double
 
+    /// The map drawn in the app (its label names live in the sidecar).
+    var isCustom: Bool { name == LabelTable.customMapName }
+
     /// Labels a file may carry; empty for a map with nothing labelled.
     var labelRange: Range<Int> { 1..<(labels.maxLabel + 1) }
 

@@ -9,9 +9,16 @@ import Observation
 @Observable @MainActor final class SegmentationViewModel {
     let volume: NiftiVolume
 
-    /// The map on screen and, after generation, the structure map kept alongside it.
-    private(set) var map: SegmentationMap?
-    private(set) var kept: SegmentationMap?
+    /// Every map this scan has — after generation the tissue classes and the structures, or a
+    /// loaded file, plus the drawing — and which one is on screen.
+    private(set) var maps: [SegmentationMap] = []
+    private(set) var shownID: UUID?
+    var map: SegmentationMap? { maps.first { $0.id == shownID } }
+    /// The maps not on screen, in order (the sidecar's `kept`, `kept2` slots).
+    var others: [SegmentationMap] { maps.filter { $0.id != shownID } }
+    var mapIDs: [UUID] { maps.map(\.id) }
+    /// The maps in sidecar order (shown first); a change means the sidecar's maps need writing.
+    var savedOrder: [UUID] { ([map] + others).compactMap { $0?.id } }
     var visible: [Bool] = []      // indexed by label; [0] unused
     var opacity: Float = 0.65     // colour blend over the grey image
     var ghost = UserDefaults.standard.bool(forKey: "segGhost") // `-segGhost YES` for checks
@@ -52,22 +59,28 @@ import Observation
         return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: opacity, ghost: ghost)
     }
 
-    func show(_ new: SegmentationMap?) {
-        map = new
-        visible = [Bool](repeating: true, count: (new?.labelRange.upperBound ?? 0))
+    /// Put a map on screen, all its labels visible.
+    func select(_ id: UUID?) {
+        shownID = id
+        visible = [Bool](repeating: true, count: (map?.labelRange.upperBound ?? 0))
+    }
+
+    /// New generated or loaded maps replace the old ones; the drawing stays.
+    private func replaceMaps(with new: [SegmentationMap]) {
+        maps = new + maps.filter(\.isCustom)
+        select(new.first?.id ?? maps.first?.id)
     }
 
     /// Safe against rows still on screen after the map shrank.
     func isVisible(_ label: Int) -> Bool { visible.indices.contains(label) && visible[label] }
     func setVisible(_ label: Int, _ on: Bool) { if visible.indices.contains(label) { visible[label] = on } }
 
-    func remove() { show(nil); kept = nil }
-
-    /// Swap the shown map with the kept one.
-    func swapMaps() {
-        guard let other = kept else { return }
-        kept = map
-        show(other)
+    /// Removes the map on screen and shows the next one.
+    func remove() {
+        guard let map else { return }
+        if map.isCustom { customLabels = [] }
+        maps.removeAll { $0.id == map.id }
+        select(maps.first?.id)
     }
 
     func setAllVisible(_ on: Bool) { visible = visible.map { _ in on } }
@@ -77,19 +90,19 @@ import Observation
     /// Names and colours of the drawn map's labels (kept in the sidecar settings).
     var customLabels: [CustomLabel] = []
 
-    /// The drawn map, if it is the one shown or kept.
-    var customMap: SegmentationMap? { [map, kept].compactMap { $0 }.first { $0.name == LabelTable.customMapName } }
+    /// The drawn map, shown or not.
+    var customMap: SegmentationMap? { maps.first(where: \.isCustom) }
 
-    /// Show a finished drawing; the map it replaces is kept (unless that was the drawing).
+    /// Show a finished (or imported) drawing in place of the previous one; other maps stay.
     func showCustom(_ new: SegmentationMap, labels: [CustomLabel]) {
         customLabels = labels
-        if kept?.name == LabelTable.customMapName { kept = nil }
-        if let map, map.name != LabelTable.customMapName { kept = map }
-        show(new)
+        maps.removeAll(where: \.isCustom)
+        maps.append(new)
+        select(new.id)
     }
 
     private func withCustomTable(_ m: SegmentationMap) -> SegmentationMap {
-        guard m.name == LabelTable.customMapName else { return m }
+        guard m.isCustom else { return m }
         var m = m
         m.table = .custom(customLabels)
         return m
@@ -103,7 +116,7 @@ import Observation
         let volume = volume
         let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadLabels(from: url, scoped: scoped, volume: volume) } }.value
         switch result {
-        case .success(let m): show(m); kept = nil; error = nil
+        case .success(let m): replaceMaps(with: [m]); error = nil
         case .failure(let e): if !quiet { error = e.localizedDescription }
         }
     }
@@ -132,10 +145,10 @@ import Observation
         if map == nil, let url = SegmentationPipeline.siblingLabels(of: fileURL) { await load(from: url, scoped: false, quiet: true) }
     }
 
-    /// Install maps read from the sidecar (no file access, no error reporting).
-    func restore(shown: SegmentationMap?, kept: SegmentationMap?, visible: [Bool]) {
-        show(shown.map(withCustomTable))
-        self.kept = kept.map(withCustomTable)
+    /// Install maps read from the sidecar, the shown one first (no file access, no error reporting).
+    func restore(_ restored: [SegmentationMap], visible: [Bool]) {
+        maps = restored.map(withCustomTable)
+        select(maps.first?.id)
         if visible.count == self.visible.count { self.visible = visible }
     }
 
@@ -163,7 +176,7 @@ import Observation
             progress = nil
             cancel = nil
             switch result {
-            case .success(let maps): show(maps.shown); kept = maps.kept
+            case .success(let maps): replaceMaps(with: [maps.shown] + [maps.kept].compactMap { $0 })
             case .failure(is CancellationError): break
             case .failure(let e): error = e.localizedDescription
             }

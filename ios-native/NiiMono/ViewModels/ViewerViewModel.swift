@@ -177,7 +177,8 @@ import Observation
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
-                                shownName: segmentation.map?.name, keptName: segmentation.kept?.name,
+                                shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
+                                kept2Name: segmentation.others.dropFirst().first?.name,
                                 customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
             fat: segmentation.fatURL.flatMap(SidecarSettings.Companion.init),
@@ -224,12 +225,12 @@ import Observation
         let volume = volume
         if s.segmentation.shownName != nil {
             openingStage = "Loading saved segmentation…"
-            let maps = await Task.detached(priority: .userInitiated) { () -> (SegmentationMap?, SegmentationMap?) in
-                (s.segmentation.shownName.flatMap { sidecar.loadMap(slot: "shown", name: $0, volume: volume) },
-                 s.segmentation.keptName.flatMap { sidecar.loadMap(slot: "kept", name: $0, volume: volume) })
+            let slots = zip(Self.mapSlots, [s.segmentation.shownName, s.segmentation.keptName, s.segmentation.kept2Name])
+            let maps = await Task.detached(priority: .userInitiated) { () -> [SegmentationMap] in
+                slots.compactMap { slot, name in name.flatMap { sidecar.loadMap(slot: slot, name: $0, volume: volume) } }
             }.value
-            segmentation.restore(shown: maps.0, kept: maps.1, visible: s.segmentation.visible)
-            sidecarMapsSaved = maps.0 != nil
+            segmentation.restore(maps, visible: s.segmentation.visible)
+            sidecarMapsSaved = !maps.isEmpty
         }
         for (which, companion) in [(ImageRole.water, s.water), (.fat, s.fat)] {
             guard let companion, let url = companion.resolve() else { continue }
@@ -261,16 +262,21 @@ import Observation
         }
     }
 
-    /// Write the current maps (after a generation, load, swap or removal) in the background.
+    /// Sidecar files of the shown map and the others, in that order.
+    private static let mapSlots = ["shown", "kept", "kept2"]
+
+    /// Write the current maps (after a generation, load, switch or removal) in the background.
     func saveSidecarMaps() {
         guard let sidecar else { return }
-        let shown = segmentation.map, kept = segmentation.kept, voxel = volume.voxelSize
+        let ordered: [SegmentationMap?] = [segmentation.map] + segmentation.others
+        let voxel = volume.voxelSize
         sidecarMapsSaved = false
         Task { [weak self] in
             let ok = await Task.detached(priority: .utility) { () -> Bool in
                 do {
-                    try sidecar.saveMap(shown, slot: "shown", voxelSize: voxel)
-                    try sidecar.saveMap(kept, slot: "kept", voxelSize: voxel)
+                    for (i, slot) in Self.mapSlots.enumerated() {
+                        try sidecar.saveMap(i < ordered.count ? ordered[i] : nil, slot: slot, voxelSize: voxel)
+                    }
                     return true
                 } catch { return false }
             }.value
@@ -281,7 +287,7 @@ import Observation
 
     /// The scan's landmarks for aligning profile photos; redone when the segmentation changes.
     func updateScanLandmarks() async {
-        let volume = volume, maps = [segmentation.map, segmentation.kept].compactMap { $0 }
+        let volume = volume, maps = segmentation.maps
         scanLandmarks = await Task.detached(priority: .utility) { ProfileAlignment.scanLandmarks(volume: volume, maps: maps) }.value
     }
 

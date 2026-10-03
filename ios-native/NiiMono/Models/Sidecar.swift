@@ -1,7 +1,7 @@
 //
 //  Sidecar.swift — what the app remembers about a scan between openings: the inspector
 //  settings, the segmentation maps, and where the companion Dixon images are.
-//  Stored as `<scan>.niimono/settings.json` plus `shown.nii.gz` / `kept.nii.gz`.
+//  Stored as `<scan>.niimono/settings.json` plus `shown.nii.gz` / `kept.nii.gz` / `kept2.nii.gz`.
 //
 
 import Foundation
@@ -42,8 +42,9 @@ struct SidecarSettings: Codable, Equatable {
     struct Segmentation: Codable, Equatable {
         var visible: [Bool], opacity: Float, ghost: Bool
         /// Original file / generated names of the shown and kept maps (the label table is
-        /// picked from the name); the voxels live in shown.nii.gz / kept.nii.gz beside this file.
+        /// picked from the name); the voxels live in shown.nii.gz / kept.nii.gz / kept2.nii.gz beside this file.
         var shownName: String?, keptName: String?
+        var kept2Name: String? // a third map (the drawing beside both generated maps); absent in older sidecars
         var customLabels: [CustomLabel]? // the drawn map's label names; absent in older sidecars
     }
     var segmentation: Segmentation

@@ -13,10 +13,9 @@ struct SegmentationSection: View {
     var body: some View {
         Section("Segmentation") {
             if let map = model.map {
-                if let kept = model.kept {
-                    Picker("Show", selection: Binding(get: { map.id }, set: { _ in model.swapMaps() })) {
-                        Text(map.name).tag(map.id)
-                        Text(kept.name).tag(kept.id)
+                if model.maps.count > 1 {
+                    Picker("Show", selection: Binding(get: { map.id }, set: { model.select($0) })) {
+                        ForEach(model.maps) { Text($0.name).tag($0.id) }
                     }
                 }
                 controls(for: map)

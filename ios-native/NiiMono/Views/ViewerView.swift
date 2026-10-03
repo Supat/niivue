@@ -69,11 +69,11 @@ struct ViewerView: View {
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
                 if UserDefaults.standard.bool(forKey: "openEditor") { model.startDrawing() } // for checks
             }
-            .task(id: [model.segmentation.map?.id, model.segmentation.kept?.id]) { await model.updateScanLandmarks() }
+            .task(id: model.segmentation.mapIDs) { await model.updateScanLandmarks() }
             .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { model.landscape = $0 }
             .onChange(of: model.pairedProfileView) { model.photoMarker = nil } // another photo: the marker no longer applies
             .onChange(of: model.sidecarSettings) { model.scheduleSidecarSave() }
-            .onChange(of: model.segmentation.map?.id) { model.saveSidecarMaps() }
+            .onChange(of: model.segmentation.savedOrder) { model.saveSidecarMaps() }
             // A photo alone must still leave a settings.json, or the sidecar isn't found on reopening.
             .onChange(of: model.profile.photos.keys.sorted { $0.rawValue < $1.rawValue }) { model.scheduleSidecarSave() }
             .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }

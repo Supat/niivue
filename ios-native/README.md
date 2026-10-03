@@ -66,7 +66,7 @@ Other). The networks run on the water image when there is one.
 **Sidecar.** Everything in the inspector — view, window, clip planes, segmentation
 visibility and opacity, body-composition inputs, the image role, the companion images (as
 bookmarks) and the segmentation maps themselves — is saved to `<scan>.niimono/`
-(`settings.json`, `shown.nii.gz`, `kept.nii.gz`, `profile-<view>.jpg`) beside the scan when that folder is
+(`settings.json`, `shown.nii.gz`, `kept.nii.gz`, `kept2.nii.gz`, `profile-<view>.jpg`) beside the scan when that folder is
 writable, else under the app's Application Support keyed by the scan's name, size and date.
 Settings save 1.5 s after the last change, maps when they appear; opening the scan again
 restores all of it, so a generated segmentation is never recomputed. The Sidecar section
@@ -130,7 +130,8 @@ the brush, erases, or flood-fills a closed outline on the slice in view; fingers
 and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
 across zoom and anisotropic voxels. Labels are named and coloured from the label menu; undo
 and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). "Done" shows the drawing as the segmentation
-("Custom drawing"; a generated map it replaces is kept for the Show picker) and the sidecar
+("Custom drawing", alongside any generated or loaded maps in the Show picker; "Remove
+Segmentation" removes only the map on screen) and the sidecar
 saves it with its label names; "Edit Drawing…" reopens it. "Export…" shares the drawing as
 `<scan>_drawing.nii.gz`: a uint8 label NIfTI on the scan's own grid and orientation (its voxels
 back in the file's index order under a copy of the scan's header, so ITK-SNAP, 3D Slicer or
