@@ -124,25 +124,30 @@ final class DrawingViewModel: Identifiable {
         let u = mirrored ? 1 - p.x : p.x
         let pt = SIMD2(Float(u) * Float(plane.width), Float(1 - p.y) * Float(plane.height))
         let value = tool == .eraser ? 0 : UInt8(active)
+        let locked = lockedTable
         switch phase {
         case .began:
             guard !isSmoothing else { return } // the smoother is reading the grid
+            if tool != .eraser, activeIsLocked {
+                show(note: "\(activeLabel?.name ?? "This label") is locked. Unlock it in the label list to edit it.")
+                return
+            }
             let before = LabelPainter.read(grid, box: plane.box)
             if tool == .fill {
-                guard let rows = LabelPainter.fill(grid, plane: plane, at: Int(pt.x.rounded(.down)), Int(pt.y.rounded(.down)), value: value) else { return }
+                guard let rows = LabelPainter.fill(grid, plane: plane, at: Int(pt.x.rounded(.down)), Int(pt.y.rounded(.down)), value: value, locked: locked) else { return }
                 commit(plane: plane, before: before, rows: rows)
             } else {
                 stroke = (plane, pt, before)
-                if let rows = LabelPainter.stamp(grid, plane: plane, at: pt, radius: radius(plane), value: value) { touched(plane, rows) }
+                if let rows = LabelPainter.stamp(grid, plane: plane, at: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
             }
         case .moved:
             guard let s = stroke, s.plane == plane else { return }
-            if let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value) { touched(plane, rows) }
+            if let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
             stroke?.last = pt
         case .ended:
             guard let s = stroke else { return }
             stroke = nil
-            if s.plane == plane, let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value) { touched(plane, rows) }
+            if s.plane == plane, let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
             commit(plane: s.plane, before: s.before, rows: nil)
         }
     }
@@ -234,8 +239,22 @@ final class DrawingViewModel: Identifiable {
 
     private(set) var isSmoothing = false
 
-    /// Why the last smoothing did nothing, for the editor; nil otherwise.
-    private(set) var smoothingNote: String?
+    /// A passing message for the editor (why a smoothing or stroke did nothing); nil otherwise.
+    private(set) var note: String?
+
+    private func show(note text: String) {
+        note = text
+        Task { try? await Task.sleep(for: .seconds(4)); if note == text { note = nil } }
+    }
+
+    /// Per label value: locked (256 entries).
+    private var lockedTable: [Bool] {
+        var t = LabelPainter.unlocked
+        for l in labels where l.locked == true { t[l.id] = true }
+        return t
+    }
+
+    var activeIsLocked: Bool { activeLabel?.locked == true }
 
     /// Smooths the surface of the label being edited in 3D (see LabelPainter.smoothed), as
     /// one undo step; other labels stay as they are. Once a label has been smoothed, only
@@ -244,13 +263,12 @@ final class DrawingViewModel: Identifiable {
     /// Runs in the background on a snapshot; drawing waits until it's done.
     func smooth(_ strength: Smoothing, whole: Bool = false) async {
         guard !isSmoothing, let i = labels.firstIndex(where: { $0.id == active }) else { return }
+        guard labels[i].locked != true else { show(note: "\(labels[i].name) is locked."); return }
         flush()
-        smoothingNote = nil
+        note = nil
         let region = whole || labels[i].smoothed != true ? nil : labels[i].unsmoothedBox
         if !whole, labels[i].smoothed == true, region == nil {
-            let note = "\(labels[i].name) is already smoothed; nothing edited since. (Hold the wand for Whole Label.)"
-            smoothingNote = note
-            Task { try? await Task.sleep(for: .seconds(4)); if smoothingNote == note { smoothingNote = nil } }
+            show(note: "\(labels[i].name) is already smoothed; nothing edited since. (Hold the wand for Whole Label.)")
             return
         }
         isSmoothing = true

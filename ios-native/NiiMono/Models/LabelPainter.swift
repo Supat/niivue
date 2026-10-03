@@ -53,10 +53,15 @@ struct SlicePlane: Equatable {
 }
 
 enum LabelPainter {
+    static let unlocked = [Bool](repeating: false, count: 256)
+
     /// Sets the voxels inside an ellipse (centre `p`, radii `r`, both in voxels) to `value`,
-    /// always including the voxel under the centre. Returns the rows touched.
+    /// always including the voxel under the centre, but never a voxel whose label is
+    /// `locked` (256 entries; nil = none). Returns the rows touched.
     @discardableResult
-    static func stamp(_ grid: LabelGrid, plane: SlicePlane, at p: SIMD2<Float>, radius r: SIMD2<Float>, value: UInt8) -> ClosedRange<Int>? {
+    static func stamp(_ grid: LabelGrid, plane: SlicePlane, at p: SIMD2<Float>, radius r: SIMD2<Float>, value: UInt8,
+                      locked: [Bool]? = nil) -> ClosedRange<Int>? {
+        let locked = locked ?? Self.unlocked
         let (w, h) = (plane.width, plane.height)
         let c0 = max(0, Int((p.x - r.x).rounded(.down))), c1 = min(w - 1, Int((p.x + r.x).rounded(.down)))
         let v0 = max(0, Int((p.y - r.y).rounded(.down))), v1 = min(h - 1, Int((p.y + r.y).rounded(.down)))
@@ -66,23 +71,24 @@ enum LabelPainter {
                 let dy = (Float(v) + 0.5 - p.y) / max(r.y, 0.01)
                 for c in c0...c1 {
                     let dx = (Float(c) + 0.5 - p.x) / max(r.x, 0.01)
-                    if dx * dx + dy * dy <= 1 { d[plane.voxel(c, v)] = value }
+                    if dx * dx + dy * dy <= 1 { let i = plane.voxel(c, v); if !locked[Int(d[i])] { d[i] = value } }
                 }
             }
             let (c, v) = (Int(p.x.rounded(.down)), Int(p.y.rounded(.down)))
-            if (0..<w).contains(c), (0..<h).contains(v) { d[plane.voxel(c, v)] = value }
+            if (0..<w).contains(c), (0..<h).contains(v) { let i = plane.voxel(c, v); if !locked[Int(d[i])] { d[i] = value } }
         }
         return v0...v1
     }
 
     /// Stamps along the segment a → b, close enough that a fast stroke leaves no gaps.
     @discardableResult
-    static func line(_ grid: LabelGrid, plane: SlicePlane, from a: SIMD2<Float>, to b: SIMD2<Float>, radius r: SIMD2<Float>, value: UInt8) -> ClosedRange<Int>? {
+    static func line(_ grid: LabelGrid, plane: SlicePlane, from a: SIMD2<Float>, to b: SIMD2<Float>, radius r: SIMD2<Float>, value: UInt8,
+                     locked: [Bool]? = nil) -> ClosedRange<Int>? {
         let d = b - a
         let steps = max(1, Int((max(abs(d.x) / max(r.x, 0.5), abs(d.y) / max(r.y, 0.5)) * 2).rounded(.up)))
         var rows: ClosedRange<Int>?
         for i in 0...steps {
-            if let t = stamp(grid, plane: plane, at: a + d * (Float(i) / Float(steps)), radius: r, value: value) { rows = rows.map { min($0.lowerBound, t.lowerBound)...max($0.upperBound, t.upperBound) } ?? t }
+            if let t = stamp(grid, plane: plane, at: a + d * (Float(i) / Float(steps)), radius: r, value: value, locked: locked) { rows = rows.map { min($0.lowerBound, t.lowerBound)...max($0.upperBound, t.upperBound) } ?? t }
         }
         return rows
     }
@@ -91,12 +97,13 @@ enum LabelPainter {
     /// ponytail: fills whatever is connected, so an unclosed outline fills the whole slice
     /// (undo puts it back); bound by intensity if that turns out to bite.
     @discardableResult
-    static func fill(_ grid: LabelGrid, plane: SlicePlane, at c: Int, _ v: Int, value: UInt8) -> ClosedRange<Int>? {
+    /// A region of a `locked` label is never filled (a region's voxels all share the label).
+    static func fill(_ grid: LabelGrid, plane: SlicePlane, at c: Int, _ v: Int, value: UInt8, locked: [Bool]? = nil) -> ClosedRange<Int>? {
         let (w, h) = (plane.width, plane.height)
         guard (0..<w).contains(c), (0..<h).contains(v) else { return nil }
         return grid.data.withUnsafeMutableBufferPointer { d -> ClosedRange<Int>? in
             let target = d[plane.voxel(c, v)]
-            guard target != value else { return nil }
+            guard target != value, !(locked?[Int(target)] ?? false) else { return nil }
             var stack = [(c, v)], lo = v, hi = v
             d[plane.voxel(c, v)] = value
             while let (x, y) = stack.popLast() {

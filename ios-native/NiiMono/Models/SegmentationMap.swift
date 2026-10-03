@@ -71,6 +71,8 @@ struct CustomLabel: Codable, Equatable, Identifiable {
     /// label has been smoothed, and the box edited since (lo x y z, hi x y z; nil = none).
     var smoothed: Bool? = nil
     var unsmoothed: [Int]? = nil
+    /// Locked in the editor: nothing draws over, erases or fills its voxels.
+    var locked: Bool? = nil
 
     var unsmoothedBox: VoxelBox? {
         get { unsmoothed.flatMap { $0.count == 6 ? VoxelBox(lo: SIMD3($0[0], $0[1], $0[2]), hi: SIMD3($0[3], $0[4], $0[5])) : nil } }

@@ -105,7 +105,7 @@ struct SegmentationEditor: View {
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .glassEffect(.regular, in: .capsule)
                         .padding(.top, 12)
-                } else if let note = drawing.smoothingNote {
+                } else if let note = drawing.note {
                     Text(note).font(.footnote)
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .glassEffect(.regular, in: .capsule)
@@ -113,7 +113,7 @@ struct SegmentationEditor: View {
                         .transition(.opacity)
                 }
             }
-            .animation(.default, value: drawing.smoothingNote)
+            .animation(.default, value: drawing.note)
             .overlay(alignment: .bottom) {
                 VStack(spacing: 8) {
                     if model.volume.count(axis: axis) > 1 {
@@ -190,6 +190,7 @@ struct SegmentationEditor: View {
                 HStack(spacing: 6) {
                     Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
                     Text(drawing.activeLabel?.name ?? "").lineLimit(1)
+                    if drawing.activeIsLocked { Image(systemName: "lock.fill").font(.caption).foregroundStyle(.orange) }
                     Image(systemName: "chevron.up.chevron.down").font(.caption2)
                 }
                 .frame(maxWidth: 180, alignment: .leading)
@@ -279,7 +280,7 @@ private struct LabelList: View {
                 Text("Labels").font(.headline)
                 Spacer()
                 Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
-                    .disabled(drawing.labels.count < 2)
+                    .disabled(drawing.labels.count < 2 || drawing.activeIsLocked)
                     .confirmationDialog("Delete \(drawing.activeLabel?.name ?? "the label") and erase its voxels?", isPresented: $confirmDelete, titleVisibility: .visible) {
                         Button("Delete Label", role: .destructive) { drawing.deleteLabel(drawing.active) }
                     }
@@ -300,6 +301,13 @@ private struct LabelList: View {
                                     supportsOpacity: false)
                             .labelsHidden()
                         TextField("Name", text: $label.name)
+                        // Locked: nothing draws over, erases, fills or smooths its voxels.
+                        Button { label.locked = label.locked == true ? nil : true } label: {
+                            Image(systemName: label.locked == true ? "lock.fill" : "lock.open")
+                                .foregroundStyle(label.locked == true ? Color.orange : Color.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(label.locked == true ? "Unlock \(label.name)" : "Lock \(label.name)")
                     }
                 }
                 .onMove { drawing.labels.move(fromOffsets: $0, toOffset: $1) }

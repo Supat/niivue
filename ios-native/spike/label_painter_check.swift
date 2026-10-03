@@ -121,3 +121,14 @@ precondition(pg.data[at(9, 17, 30)] == 0, "bump in the region survived")
 precondition(pg.data[at(9, 17, 8)] == 1, "bump outside the region was smoothed")
 precondition((0..<(40 * 40 * 20)).allSatisfy { pg.data[$0] == reg[$0] }, "below the region changed")
 print("region smoothing ok")
+
+// Locked labels: brush, eraser and fill leave their voxels alone.
+g = grid()
+var lk = LabelPainter.unlocked; lk[7] = true
+for c in 8...12 { g.data[axial.voxel(c, 10)] = 7 }                 // a locked strip
+LabelPainter.stamp(g, plane: axial, at: SIMD2(10, 10), radius: SIMD2(3, 3), value: 2, locked: lk)
+precondition((8...12).allSatisfy { g.data[axial.voxel($0, 10)] == 7 } && count(g, 2) > 0, "brush overwrote a locked label")
+LabelPainter.line(g, plane: axial, from: SIMD2(5, 10), to: SIMD2(15, 10), radius: SIMD2(2, 2), value: 0, locked: lk)
+precondition(count(g, 7) == 5, "eraser removed a locked label")
+precondition(LabelPainter.fill(g, plane: axial, at: 10, 10, value: 3, locked: lk) == nil, "filled a locked region")
+print("locks ok")

@@ -129,7 +129,8 @@ labels (the eye button hides the scan so the labels stand alone). Apple Pencil p
 the brush, erases, or flood-fills a closed outline on the slice in view; fingers pan, zoom
 and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
 across zoom and anisotropic voxels. Labels are picked, named, coloured and reordered (drag handles; the inspector lists a
-drawing's labels in that order) in the label list that opens from the label chip; undo
+drawing's labels in that order) in the label list that opens from the label chip; a label locked there (padlock) can't be drawn over,
+erased, filled or smoothed by anything until unlocked (the lock is saved with the label); undo
 and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). The wand smooths the surface of the label being edited in 3D (other labels are untouched,
 and it only grows into unlabelled voxels) (tap:
 σ 2 mm; hold for light 1 mm or strong 3.5 mm): the label's mask is Gaussian-blurred (σ in mm
