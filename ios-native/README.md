@@ -66,11 +66,19 @@ Other). The networks run on the water image when there is one.
 **Sidecar.** Everything in the inspector — view, window, clip planes, segmentation
 visibility and opacity, body-composition inputs, the image role, the companion images (as
 bookmarks) and the segmentation maps themselves — is saved to `<scan>.niimono/`
-(`settings.json`, `shown.nii.gz`, `kept.nii.gz`, `kept2.nii.gz`, `profile-<view>.jpg`) beside the scan when that folder is
-writable, else under the app's Application Support keyed by the scan's name, size and date.
-Settings save 1.5 s after the last change, maps when they appear; opening the scan again
-restores all of it, so a generated segmentation is never recomputed. The Sidecar section
-shows where it lives and can delete it.
+(`settings.json`, `shown.nii.gz`, `kept.nii.gz`, `kept2.nii.gz`, `profile-<view>.jpg`, and
+`drawing.nii.gz` + `drawing.prev.nii.gz`, the drawing as an export with its label names) beside
+the scan when that folder is writable, else under the app's Application Support keyed by the
+scan's name and size. Settings save 1.5 s after the last change, maps when they appear;
+opening the scan again restores all of it, so a generated segmentation is never recomputed.
+The Sidecar section shows where it lives and can delete it. Safeguards, after a drawing was
+lost: nothing is saved while the sidecar is being read back (a half-restored state once wrote
+settings without the map names); a map that can't be read back stops all saving, with a
+warning and "Save Anyway", instead of being dropped and its file deleted; a drawing whose slot
+is unreadable comes back from `drawing.nii.gz`; evicted iCloud files are downloaded first; map
+saves run one at a time; and a scan whose key changed (keys used to include the file date,
+which iCloud can change under an open document) finds its earlier sidecar by name, preferring
+the one with the most saved maps.
 
 **Profile.** The inspector's Profile section holds six photos of the subject: axial top and
 bottom, coronal front and back, sagittal left and right, picked from the photo library (no library permission is

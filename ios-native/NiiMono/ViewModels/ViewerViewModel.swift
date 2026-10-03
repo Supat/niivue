@@ -19,6 +19,22 @@ import Observation
     private(set) var openingStage: String?
     private(set) var sidecarSavedAt: Date?
     private(set) var sidecarMapsSaved = false
+    /// Set when the sidecar named maps that couldn't be read back: nothing is saved (which
+    /// would overwrite or delete them) until the scan is reopened or the user says so.
+    private(set) var sidecarProblem: String?
+    private var mapSaveTask: Task<Void, Never>?
+    /// True while the sidecar is being read back: the state is half restored (settings in,
+    /// maps still loading), and a save then would write settings.json without the map names,
+    /// which loses the maps on the next opening. Saves wait until it's done.
+    private var restoring = false
+    private var backedUpDrawing: UUID?
+
+    /// Accept what was restored and save again (the unreadable maps are then given up).
+    func resumeSidecarSaving() {
+        sidecarProblem = nil
+        saveSidecarMaps()
+        scheduleSidecarSave()
+    }
     @ObservationIgnored private var sidecarSaveTask: Task<Void, Never>?
 
     // Opens in 3D. Launch argument `-plane Axial` (etc.) picks another view, for simulator checks.
@@ -263,18 +279,46 @@ import Observation
     func restoreFromSidecar() async -> Bool {
         guard let sidecar, let s = sidecar.loadSettings() else { return false }
         openingStage = "Restoring settings…"
-        defer { openingStage = nil }
+        restoring = true
+        var recovered = false // a map came back from the drawing backup: write the slots again
+        defer {
+            openingStage = nil
+            restoring = false
+            sidecarSaveTask?.cancel() // anything queued meanwhile saw a half-restored state
+            // Also when the drawing has no backup yet (sidecars from before backups existed).
+            let unbackedDrawing = segmentation.customMap != nil && !FileManager.default.fileExists(atPath: sidecar.drawingBackupURL.path)
+            if unbackedDrawing { backedUpDrawing = nil }
+            if recovered || unbackedDrawing, sidecarProblem == nil { saveSidecarMaps() }
+        }
         apply(s)
         await profile.restore()
         let volume = volume
         if s.segmentation.shownName != nil {
             openingStage = "Loading saved segmentation…"
             let slots = zip(Self.mapSlots, [s.segmentation.shownName, s.segmentation.keptName, s.segmentation.kept2Name])
-            let maps = await Task.detached(priority: .userInitiated) { () -> [SegmentationMap] in
-                slots.compactMap { slot, name in name.flatMap { sidecar.loadMap(slot: slot, name: $0, volume: volume) } }
+                .compactMap { slot, name in name.map { (slot, $0) } }
+            var (maps, missing) = await Task.detached(priority: .userInitiated) { () -> ([SegmentationMap], [String]) in
+                var maps: [SegmentationMap] = [], missing: [String] = []
+                for (slot, name) in slots {
+                    if let m = sidecar.loadMap(slot: slot, name: name, volume: volume) { maps.append(m) } else { missing.append(name) }
+                }
+                return (maps, missing)
             }.value
+            // A drawing whose slot can't be read comes back from its backup (names included).
+            if missing.contains(LabelTable.customMapName),
+               let r = try? CustomSegmentationFile.read(from: sidecar.drawingBackupURL, scoped: false, volume: volume) {
+                maps.append(r.map)
+                segmentation.customLabels = r.labels
+                missing.removeAll { $0 == LabelTable.customMapName }
+                recovered = true
+            }
             segmentation.restore(maps, visible: s.segmentation.visible)
-            sidecarMapsSaved = !maps.isEmpty
+            backedUpDrawing = segmentation.customMap?.id // restored as saved: no new backup needed
+            sidecarMapsSaved = missing.isEmpty && !maps.isEmpty
+            if !missing.isEmpty {
+                sidecarProblem = "Couldn't read \(missing.joined(separator: ", ")) from the sidecar. Saving is paused so it isn't overwritten; reopen the scan to try again."
+                MemoryLog.log.notice("sidecar: missing maps \(missing, privacy: .public) in \(sidecar.folder.path, privacy: .public)")
+            }
         }
         for (which, companion) in [(ImageRole.water, s.water), (.fat, s.fat)] {
             guard let companion, let url = companion.resolve() else { continue }
@@ -295,11 +339,13 @@ import Observation
 
     /// Write the settings a moment after the last change (coalesces slider drags).
     func scheduleSidecarSave() {
-        guard let sidecar else { return }
+        guard let sidecar, sidecarProblem == nil, !restoring else { return }
         sidecarSaveTask?.cancel()
         sidecarSaveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled, let self else { return }
+            // Checked again here: a save queued while the sidecar was being restored must not
+            // land after restoring found maps missing.
+            guard !Task.isCancelled, let self, sidecarProblem == nil, !restoring else { return }
             let settings = sidecarSettings
             await Task.detached { try? sidecar.save(settings) }.value
             sidecarSavedAt = .now
@@ -309,23 +355,35 @@ import Observation
     /// Sidecar files of the shown map and the others, in that order.
     private static let mapSlots = ["shown", "kept", "kept2"]
 
-    /// Write the current maps (after a generation, load, switch or removal) in the background.
+    /// Write the current maps (after a generation, load, switch or removal) in the background,
+    /// one save after another (two at once could leave the slots mixed), plus a backup of the
+    /// drawing when it is new.
     func saveSidecarMaps() {
-        guard let sidecar else { return }
+        guard let sidecar, sidecarProblem == nil, !restoring else { return }
         let ordered: [SegmentationMap?] = [segmentation.map] + segmentation.others
-        let voxel = volume.voxelSize
+        let voxel = volume.voxelSize, volume = volume
+        let drawing = segmentation.customMap.flatMap { $0.id == backedUpDrawing ? nil : $0 }
+        let labels = segmentation.customLabels
         sidecarMapsSaved = false
-        Task { [weak self] in
+        let previous = mapSaveTask
+        mapSaveTask = Task { [weak self] in
+            await previous?.value
+            guard self?.sidecarProblem == nil else { return }
             let ok = await Task.detached(priority: .utility) { () -> Bool in
                 do {
                     for (i, slot) in Self.mapSlots.enumerated() {
                         try sidecar.saveMap(i < ordered.count ? ordered[i] : nil, slot: slot, voxelSize: voxel)
                     }
+                    if let drawing {
+                        try sidecar.saveDrawingBackup(CustomSegmentationFile.export(drawing, labels: labels, like: volume))
+                    }
                     return true
                 } catch { return false }
             }.value
-            self?.sidecarMapsSaved = ok
-            self?.scheduleSidecarSave() // the names in settings.json must match the files
+            guard let self else { return }
+            if ok, let drawing { backedUpDrawing = drawing.id }
+            sidecarMapsSaved = ok
+            scheduleSidecarSave() // the names in settings.json must match the files
         }
     }
 

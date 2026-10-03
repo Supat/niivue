@@ -54,7 +54,11 @@ struct InspectorView: View {
                     Section("Sidecar") {
                         LabeledContent("Location", value: sidecar.besideScan ? "Beside the scan" : "In the app's library")
                         LabeledContent("Settings", value: model.sidecarSavedAt.map { "saved " + $0.formatted(date: .omitted, time: .shortened) } ?? "not saved yet")
-                        if model.segmentation.map != nil {
+                        if let problem = model.sidecarProblem {
+                            Label(problem, systemImage: "exclamationmark.triangle.fill")
+                                .font(.footnote).foregroundStyle(.orange)
+                            Button("Save Anyway", role: .destructive) { model.resumeSidecarSaving() }
+                        } else if model.segmentation.map != nil {
                             LabeledContent("Segmentation", value: model.sidecarMapsSaved ? "saved" : "saving…")
                         }
                         Text("Settings, the segmentation maps, the companion images and the profile photos are remembered here and restored when the scan is opened again.")
