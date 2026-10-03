@@ -48,6 +48,7 @@ struct SegmentationOverlay {
     let opacity: Float
     let ghost: Bool         // 3D: fade unlabelled tissue so labelled structures show through
     var hideScan = false    // 3D: draw the labels alone
+    var mask = false        // slices: black outside the shown labels (3D: with hideScan)
     /// Bumped when a drawing changes the voxels in place; `dirtyZ` is the z slices changed
     /// since the previous revision (nil = unknown, upload everything).
     var revision = 0
@@ -92,7 +93,7 @@ extension LabelTable {
 
 extension NiftiVolume {
     /// Grey slice with the segmentation blended in (RGBX, 4 bytes/pixel): pixels whose label
-    /// is shown get `opacity` of the label colour, the rest stay grey.
+    /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`).
     func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay) -> (width: Int, height: Int, pixels: [UInt8]) {
         let s = slice(axis: axis, index: index, lo: lo, hi: hi)
         let (nx, ny, _) = dims, (w, h) = (s.width, s.height)
@@ -108,7 +109,9 @@ extension NiftiVolume {
                         let i = axis == 0 ? k + nx * (c + ny * v) : axis == 1 ? c + nx * (k + ny * v) : c + nx * (v + ny * k)
                         let g = Int(s.pixels[r * w + c]), o = (r * w + c) * 4
                         let color = lut[Int(lab[i])]
-                        if color.w > 0 {
+                        if overlay.mask && color.w == 0 {
+                            px[o] = 0; px[o + 1] = 0; px[o + 2] = 0
+                        } else if color.w > 0 {
                             px[o] = UInt8((g * ia + Int(color.x) * a) >> 8)
                             px[o + 1] = UInt8((g * ia + Int(color.y) * a) >> 8)
                             px[o + 2] = UInt8((g * ia + Int(color.z) * a) >> 8)

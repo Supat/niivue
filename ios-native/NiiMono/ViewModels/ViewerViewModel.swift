@@ -219,6 +219,7 @@ import Observation
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
+                                mask: segmentation.mask,
                                 shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
                                 kept2Name: segmentation.others.dropFirst().first?.name,
                                 customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
@@ -247,6 +248,7 @@ import Observation
         bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
+        segmentation.mask = s.segmentation.mask ?? false
         segmentation.customLabels = s.segmentation.customLabels ?? []
         bodyComposition.weightKg = s.body.weightKg
         bodyComposition.heightCm = s.body.heightCm ?? bodyComposition.heightCm

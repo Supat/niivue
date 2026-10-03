@@ -105,6 +105,11 @@ app's own containers; the iCloud one comes from the CloudDocuments entitlement i
 right beside them; files picked from anywhere else are reachable only individually, so
 their sidecars go to the fallback location.
 
+**Masking.** "Mask to Visible Segments" (Segmentation section) turns the visible labels
+into a mask: only the scan inside them is shown, without the label colours (slices are black
+outside, the 3D render draws only the labelled tissue), so hiding a label cuts it out too. Saved in
+the sidecar; `-segMask YES` for checks.
+
 **On-device segmentation.** "Generate Segmentation" in the Segmentation section runs both
 TotalSegmentator `total_mr` networks (Dataset850 organs, Dataset851 muscles/bones; nnU-Net
 3d_fullres, fold 0) as Core ML models bundled in the app (`NiiMono/Organs.mlpackage`,

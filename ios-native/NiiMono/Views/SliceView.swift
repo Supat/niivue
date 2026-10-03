@@ -54,12 +54,13 @@ struct SliceView: UIViewRepresentable {
     /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
     struct ImageKey: Equatable {
         let axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
-        let mapID: UUID?, revision: Int, opacity: Float, lut: [SIMD4<UInt8>]
+        let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, lut: [SIMD4<UInt8>]
     }
 
     func updateUIView(_ view: ZoomView, context: Context) {
         let key = ImageKey(axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
-                           mapID: overlay?.mapID, revision: overlay?.revision ?? 0, opacity: overlay?.opacity ?? 0, lut: overlay?.lut ?? [])
+                           mapID: overlay?.mapID, revision: overlay?.revision ?? 0, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
+                           lut: overlay?.lut ?? [])
         if view.imageKey != key {
             view.imageKey = key
             if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
@@ -320,7 +321,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             onPan?(centreFraction, animatingZoom)
         }
     }
-
+    
     /// The image point at the middle of the viewport, as fractions of the image (x right,
     /// y down); setting it scrolls there as far as the edges allow.
     var centreFraction: CGPoint {

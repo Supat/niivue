@@ -41,6 +41,7 @@ struct SidecarSettings: Codable, Equatable {
 
     struct Segmentation: Codable, Equatable {
         var visible: [Bool], opacity: Float, ghost: Bool
+        var mask: Bool? // absent in older sidecars
         /// Original file / generated names of the shown and kept maps (the label table is
         /// picked from the name); the voxels live in shown.nii.gz / kept.nii.gz / kept2.nii.gz beside this file.
         var shownName: String?, keptName: String?

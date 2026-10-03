@@ -22,6 +22,9 @@ import Observation
     var visible: [Bool] = []      // indexed by label; [0] unused
     var opacity: Float = 0.65     // colour blend over the grey image
     var ghost = UserDefaults.standard.bool(forKey: "segGhost") // `-segGhost YES` for checks
+    /// The visible labels act as a mask: only the scan inside them is shown, uncoloured, in
+    /// every view.
+    var mask = UserDefaults.standard.bool(forKey: "segMask") // `-segMask YES` for checks
 
     var isLoading = false
     var error: String?
@@ -56,7 +59,9 @@ import Observation
             let c = map.table.color(l) * 255
             lut[l] = SIMD4(UInt8(c.x), UInt8(c.y), UInt8(c.z), 255)
         }
-        return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: opacity, ghost: ghost)
+        // Masked: the scan alone inside the labels, no colour.
+        return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: mask ? 0 : opacity, ghost: ghost,
+                                   hideScan: mask, mask: mask)
     }
 
     /// Put a map on screen, all its labels visible.
