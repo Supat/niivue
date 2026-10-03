@@ -122,24 +122,38 @@ the simulator's CPU-only Core ML path allocates ~19 GB and dies. Models are rege
 `tools/convert_organ_model.py <out> organs|muscles` (TotalSegmentator weights, Python 3.11
 with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-commercial licence.
 
+**Drawing a segmentation.** Inspector › Segmentation › "Draw Segmentation…" opens the
+editor full screen: the drawing slice on the right, and on the left a reference slice (tap it
+to move the drawing slice; the plane menu and ⇄ swap the two panes) above the 3D render of the
+labels (the eye button hides the scan so the labels stand alone). Apple Pencil paints with
+the brush, erases, or flood-fills a closed outline on the slice in view; fingers pan, zoom
+and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
+across zoom and anisotropic voxels. Labels are named and coloured from the label menu; undo
+and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). "Done" shows the drawing as the segmentation
+("Custom drawing"; a generated map it replaces is kept for the Show picker) and the sidecar
+saves it with its label names; "Edit Drawing…" reopens it. Strokes change the label grid in
+place (`LabelGrid`) and are published ~30 times a second: the slice panes recomposite and the
+3D render re-uploads only the z slices touched.
+
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
-the last scan by itself), `-sideBySide YES`, `-showProfile YES`.
+the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YES` (opens the segmentation editor).
 
 ## Files (MVVM)
 
 | Folder | Contents |
 |---|---|
 | `NiiMono/App` | `NiiMonoApp` (DocumentGroup) and `MRIDocument`. |
-| `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` and the slice compositing; `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
-| `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs). |
-| `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
+| `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` + `LabelGrid` and the slice compositing; `LabelPainter` (brush, line, fill on a slice); `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
+| `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs), `DrawingViewModel` (segmentation editor: labels, tools, undo). |
+| `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `SegmentationEditor`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
 | `NiiMono/Services` | `SidecarStore`; `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
+| `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, undo round trip (build line in its header). |
 | `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 
 Run the reader check (Swift only allows top-level code in `main.swift`, hence the copy):

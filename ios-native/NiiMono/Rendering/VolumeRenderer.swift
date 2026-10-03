@@ -44,8 +44,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private var labelTex: MTLTexture?  // r8Uint labels, same grid as the volume
     private let noLabels: MTLTexture   // 1×1×1 r8Uint stand-in: the slot must hold a uint texture
     private var labelSource: UUID?
+    private var labelRevision = 0
     var overlayOpacity: Float = 0.65
-    var overlayGhost = false
+    var overlayGhost: Int32 = 0 // 0 = off, 1 = fade unlabelled tissue, 2 = labels alone
     let boxHalf: simd_float3
     /// Millimetres per box-space unit (the box's longest side is 1 unit: boxHalf ≤ 0.5).
     let mmPerUnit: Float
@@ -227,23 +228,36 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// Attach (or detach) a segmentation; the label volume is uploaded once per map.
     func setOverlay(_ seg: SegmentationOverlay?) {
         overlayOpacity = seg?.opacity ?? 0
-        overlayGhost = seg?.ghost ?? false
+        overlayGhost = seg.map { $0.hideScan ? 2 : $0.ghost ? 1 : 0 } ?? 0
         guard let seg else { labelTex = nil; labelSource = nil; return }
         seg.lut.withUnsafeBytes { labelLUT.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 256 * 4) }
-        guard labelSource != seg.mapID else { return }
         let (nx, ny, nz) = seg.labels.dims
+        if labelSource == seg.mapID, let tex = labelTex {
+            guard labelRevision != seg.revision else { return }
+            // A drawing changed some slices in place: upload just those, if none were missed.
+            let z = seg.revision == labelRevision + 1 ? seg.dirtyZ ?? 0..<nz : 0..<nz
+            upload(seg.labels, z: z.clamped(to: 0..<nz), into: tex)
+            labelRevision = seg.revision
+            return
+        }
         let td = MTLTextureDescriptor()
         td.textureType = .type3D; td.pixelFormat = .r8Uint
         td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
         guard let tex = device.makeTexture(descriptor: td) else { return }
-        seg.labels.data.withUnsafeBytes { raw in
-            for z in 0..<nz { // per slice: keeps the staging copy small
+        upload(seg.labels, z: 0..<nz, into: tex)
+        labelTex = tex
+        labelSource = seg.mapID
+        labelRevision = seg.revision
+    }
+
+    private func upload(_ labels: LabelGrid, z range: Range<Int>, into tex: MTLTexture) {
+        let (nx, ny, _) = labels.dims
+        labels.data.withUnsafeBytes { raw in
+            for z in range { // per slice: keeps the staging copy small
                 tex.replace(region: MTLRegionMake3D(0, 0, z, nx, ny, 1), mipmapLevel: 0, slice: 0,
                             withBytes: raw.baseAddress! + z * nx * ny, bytesPerRow: nx, bytesPerImage: nx * ny)
             }
         }
-        labelTex = tex
-        labelSource = seg.mapID
     }
 
     func draw(in view: MTKView) {
@@ -328,7 +342,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         clipCount: Int32(active.count), clipCutaway: clipCutaway ? 1 : 0,
                         clipHighlight: clipHighlight ? 1 : 0,
                         crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
-                        overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost ? 1 : 0,
+                        overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost,
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
                         fovCount: Int32(fov.count / 2), crosshairStep: 0)
     }

@@ -49,7 +49,7 @@ import Observation
             let c = map.table.color(l) * 255
             lut[l] = SIMD4(UInt8(c.x), UInt8(c.y), UInt8(c.z), 255)
         }
-        return SegmentationOverlay(mapID: map.id, labels: map.labels, lut: lut, opacity: opacity, ghost: ghost)
+        return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: opacity, ghost: ghost)
     }
 
     func show(_ new: SegmentationMap?) {
@@ -71,6 +71,29 @@ import Observation
     }
 
     func setAllVisible(_ on: Bool) { visible = visible.map { _ in on } }
+
+    // MARK: - Drawn segmentation
+
+    /// Names and colours of the drawn map's labels (kept in the sidecar settings).
+    var customLabels: [CustomLabel] = []
+
+    /// The drawn map, if it is the one shown or kept.
+    var customMap: SegmentationMap? { [map, kept].compactMap { $0 }.first { $0.name == LabelTable.customMapName } }
+
+    /// Show a finished drawing; the map it replaces is kept (unless that was the drawing).
+    func showCustom(_ new: SegmentationMap, labels: [CustomLabel]) {
+        customLabels = labels
+        if kept?.name == LabelTable.customMapName { kept = nil }
+        if let map, map.name != LabelTable.customMapName { kept = map }
+        show(new)
+    }
+
+    private func withCustomTable(_ m: SegmentationMap) -> SegmentationMap {
+        guard m.name == LabelTable.customMapName else { return m }
+        var m = m
+        m.table = .custom(customLabels)
+        return m
+    }
 
     // MARK: - Loading
 
@@ -111,8 +134,8 @@ import Observation
 
     /// Install maps read from the sidecar (no file access, no error reporting).
     func restore(shown: SegmentationMap?, kept: SegmentationMap?, visible: [Bool]) {
-        show(shown)
-        self.kept = kept
+        show(shown.map(withCustomTable))
+        self.kept = kept.map(withCustomTable)
         if visible.count == self.visible.count { self.visible = visible }
     }
 

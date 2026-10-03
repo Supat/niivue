@@ -33,6 +33,10 @@ struct SliceView: UIViewRepresentable {
     var fov: [FOVRect] = []
     /// If set, a tap reports its position (same fractions) instead of calling onTap.
     var onLocate: ((CGPoint) -> Void)? = nil
+    /// If set, the Pencil draws (reported in the same fractions) instead of measuring.
+    var onDraw: ((DrawPhase, CGPoint) -> Void)? = nil
+    /// With onDraw: a finger draws too (pan and zoom then need a trackpad).
+    var drawsWithFinger = false
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
     /// moves it, so another pane can follow.
     var onViewport: ((CGRect) -> Void)? = nil
@@ -47,12 +51,12 @@ struct SliceView: UIViewRepresentable {
     /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
     struct ImageKey: Equatable {
         let axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
-        let mapID: UUID?, opacity: Float, lut: [SIMD4<UInt8>]
+        let mapID: UUID?, revision: Int, opacity: Float, lut: [SIMD4<UInt8>]
     }
 
     func updateUIView(_ view: ZoomView, context: Context) {
         let key = ImageKey(axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
-                           mapID: overlay?.mapID, opacity: overlay?.opacity ?? 0, lut: overlay?.lut ?? [])
+                           mapID: overlay?.mapID, revision: overlay?.revision ?? 0, opacity: overlay?.opacity ?? 0, lut: overlay?.lut ?? [])
         if view.imageKey != key {
             view.imageKey = key
             if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
@@ -63,6 +67,8 @@ struct SliceView: UIViewRepresentable {
         view.onTap = onTap
         view.onScrub = onScrub
         view.onLocate = onLocate
+        view.onDraw = onDraw
+        view.drawsWithFinger = drawsWithFinger
         view.crosshair = crosshair
         view.fov = fov
         view.onZoom = onZoom
@@ -110,6 +116,8 @@ struct SliceView: UIViewRepresentable {
     }
 }
 
+enum DrawPhase { case began, moved, ended }
+
 final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -126,6 +134,13 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onTap: () -> Void = {}
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?
+    var onDraw: ((DrawPhase, CGPoint) -> Void)? { didSet { if onDraw != nil { measure = nil } } }
+    var drawsWithFinger = false {
+        didSet {
+            let types: [UITouch.TouchType] = drawsWithFinger ? [.pencil, .direct] : [.pencil]
+            measurePress.allowedTouchTypes = types.map { $0.rawValue as NSNumber }
+        }
+    }
     var onZoom: ((CGFloat, _ animated: Bool) -> Void)?
     var onPan: ((CGPoint, _ animated: Bool) -> Void)?
     var onViewport: ((CGRect) -> Void)? { didSet { reported = nil; reportViewport() } }
@@ -403,6 +418,17 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 
     @objc private func measured(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: imageView)
+        if let onDraw {
+            let s = imageView.bounds.size
+            guard s.width > 0, s.height > 0 else { return }
+            let f = CGPoint(x: p.x / s.width, y: p.y / s.height)
+            switch g.state {
+            case .began: onDraw(.began, f)
+            case .changed: onDraw(.moved, f)
+            default: onDraw(.ended, f) // ended or cancelled: either way the stroke is over
+            }
+            return
+        }
         switch g.state {
         case .began: measure = (p, p, false)
         case .changed: measure?.b = p

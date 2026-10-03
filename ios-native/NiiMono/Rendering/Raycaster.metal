@@ -24,7 +24,7 @@ struct Uniforms {
     float3   crosshair;     // crosshair point in box space
     int      overlayOn;     // 1 = a label volume is bound at texture(2), its LUT at texture(3)
     float    overlayOpacity;
-    int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through
+    int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through, 2 = labels alone
     float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
     int      fovCount;      // station FOV boxes at buffer(1): [lo, hi] pairs in box space
     float    crosshairStep; // box-space spacing of the crosshair's scale ticks (0 = none)
@@ -131,7 +131,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
                 rgb = mix(rgb, lut.read(lab).rgb, u.overlayOpacity);
                 a = max(a, 0.4 * u.overlayOpacity);
             } else if (u.overlayGhost != 0 && u.overlayOn != 0) {
-                a *= 0.08;
+                a *= u.overlayGhost == 2 ? 0.0 : 0.08;
             }
             if (a < 0.01) { continue; }
             tSurface = min(tSurface, tIn + s * tStep);

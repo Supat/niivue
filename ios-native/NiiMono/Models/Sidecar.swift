@@ -44,6 +44,7 @@ struct SidecarSettings: Codable, Equatable {
         /// Original file / generated names of the shown and kept maps (the label table is
         /// picked from the name); the voxels live in shown.nii.gz / kept.nii.gz beside this file.
         var shownName: String?, keptName: String?
+        var customLabels: [CustomLabel]? // the drawn map's label names; absent in older sidecars
     }
     var segmentation: Segmentation
 

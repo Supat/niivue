@@ -67,6 +67,7 @@ struct ViewerView: View {
                     await model.discoverSiblings()
                 }
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
+                if UserDefaults.standard.bool(forKey: "openEditor") { model.startDrawing() } // for checks
             }
             .task(id: [model.segmentation.map?.id, model.segmentation.kept?.id]) { await model.updateScanLandmarks() }
             .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { model.landscape = $0 }
@@ -80,6 +81,7 @@ struct ViewerView: View {
             .onChange(of: model.plane) { scheduleChromeHide() }
             .onChange(of: model.slices) { scheduleChromeHide() }
             .onChange(of: model.mirrored) { scheduleChromeHide() }
+            .modifier(EditorCover(model: model))
             .inspector(isPresented: $showInspector) {
                 InspectorView(model: model)
                     .inspectorColumnWidth(Self.inspectorWidth)
@@ -323,7 +325,7 @@ private struct DirectionLabels: View {
     }
 }
 
-private struct SliceScrubber: View {
+struct SliceScrubber: View {
     let model: ViewerViewModel
     let axis: Int
     let count: Int
@@ -389,6 +391,18 @@ private struct BookmarkMenu: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The segmentation editor, full screen while `model.drawing` is set. A modifier of its own
+/// keeps ViewerView's long modifier chain within the type checker's reach.
+private struct EditorCover: ViewModifier {
+    let model: ViewerViewModel
+
+    func body(content: Content) -> some View {
+        content.fullScreenCover(item: Binding(get: { model.drawing }, set: { model.drawing = $0 })) { drawing in
+            SegmentationEditor(model: model, drawing: drawing)
         }
     }
 }

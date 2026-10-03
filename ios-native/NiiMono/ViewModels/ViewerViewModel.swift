@@ -26,6 +26,22 @@ import Observation
     var slices: [Int]
     /// Saved slice positions, kept in the sidecar.
     var bookmarks: [SliceBookmark] = []
+    /// The segmentation editor, while it is open.
+    var drawing: DrawingViewModel?
+
+    /// Opens the editor on the drawn map if there is one (else a blank grid), drawing on the
+    /// plane in view.
+    func startDrawing() {
+        drawing = DrawingViewModel(volume: volume, existing: segmentation.customMap,
+                                   labels: segmentation.customLabels, mainAxis: plane.axis ?? 2)
+    }
+
+    /// Closes the editor, showing the drawing if anything was drawn.
+    func finishDrawing() async {
+        guard let d = drawing else { return }
+        if let map = await d.result() { segmentation.showCustom(map, labels: d.labels) }
+        drawing = nil
+    }
     var multiZoom: CGFloat = 1        // zoom shared by the multiplanar slice panes
     var multiZoomAnimated = false     // whether the last change came from an animated (double-tap) zoom
     /// Point of the volume (fractions along x, y, z) the multiplanar panes keep centred, so
@@ -121,7 +137,8 @@ import Observation
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
-                                shownName: segmentation.map?.name, keptName: segmentation.kept?.name),
+                                shownName: segmentation.map?.name, keptName: segmentation.kept?.name,
+                                customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
             fat: segmentation.fatURL.flatMap(SidecarSettings.Companion.init),
             body: .init(weightKg: bodyComposition.weightKg, missing: bodyComposition.missing.map(\.rawValue).sorted(),
@@ -147,6 +164,7 @@ import Observation
         bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
+        segmentation.customLabels = s.segmentation.customLabels ?? []
         bodyComposition.weightKg = s.body.weightKg
         bodyComposition.heightCm = s.body.heightCm ?? bodyComposition.heightCm
         bodyComposition.ageYears = s.body.ageYears ?? bodyComposition.ageYears

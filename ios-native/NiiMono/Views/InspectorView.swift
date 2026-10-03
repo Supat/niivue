@@ -43,7 +43,14 @@ struct InspectorView: View {
             case .segmentation:
                 ImageSection(model: model.segmentation) // the Dixon role and companions the tissue classes need
                 SegmentationSection(model: model.segmentation)
-                if let map = model.segmentation.map {
+                Section("Custom Segmentation") {
+                    Button(model.segmentation.customMap == nil ? "Draw Segmentation…" : "Edit Drawing…",
+                           systemImage: "pencil.and.scribble") { model.startDrawing() }
+                        .disabled(model.segmentation.isGenerating)
+                    Text("Draw labels slice by slice with Apple Pencil, alongside a reference slice and the 3D render.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if let map = model.segmentation.map, map.name != LabelTable.customMapName { // no tissue densities for drawn labels
                     BodyCompositionSection(model: model.bodyComposition, map: map)
                 }
             case .profile:

@@ -8,7 +8,7 @@ struct SegmentationMap: Identifiable, @unchecked Sendable {
     let id = UUID()
     let labels: LabelVolume
     let name: String
-    let table: LabelTable
+    var table: LabelTable // replaced for a drawn map once its label names are known
     /// Voxel counts per label ([0] = unlabelled), and how many of those unlabelled voxels are
     /// inside the body (non-zero intensity) — for the body-composition estimate.
     let counts: [Int]
@@ -19,10 +19,10 @@ struct SegmentationMap: Identifiable, @unchecked Sendable {
     var labelRange: Range<Int> { 1..<(labels.maxLabel + 1) }
 
     /// `volume` is the scan the labels sit on; counting is one pass, do it off the main thread.
-    init(labels: LabelVolume, name: String, volume: NiftiVolume) {
+    init(labels: LabelVolume, name: String, volume: NiftiVolume, table: LabelTable? = nil) {
         self.labels = labels
         self.name = name
-        table = LabelTable.forFile(named: name)
+        self.table = table ?? LabelTable.forFile(named: name)
         var counts = [Int](repeating: 0, count: 256), body = 0
         labels.data.withUnsafeBufferPointer { l in volume.data.withUnsafeBufferPointer { v in
             for i in 0..<l.count {
@@ -40,10 +40,40 @@ struct SegmentationMap: Identifiable, @unchecked Sendable {
 /// (alpha 0 = hidden) and the blend settings.
 struct SegmentationOverlay {
     let mapID: UUID
-    let labels: LabelVolume
+    let labels: LabelGrid
     let lut: [SIMD4<UInt8>] // 256 entries
     let opacity: Float
     let ghost: Bool         // 3D: fade unlabelled tissue so labelled structures show through
+    var hideScan = false    // 3D: draw the labels alone
+    /// Bumped when a drawing changes the voxels in place; `dirtyZ` is the z slices changed
+    /// since the previous revision (nil = unknown, upload everything).
+    var revision = 0
+    var dirtyZ: Range<Int>? = nil
+}
+
+/// Label voxels held by reference, so a drawing can change them in place while views hold
+/// the overlay (an array inside a struct would be copied whole, 60+ MB, on every stroke).
+final class LabelGrid: @unchecked Sendable {
+    let dims: (Int, Int, Int)
+    var data: [UInt8]
+    init(_ v: LabelVolume) { dims = v.dims; data = v.data } // shares the array until written
+}
+
+/// A label the user drew: id 1...255, a name and a colour (0...1 RGB).
+struct CustomLabel: Codable, Equatable, Identifiable {
+    var id: Int
+    var name: String
+    var color: [Float]
+}
+
+extension LabelTable {
+    /// Name of a map drawn in the app; its label names come from the sidecar, not the file.
+    static let customMapName = "Custom drawing"
+
+    static func custom(_ labels: [CustomLabel]) -> LabelTable {
+        LabelTable(names: Dictionary(uniqueKeysWithValues: labels.map { ($0.id, $0.name) }),
+                   colors: Dictionary(uniqueKeysWithValues: labels.filter { $0.color.count == 3 }.map { ($0.id, SIMD3($0.color[0], $0.color[1], $0.color[2])) }))
+    }
 }
 
 extension NiftiVolume {
