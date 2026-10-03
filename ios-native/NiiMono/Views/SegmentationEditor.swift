@@ -88,6 +88,8 @@ struct SegmentationEditor: View {
                          crosshair: model.showCrosshair ? model.crosshair(in: axis) : nil,
                          onDraw: { phase, p in drawing.handle(phase, p, index: model.slices[axis], mirrored: model.mirrored) },
                          drawsWithFinger: drawing.drawsWithFinger,
+                         onTwoFingerTap: { drawing.tapUndo() },
+                         onThreeFingerTap: { drawing.tapRedo() },
                          scaleBarInset: 120,
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }

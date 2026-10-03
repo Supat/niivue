@@ -37,6 +37,9 @@ struct SliceView: UIViewRepresentable {
     var onDraw: ((DrawPhase, CGPoint) -> Void)? = nil
     /// With onDraw: a finger draws too (pan and zoom then need a trackpad).
     var drawsWithFinger = false
+    /// Two- and three-finger taps (the drawing pane's undo and redo); nil = off.
+    var onTwoFingerTap: (() -> Void)? = nil
+    var onThreeFingerTap: (() -> Void)? = nil
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
     /// moves it, so another pane can follow.
     var onViewport: ((CGRect) -> Void)? = nil
@@ -68,6 +71,8 @@ struct SliceView: UIViewRepresentable {
         view.onScrub = onScrub
         view.onLocate = onLocate
         view.onDraw = onDraw
+        view.onTwoFingerTap = onTwoFingerTap
+        view.onThreeFingerTap = onThreeFingerTap
         view.drawsWithFinger = drawsWithFinger
         view.crosshair = crosshair
         view.fov = fov
@@ -134,6 +139,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     var onTap: () -> Void = {}
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)? { didSet { twoFingerTap.isEnabled = onTwoFingerTap != nil } }
+    var onThreeFingerTap: (() -> Void)? { didSet { threeFingerTap.isEnabled = onThreeFingerTap != nil } }
+    private let twoFingerTap = UITapGestureRecognizer()
+    private let threeFingerTap = UITapGestureRecognizer()
     var onDraw: ((DrawPhase, CGPoint) -> Void)? { didSet { if onDraw != nil { measure = nil } } }
     var drawsWithFinger = false {
         didSet {
@@ -230,7 +239,16 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         let notPencil = [UITouch.TouchType.direct, .indirect, .indirectPointer].map { $0.rawValue as NSNumber }
         for g in [double, single, scrub, panGestureRecognizer] as [UIGestureRecognizer] { g.allowedTouchTypes = notPencil }
         pinchGestureRecognizer?.allowedTouchTypes = notPencil
-        [double, single, scrub, measurePress].forEach(addGestureRecognizer)
+        // Undo / redo taps: fingers only, and a three-finger tap must not also count as two.
+        for (g, n) in [(twoFingerTap, 2), (threeFingerTap, 3)] {
+            g.numberOfTouchesRequired = n
+            g.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+            g.isEnabled = false
+        }
+        twoFingerTap.addTarget(self, action: #selector(fingerTapped))
+        threeFingerTap.addTarget(self, action: #selector(fingerTapped))
+        twoFingerTap.require(toFail: threeFingerTap)
+        [double, single, scrub, measurePress, twoFingerTap, threeFingerTap].forEach(addGestureRecognizer)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -416,6 +434,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         scaleLabel.frame = CGRect(x: right - length / 2 - 40, y: y - tick - 16, width: 80, height: 14)
     }
 
+    @objc private func fingerTapped(_ g: UITapGestureRecognizer) {
+        (g === twoFingerTap ? onTwoFingerTap : onThreeFingerTap)?()
+    }
+
     @objc private func measured(_ g: UILongPressGestureRecognizer) {
         let p = g.location(in: imageView)
         if let onDraw {
@@ -510,7 +532,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         // While the Pencil draws a ruler nothing else may scroll, zoom or scrub.
-        if measurePress.state == .began || measurePress.state == .changed, g !== measurePress { return false }
+        // (The undo/redo taps may still land: drawing with a finger, the first finger of the
+        // tap has started a stroke, which the editor then discards.)
+        if measurePress.state == .began || measurePress.state == .changed, g !== measurePress,
+           g !== twoFingerTap, g !== threeFingerTap { return false }
         if g === scrub { return zoomScale <= minimumZoomScale + 0.01 }
         return super.gestureRecognizerShouldBegin(g)
     }

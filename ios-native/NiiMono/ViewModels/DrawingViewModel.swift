@@ -49,6 +49,7 @@ final class DrawingViewModel: Identifiable {
 
     private var stroke: (plane: SlicePlane, last: SIMD2<Float>, before: [UInt8])?
     private var undoStack: [(plane: SlicePlane, values: [UInt8])] = []
+    private var lastCommit = Date.distantPast
     private var redoStack: [(plane: SlicePlane, values: [UInt8])] = []
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
@@ -145,6 +146,7 @@ final class DrawingViewModel: Identifiable {
     private func commit(plane: SlicePlane, before: [UInt8], rows: ClosedRange<Int>?) {
         if let rows { touched(plane, rows) }
         undoStack.append((plane, before))
+        lastCommit = .now
         if undoStack.count > Self.undoLimit { undoStack.removeFirst() }
         redoStack = []
         flush()
@@ -152,6 +154,28 @@ final class DrawingViewModel: Identifiable {
 
     func undo() { swapSlice(from: &undoStack, to: &redoStack) }
     func redo() { swapSlice(from: &redoStack, to: &undoStack) }
+
+    /// Undo / redo from a multi-finger tap. Drawing with a finger, the tap's first finger has
+    /// already left a dot (a stroke ended a moment ago): that is dropped without a trace first.
+    func tapUndo() { discardTapStroke(); undo() }
+    func tapRedo() { discardTapStroke(); redo() }
+
+    private func discardTapStroke() {
+        guard drawsWithFinger else { return }
+        let step: (plane: SlicePlane, values: [UInt8])
+        if let s = stroke { // still down: put its slice back and forget it
+            stroke = nil
+            step = (s.plane, s.before)
+        } else if Date.now.timeIntervalSince(lastCommit) < 0.5, let last = undoStack.popLast() {
+            step = last
+            lastCommit = .distantPast
+        } else {
+            return
+        }
+        LabelPainter.write(grid, plane: step.plane, step.values)
+        markDirty(step.plane.z(rows: 0...step.plane.height - 1))
+        flush()
+    }
 
     private func swapSlice(from: inout [(plane: SlicePlane, values: [UInt8])], to: inout [(plane: SlicePlane, values: [UInt8])]) {
         guard let step = from.popLast() else { return }
