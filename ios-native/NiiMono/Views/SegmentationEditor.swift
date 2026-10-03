@@ -36,6 +36,7 @@ struct SegmentationEditor: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .background(.black)
+        .background { UndoKeys(drawing: drawing, active: !showingLabels && !adjusting) }
     }
 
     /// A plain bar, not a navigation bar: inside the document's window a NavigationStack
@@ -62,12 +63,12 @@ struct SegmentationEditor: View {
             .toggleStyle(.button)
             .labelStyle(.iconOnly)
             HStack(spacing: 4) {
+                // ⌘Z / ⇧⌘Z come through UndoKeys (below), not .keyboardShortcut: the system's
+                // Edit › Undo claims those keys first and asks the first responder's UndoManager.
                 Button("Undo", systemImage: "arrow.uturn.backward") { drawing.undo() }
                     .disabled(!drawing.canUndo)
-                    .keyboardShortcut("z", modifiers: .command)
                 Button("Redo", systemImage: "arrow.uturn.forward") { drawing.redo() }
                     .disabled(!drawing.canRedo)
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             .labelStyle(.iconOnly)
             Button("Done") {
@@ -154,22 +155,41 @@ struct SegmentationEditor: View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: [], clipCutaway: false, clipHighlight: false,
                    crosshair: drawing.crosshair3D ? model.crosshairFractions : nil,
-                   overlay: drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
+                   // Hidden paint leaves the plain scan (the eye's labels-only mode needs labels).
+                   overlay: drawing.hidePaint ? nil : drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
+                   cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: nil, presetTick: 0, onTap: {})
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 4) {
                     Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair3D)
+                    // The viewer's Clip at Camera (Inspector › 3D): tap to switch, hold for the depth.
+                    if model.cameraClip { cameraClipMenu.buttonStyle(.glassProminent) } else { cameraClipMenu }
                     // Fades unlabelled tissue; moot once the scan is hidden altogether.
+                    // Both act on the paint, so they wait while it's hidden.
                     Toggle("Show Through Tissue", systemImage: "cube.transparent", isOn: $drawing.showThrough)
-                        .disabled(drawing.hideScan)
+                        .disabled(drawing.hideScan || drawing.hidePaint)
                     Toggle("Show Scan", systemImage: drawing.hideScan ? "eye.slash" : "eye",
                            isOn: Binding(get: { !drawing.hideScan }, set: { drawing.hideScan = !$0 }))
+                        .disabled(drawing.hidePaint)
                 }
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.glass)
                 .padding(8)
             }
+    }
+
+    private var cameraClipMenu: some View {
+        Menu {
+            Toggle("Clip at Camera", isOn: Binding(get: { model.cameraClip }, set: { model.cameraClip = $0 }))
+            Picker("Clip Depth", selection: Binding(get: { model.cameraClipDepth }, set: { model.cameraClipDepth = $0; model.cameraClip = true })) {
+                ForEach([Float(0.25), 0.5, 0.75, 0.9], id: \.self) { Text("\(Int($0 * 100))% to the pivot").tag($0) }
+            }
+        } label: {
+            Label("Clip at Camera", systemImage: "camera.metering.center.weighted")
+        } primaryAction: {
+            model.cameraClip.toggle()
+        }
     }
 
     private func paneTitle(_ axis: Int) -> some View {
@@ -325,5 +345,49 @@ private struct LabelList: View {
     static func rgb(_ c: Color) -> [Float]? {
         let r = UIColor(c).cgColor.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil)?.components ?? []
         return r.count >= 3 ? r.prefix(3).map { Float($0) } : nil
+    }
+}
+
+/// Makes ⌘Z / ⇧⌘Z (and Edit › Undo / Redo in the menu bar) work in the editor: an invisible
+/// first responder whose UndoManager forwards to the drawing's own history, with the two key
+/// commands on it too. `active` false while a popover may hold the keyboard (the label names).
+private struct UndoKeys: UIViewRepresentable {
+    let drawing: DrawingViewModel
+    let active: Bool
+
+    func makeUIView(context: Context) -> Responder { Responder() }
+
+    func updateUIView(_ view: Responder, context: Context) {
+        view.forwarding.drawing = drawing
+        view.active = active
+        if active, !view.isFirstResponder { DispatchQueue.main.async { view.claim() } }
+    }
+
+    final class Responder: UIView {
+        let forwarding = ForwardingUndoManager()
+        var active = true
+        override var canBecomeFirstResponder: Bool { true }
+        override var undoManager: UndoManager? { forwarding }
+
+        func claim() { if active, window != nil, !isFirstResponder { becomeFirstResponder() } }
+        override func didMoveToWindow() { super.didMoveToWindow(); DispatchQueue.main.async { self.claim() } }
+
+        override var keyCommands: [UIKeyCommand]? {
+            let undo = UIKeyCommand(title: "Undo", action: #selector(undoKey), input: "z", modifierFlags: .command)
+            let redo = UIKeyCommand(title: "Redo", action: #selector(redoKey), input: "z", modifierFlags: [.command, .shift])
+            for c in [undo, redo] { c.wantsPriorityOverSystemBehavior = true }
+            return [undo, redo]
+        }
+        @objc private func undoKey() { forwarding.undo() }
+        @objc private func redoKey() { forwarding.redo() }
+    }
+
+    /// An UndoManager in name only: no registrations, it asks the drawing.
+    final class ForwardingUndoManager: UndoManager {
+        weak var drawing: DrawingViewModel?
+        override var canUndo: Bool { MainActor.assumeIsolated { drawing?.canUndo ?? false } }
+        override var canRedo: Bool { MainActor.assumeIsolated { drawing?.canRedo ?? false } }
+        override func undo() { MainActor.assumeIsolated { drawing?.undo() } }
+        override func redo() { MainActor.assumeIsolated { drawing?.redo() } }
     }
 }
