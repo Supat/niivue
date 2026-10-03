@@ -12,6 +12,7 @@ struct SegmentationEditor: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var finishing = false
+    @State private var adjusting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,6 +58,10 @@ struct SegmentationEditor: View {
             Text("Draw Segmentation").font(.headline)
             Spacer()
             HStack(spacing: 4) {
+                // Black / white levels of the slices (the viewer's own, so they carry over).
+                Button("Adjust Levels", systemImage: "circle.lefthalf.filled") { adjusting = true }
+                    .labelStyle(.iconOnly)
+                    .popover(isPresented: $adjusting) { LevelsPopover(model: model) }
                 Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair2D)
                 Toggle("Show Paint", systemImage: drawing.hidePaint ? "paintbrush.pointed" : "paintbrush.pointed.fill",
                        isOn: Binding(get: { !drawing.hidePaint }, set: { drawing.hidePaint = !$0 }))
@@ -242,5 +247,25 @@ struct SegmentationEditor: View {
             let r = UIColor(c).cgColor.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil)?.components ?? []
             if r.count >= 3 { drawing.labels[i].color = r.prefix(3).map { Float($0) } }
         })
+    }
+}
+
+/// Black and white levels for the editor's slices, as in Inspector › Image › Adjust.
+private struct LevelsPopover: View {
+    @Bindable var model: ViewerViewModel
+
+    var body: some View {
+        let volume = model.volume
+        // Slider traps on an empty range; a constant-intensity volume gets a dummy one.
+        let range = volume.dataMin...max(volume.dataMax, volume.dataMin + 1)
+        let unit = (range.upperBound - range.lowerBound) / 100
+        VStack(alignment: .leading, spacing: 14) {
+            LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
+            LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
+            Button("Reset") { model.resetWindow() }
+        }
+        .padding(20)
+        .frame(width: 320)
+        .presentationCompactAdaptation(.popover)
     }
 }
