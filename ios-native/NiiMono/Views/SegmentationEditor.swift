@@ -51,8 +51,9 @@ struct SegmentationEditor: View {
             Text("Draw Segmentation").font(.headline)
             Spacer()
             HStack(spacing: 4) {
-                // Black / white levels of the slices (the viewer's own, so they carry over).
-                Button("Adjust Levels", systemImage: "circle.lefthalf.filled") { adjusting = true }
+                // Black / white levels of the slices and the paint's opacity (the viewer's own, so
+                // they carry over).
+                Button("Adjust Levels and Paint Opacity", systemImage: "circle.lefthalf.filled") { adjusting = true }
                     .labelStyle(.iconOnly)
                     .popover(isPresented: $adjusting) { LevelsPopover(model: model) }
                 Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair2D)
@@ -264,7 +265,8 @@ struct SegmentationEditor: View {
     }
 }
 
-/// Black and white levels for the editor's slices, as in Inspector › Image › Adjust.
+/// Black and white levels for the editor's slices, as in Inspector › Image › Adjust, and the
+/// paint's opacity.
 private struct LevelsPopover: View {
     @Bindable var model: ViewerViewModel
 
@@ -277,6 +279,10 @@ private struct LevelsPopover: View {
             LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
             LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
             Button("Reset") { model.resetWindow() }
+            Divider()
+            // How strongly the paint covers the scan, in every pane (Inspector › Segmentation › Opacity).
+            LabeledContent("Paint") { StepSlider(value: Binding(get: { model.segmentation.opacity }, set: { model.segmentation.opacity = $0 }), in: 0...1, unit: 0.05) }
+            Text("\(Int(model.segmentation.opacity * 100))% opaque").font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(width: 320)

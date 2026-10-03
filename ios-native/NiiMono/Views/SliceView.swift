@@ -321,7 +321,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
         }
     }
 
-        /// The image point at the middle of the viewport, as fractions of the image (x right,
+    /// The image point at the middle of the viewport, as fractions of the image (x right,
     /// y down); setting it scrolls there as far as the edges allow.
     var centreFraction: CGPoint {
         get {
