@@ -38,6 +38,10 @@ final class DrawingViewModel: Identifiable {
     var mainAxis: Int
     var refAxis: Int
     var hideScan = false
+    /// 3D pane: fade unlabelled tissue so the labels show through it.
+    var showThrough = UserDefaults.standard.bool(forKey: "segGhost")
+    /// 3D pane: the crosshair at the current slices.
+    var crosshair3D = true
     private(set) var edited = false
 
     // Revisions: strokes change `grid` at once but are published at most ~30 times a second.
@@ -73,12 +77,12 @@ final class DrawingViewModel: Identifiable {
 
     var activeLabel: CustomLabel? { labels.first { $0.id == active } }
 
-    func overlay(opacity: Float) -> SegmentationOverlay {
+    func overlay(opacity: Float, in3D: Bool = false) -> SegmentationOverlay {
         var lut = [SIMD4<UInt8>](repeating: .zero, count: 256)
         for l in labels where l.color.count == 3 {
             lut[l.id] = SIMD4(UInt8(l.color[0] * 255), UInt8(l.color[1] * 255), UInt8(l.color[2] * 255), 255)
         }
-        return SegmentationOverlay(mapID: mapID, labels: grid, lut: lut, opacity: opacity, ghost: false,
+        return SegmentationOverlay(mapID: mapID, labels: grid, lut: lut, opacity: opacity, ghost: in3D && showThrough,
                                    hideScan: hideScan, revision: revision, dirtyZ: dirtyZ)
     }
 

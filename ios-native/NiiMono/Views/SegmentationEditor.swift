@@ -132,15 +132,22 @@ struct SegmentationEditor: View {
     private var render: some View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: [], clipCutaway: false, clipHighlight: false,
-                   crosshair: model.showCrosshair ? model.crosshairFractions : nil,
-                   overlay: overlay, preset: nil, presetTick: 0, onTap: {})
+                   crosshair: drawing.crosshair3D ? model.crosshairFractions : nil,
+                   overlay: drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
+                   preset: nil, presetTick: 0, onTap: {})
             .overlay(alignment: .topTrailing) {
-                Toggle("Show Scan", systemImage: drawing.hideScan ? "eye.slash" : "eye",
-                       isOn: Binding(get: { !drawing.hideScan }, set: { drawing.hideScan = !$0 }))
-                    .toggleStyle(.button)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.glass)
-                    .padding(8)
+                HStack(spacing: 4) {
+                    Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair3D)
+                    // Fades unlabelled tissue; moot once the scan is hidden altogether.
+                    Toggle("Show Through Tissue", systemImage: "cube.transparent", isOn: $drawing.showThrough)
+                        .disabled(drawing.hideScan)
+                    Toggle("Show Scan", systemImage: drawing.hideScan ? "eye.slash" : "eye",
+                           isOn: Binding(get: { !drawing.hideScan }, set: { drawing.hideScan = !$0 }))
+                }
+                .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .padding(8)
             }
     }
 
