@@ -94,3 +94,16 @@ let merged = LabelPainter.fillingUnlabelled([0, 0, 9, 9, 0, 0, 0, 0], from: copi
 precondition(merged == [0, 5, 9, 9, 0, 5, 0, 6], "\(merged)")
 precondition(LabelPainter.fillingUnlabelled([1, 2, 3, 4], from: [0, 0, 0, 0], rowLength: 4) == [1, 2, 3, 4])
 print("copy ok")
+
+// Smoothing one label leaves the others exactly as they were, and doesn't grow into them.
+var two = [UInt8](repeating: 0, count: 40 * 40 * 40)
+for z in 10..<26 { for y in 10..<26 { for x in 10..<26 { two[at(x, y, z)] = 1 } } }
+for z in 10..<26 { for y in 10..<26 { for x in 26..<34 { two[at(x, y, z)] = 2 } } }   // touching block
+for z in 14..<22 { for y in 14..<22 { two[at(20, y, z)] = 2 } }                     // a slab of 2 inside 1
+two[at(9, 17, 17)] = 1                                                                // a bump on 1
+let one = LabelPainter.smoothed(two, dims: sd, voxelSize: SIMD3(1, 1, 1), sigmaMM: 1.5, labels: [1])!
+let tg = LabelGrid(LabelVolume(dims: sd, data: two, maxLabel: 2))
+LabelPainter.write(tg, box: one.box, one.values)
+precondition((0..<two.count).allSatisfy { (two[$0] == 2) == (tg.data[$0] == 2) }, "label 2 changed")
+precondition(tg.data[at(9, 17, 17)] == 0 && tg.data[at(15, 15, 15)] == 1, "label 1 not smoothed")
+print("single-label smoothing ok")

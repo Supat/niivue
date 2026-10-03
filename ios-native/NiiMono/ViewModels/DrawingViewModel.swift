@@ -209,14 +209,15 @@ final class DrawingViewModel: Identifiable {
 
     private(set) var isSmoothing = false
 
-    /// Smooths every label's surface in 3D (see LabelPainter.smoothed), as one undo step.
+    /// Smooths the surface of the label being edited in 3D (see LabelPainter.smoothed), as
+    /// one undo step; other labels stay as they are.
     /// Runs in the background on a snapshot; drawing waits until it's done.
     func smooth(_ strength: Smoothing) async {
         guard !isSmoothing else { return }
         flush()
         isSmoothing = true
         defer { isSmoothing = false }
-        let data = grid.data, dims = grid.dims, ids = labels.map(\.id)
+        let data = grid.data, dims = grid.dims, ids = [active]
         let size = SIMD3(volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2)
         let result = await Task.detached(priority: .userInitiated) {
             LabelPainter.smoothed(data, dims: dims, voxelSize: size, sigmaMM: strength.rawValue, labels: ids)

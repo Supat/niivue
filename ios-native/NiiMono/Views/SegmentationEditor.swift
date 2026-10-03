@@ -104,7 +104,7 @@ struct SegmentationEditor: View {
             .overlay(alignment: .topLeading) { paneTitle(axis) }
             .overlay(alignment: .top) {
                 if drawing.isSmoothing {
-                    HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Smoothing surfaces…").font(.footnote) }
+                    HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Smoothing \(drawing.activeLabel?.name ?? "label")…").font(.footnote) }
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .glassEffect(.regular, in: .capsule)
                         .padding(.top, 12)
@@ -212,7 +212,7 @@ struct SegmentationEditor: View {
                     Button("\(s.name) (σ \(s.rawValue.formatted()) mm)") { Task { await drawing.smooth(s) } }
                 }
             } label: {
-                Label("Smooth Surfaces", systemImage: "wand.and.sparkles")
+                Label("Smooth \(drawing.activeLabel?.name ?? "Label")", systemImage: "wand.and.sparkles")
             } primaryAction: {
                 Task { await drawing.smooth(.medium) }
             }

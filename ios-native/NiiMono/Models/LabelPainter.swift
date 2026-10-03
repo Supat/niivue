@@ -172,24 +172,26 @@ enum LabelPainter {
 
     // MARK: Smoothing
 
-    /// 3D surface smoothing: each label's mask is blurred with a Gaussian of `sigmaMM` (per
+    /// 3D surface smoothing of `labels` (the editor passes the label being edited): each one's
+    /// mask is blurred with a Gaussian of `sigmaMM` (per
     /// axis in voxels, so anisotropic voxels are handled) and keeps the voxels above one half.
     /// Bumps, steps between drawn slices and pinholes smaller than about σ go; structures
-    /// thinner than about σ go too. Returns the changed region and its new labels, or nil if
-    /// nothing is labelled.
+    /// thinner than about σ go too. Other labels are left exactly as they are: a smoothed label
+    /// only grows into unlabelled voxels. Returns the changed region and its new labels, or nil
+    /// if none of `labels` is present.
     /// Every step works a row at a time (memcmp, vDSP): per-voxel Swift loops took ~10 s on a
     /// 64 M-voxel grid in a Debug build; this takes well under one.
-    /// ponytail: all labels share the box around everything labelled, and a later label wins
-    /// where two overlap after blurring (only at their shared boundary). Memory is two Float
+    /// ponytail: the labels share the box around all of them. Memory is two Float
     /// buffers the size of that padded box (a whole-body drawing: ~0.5 GB); work in z slabs
     /// if that bites.
     static func smoothed(_ data: [UInt8], dims: (Int, Int, Int), voxelSize: SIMD3<Float>, sigmaMM: Float, labels: [Int]) -> (box: VoxelBox, values: [UInt8])? {
         let n = SIMD3(dims.0, dims.1, dims.2)
-        // Box around everything labelled: empty rows are skipped with one memcmp each, and in
-        // the rest only the ends are scanned.
+        // Box around the labels: on a copy holding only them (one table lookup), empty rows are
+        // skipped with one memcmp each, and in the rest only the ends are scanned.
         var lo = n, hi = SIMD3<Int>.zero
         let zeros = [UInt8](repeating: 0, count: n.x)
-        data.withUnsafeBufferPointer { d in zeros.withUnsafeBufferPointer { zr in
+        let only = relabelled(data, dims: dims, mapping: Dictionary(uniqueKeysWithValues: labels.map { ($0, 1) }))
+        only.withUnsafeBufferPointer { d in zeros.withUnsafeBufferPointer { zr in
             var row = d.baseAddress!
             for z in 0..<n.z { for y in 0..<n.y {
                 defer { row += n.x }
@@ -221,7 +223,7 @@ enum LabelPainter {
         var a = [Float](repeating: 0, count: ps.x * ps.y * ps.z)
         var b = [Float](repeating: 0, count: a.count)
         var rowF = [Float](repeating: 0, count: max(ps.x, rs.x))
-        var tmp = [Float](repeating: 0, count: rs.x)
+        var tmp = [Float](repeating: 0, count: rs.x), free = [Float](repeating: 0, count: rs.x)
         // In-volume part of the padded box, per axis.
         let vlo = pointwiseMax(plo, .zero), vhi = pointwiseMin(plo &+ ps, n)
 
@@ -260,22 +262,28 @@ enum LabelPainter {
                     vDSP_conv(s.baseAddress! + i, rs.x * rs.y, k.baseAddress!, 1, o.baseAddress! + i, rs.x * rs.y, vDSP_Length(rs.z), vDSP_Length(k.count))
                 }
             } } }
-            // Keep l where the blurred mask is over half, clear l elsewhere, leave other labels:
-            // cleared = old - isL·l, new = cleared - keep·(cleared - l). The blurred row is
-            // used as scratch once read.
+            // Keep l where the blurred mask is over half and the voxel is l or unlabelled; clear
+            // l elsewhere; leave other labels: keep = over · (isL + isFree),
+            // cleared = old - isL·l, new = cleared - keep·(cleared - l). The blurred row is used
+            // as scratch once read.
             var half: Float = 0.5
             b.withUnsafeMutableBufferPointer { s in result.withUnsafeMutableBufferPointer { out in
             rowF.withUnsafeMutableBufferPointer { old in tmp.withUnsafeMutableBufferPointer { keep in
-                let nw = vDSP_Length(rs.x), o = old.baseAddress!, k = keep.baseAddress!
+            free.withUnsafeMutableBufferPointer { fr in
+                let nw = vDSP_Length(rs.x), o = old.baseAddress!, k = keep.baseAddress!, f = fr.baseAddress!
                 var blur = s.baseAddress!, dst = out.baseAddress!
                 for _ in 0..<(rs.y * rs.z) {
                     vDSP_vfltu8(dst, 1, o, 1, nw)                     // old labels
                     vDSP_vthrsc(blur, 1, &half, &one, k, 1, nw)       // ±1
-                    vDSP_vsmsa(k, 1, &half, &half, k, 1, nw)          // keep: 1 or 0
+                    vDSP_vsmsa(k, 1, &half, &half, k, 1, nw)          // over: 1 or 0
                     vDSP_vsadd(o, 1, &negValue, blur, 1, nw)          // isL = 1 - min(|old - l|, 1)
                     vDSP_vabs(blur, 1, blur, 1, nw)
                     vDSP_vclip(blur, 1, &zero, &one, blur, 1, nw)
                     vDSP_vsmsa(blur, 1, &negOne, &one, blur, 1, nw)
+                    vDSP_vclip(o, 1, &zero, &one, f, 1, nw)           // isFree = 1 - min(old, 1)
+                    vDSP_vsmsa(f, 1, &negOne, &one, f, 1, nw)
+                    vDSP_vadd(f, 1, blur, 1, f, 1, nw)                // keep = over · (isL + isFree)
+                    vDSP_vmul(k, 1, f, 1, k, 1, nw)
                     vDSP_vsma(blur, 1, &negValue, o, 1, o, 1, nw)     // cleared
                     vDSP_vsadd(o, 1, &negValue, blur, 1, nw)          // cleared - l
                     vDSP_vmul(blur, 1, k, 1, blur, 1, nw)
@@ -283,7 +291,7 @@ enum LabelPainter {
                     vDSP_vfixu8(o, 1, dst, 1, nw)
                     blur += rs.x; dst += rs.x
                 }
-            } } } }
+            } } } } }
         }
         return (box, result)
     }
