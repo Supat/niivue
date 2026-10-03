@@ -42,6 +42,10 @@ final class DrawingViewModel: Identifiable {
     var showThrough = UserDefaults.standard.bool(forKey: "segGhost")
     /// 3D pane: the crosshair at the current slices.
     var crosshair3D = true
+    /// Slice panes: the crosshair, and the paint (hidden to see the tissue under it; strokes
+    /// still land).
+    var crosshair2D = true
+    var hidePaint = false
     private(set) var edited = false
 
     // Revisions: strokes change `grid` at once but are published at most ~30 times a second.
