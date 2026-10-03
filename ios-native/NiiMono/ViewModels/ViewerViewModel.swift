@@ -70,8 +70,9 @@ import Observation
         var mapping: [Int: Int] = [:], skipped = 0
         for id in ids {
             let name = source.table.name(id)
-            if let same = labels.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-                mapping[id] = same.id
+            if let k = labels.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                mapping[id] = labels[k].id
+                labels[k].smoothed = nil // new voxels: smooth it whole next time
             } else if let free = (1...255).first(where: { f in !labels.contains { $0.id == f } }) {
                 let c = source.table.color(id)
                 labels.append(CustomLabel(id: free, name: name, color: [c.x, c.y, c.z]))
@@ -116,7 +117,11 @@ import Observation
     /// Closes the editor, showing the drawing if anything was drawn.
     func finishDrawing() async {
         guard let d = drawing else { return }
-        if let map = await d.result() { segmentation.showCustom(map, labels: d.labels) }
+        if let map = await d.result() {
+            segmentation.showCustom(map, labels: d.labels)
+        } else if d.labelsChanged, segmentation.customMap != nil {
+            segmentation.updateCustomLabels(d.labels) // renamed or recoloured only: no recount
+        }
         drawing = nil
     }
     var multiZoom: CGFloat = 1        // zoom shared by the multiplanar slice panes

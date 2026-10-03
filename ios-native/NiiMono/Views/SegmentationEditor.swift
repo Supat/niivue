@@ -9,8 +9,7 @@ struct SegmentationEditor: View {
     let model: ViewerViewModel
     @Bindable var drawing: DrawingViewModel
     @State private var confirmDiscard = false
-    @State private var renaming = false
-    @State private var newName = ""
+    @State private var showingLabels = false
     @State private var finishing = false
     @State private var adjusting = false
 
@@ -37,20 +36,13 @@ struct SegmentationEditor: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .background(.black)
-        .alert("Rename Label", isPresented: $renaming) {
-            TextField("Name", text: $newName)
-            Button("Rename") {
-                if let i = drawing.labels.firstIndex(where: { $0.id == drawing.active }), !newName.isEmpty { drawing.labels[i].name = newName }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
     }
 
     /// A plain bar, not a navigation bar: inside the document's window a NavigationStack
     /// picks up the document's own back button (which would close it) and title menu.
     private var topBar: some View {
         HStack(spacing: 12) {
-            Button("Cancel") { if drawing.edited { confirmDiscard = true } else { model.drawing = nil } }
+            Button("Cancel") { if drawing.hasChanges { confirmDiscard = true } else { model.drawing = nil } }
                 .confirmationDialog("Discard the drawing?", isPresented: $confirmDiscard) {
                     Button("Discard Changes", role: .destructive) { model.drawing = nil }
                 }
@@ -113,8 +105,15 @@ struct SegmentationEditor: View {
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .glassEffect(.regular, in: .capsule)
                         .padding(.top, 12)
+                } else if let note = drawing.smoothingNote {
+                    Text(note).font(.footnote)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(.top, 12)
+                        .transition(.opacity)
                 }
             }
+            .animation(.default, value: drawing.smoothingNote)
             .overlay(alignment: .bottom) {
                 VStack(spacing: 8) {
                     if model.volume.count(axis: axis) > 1 {
@@ -187,24 +186,15 @@ struct SegmentationEditor: View {
 
     private var tools: some View {
         HStack(spacing: 14) {
-            Menu {
-                Picker("Label", selection: $drawing.active) {
-                    ForEach(drawing.labels) { l in
-                        Label { Text(l.name) } icon: { Image(systemName: "circle.fill").foregroundStyle(color(l)) }.tag(l.id)
-                    }
-                }
-                Divider()
-                Button("New Label", systemImage: "plus") { drawing.addLabel() }
-                Button("Rename…", systemImage: "pencil") { newName = drawing.activeLabel?.name ?? ""; renaming = true }
-                Button("Delete Label", systemImage: "trash", role: .destructive) { drawing.deleteLabel(drawing.active) }
-                    .disabled(drawing.labels.count < 2)
-            } label: {
+            Button { showingLabels = true } label: {
                 HStack(spacing: 6) {
                     Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
                     Text(drawing.activeLabel?.name ?? "").lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
                 }
-                .frame(maxWidth: 160, alignment: .leading)
+                .frame(maxWidth: 180, alignment: .leading)
             }
+            .popover(isPresented: $showingLabels) { LabelList(drawing: drawing) }
             ColorPicker("Colour", selection: activeColor, supportsOpacity: false).labelsHidden()
             Picker("Tool", selection: $drawing.tool) {
                 ForEach(DrawingViewModel.Tool.allCases) { Image(systemName: $0.symbol).accessibilityLabel($0.rawValue).tag($0) }
@@ -216,6 +206,9 @@ struct SegmentationEditor: View {
                 ForEach(DrawingViewModel.Smoothing.allCases) { s in
                     Button("\(s.name) (σ \(s.rawValue.formatted()) mm)") { Task { await drawing.smooth(s) } }
                 }
+                Divider()
+                // Normally only what was edited since the last smoothing is smoothed again.
+                Button("Whole Label (Medium)") { Task { await drawing.smooth(.medium, whole: true) } }
             } label: {
                 Label("Smooth \(drawing.activeLabel?.name ?? "Label")", systemImage: "wand.and.sparkles")
             } primaryAction: {
@@ -267,5 +260,62 @@ private struct LevelsPopover: View {
         .padding(20)
         .frame(width: 320)
         .presentationCompactAdaptation(.popover)
+    }
+}
+
+/// The drawing's labels: pick the one to draw with, rename and recolour in place, drag to
+/// reorder (the order is kept, and the inspector lists them the same way), add or delete.
+private struct LabelList: View {
+    @Bindable var drawing: DrawingViewModel
+    @State private var confirmDelete = false
+
+    var body: some View {
+        // No NavigationStack: in the document's window it picks up the document's back
+        // button and title menu (see the editor's top bar).
+        VStack(spacing: 0) {
+            HStack {
+                Button("New Label", systemImage: "plus") { drawing.addLabel() }
+                Spacer()
+                Text("Labels").font(.headline)
+                Spacer()
+                Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                    .disabled(drawing.labels.count < 2)
+                    .confirmationDialog("Delete \(drawing.activeLabel?.name ?? "the label") and erase its voxels?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                        Button("Delete Label", role: .destructive) { drawing.deleteLabel(drawing.active) }
+                    }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.glass)
+            .padding(12)
+            List {
+                ForEach($drawing.labels) { $label in
+                    HStack(spacing: 10) {
+                        Button { drawing.active = label.id } label: {
+                            Image(systemName: label.id == drawing.active ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Draw with \(label.name)")
+                        ColorPicker("Colour", selection: Binding(get: { Self.color(label) }, set: { label.color = Self.rgb($0) ?? label.color }),
+                                    supportsOpacity: false)
+                            .labelsHidden()
+                        TextField("Name", text: $label.name)
+                    }
+                }
+                .onMove { drawing.labels.move(fromOffsets: $0, toOffset: $1) }
+            }
+            .environment(\.editMode, .constant(.active)) // drag handles always showing
+        }
+        .frame(minWidth: 340, minHeight: 360)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    static func color(_ l: CustomLabel) -> Color {
+        l.color.count == 3 ? Color(red: Double(l.color[0]), green: Double(l.color[1]), blue: Double(l.color[2])) : .gray
+    }
+
+    static func rgb(_ c: Color) -> [Float]? {
+        let r = UIColor(c).cgColor.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil)?.components ?? []
+        return r.count >= 3 ? r.prefix(3).map { Float($0) } : nil
     }
 }

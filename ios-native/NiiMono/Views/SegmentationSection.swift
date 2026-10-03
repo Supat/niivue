@@ -56,7 +56,9 @@ struct SegmentationSection: View {
             Button("Hide All") { model.setAllVisible(false) }
         }
         .buttonStyle(.borderless)
-        ForEach(Array(map.labelRange), id: \.self) { label in
+        // A drawing lists its labels in the order set in the editor.
+        let order = map.isCustom ? model.customLabels.map(\.id).filter(map.labelRange.contains) : Array(map.labelRange)
+        ForEach(order, id: \.self) { label in
             Toggle(isOn: Binding(get: { model.isVisible(label) }, set: { model.setVisible(label, $0) })) {
                 HStack(spacing: 8) {
                     Circle().fill(Color(map.table.color(label))).frame(width: 12, height: 12)

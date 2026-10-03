@@ -101,6 +101,12 @@ import Observation
         select(new.id)
     }
 
+    /// New names or colours for the drawing's labels, its voxels unchanged.
+    func updateCustomLabels(_ labels: [CustomLabel]) {
+        customLabels = labels
+        if let i = maps.firstIndex(where: \.isCustom) { maps[i].table = .custom(labels) }
+    }
+
     private func withCustomTable(_ m: SegmentationMap) -> SegmentationMap {
         guard m.isCustom else { return m }
         var m = m

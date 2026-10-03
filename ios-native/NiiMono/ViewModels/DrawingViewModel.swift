@@ -28,6 +28,11 @@ final class DrawingViewModel: Identifiable {
     private let mapID = UUID()
 
     var labels: [CustomLabel]
+    /// The labels as the editor opened, to tell a rename or recolour from no change.
+    private let openingLabels: [CustomLabel]
+    var labelsChanged: Bool { labels != openingLabels }
+    /// Anything to keep: voxels drawn, or labels renamed, recoloured or added.
+    var hasChanges: Bool { edited || labelsChanged }
     var active: Int
     var tool = Tool.brush
     var brushMM: Float = 6 // diameter
@@ -69,6 +74,7 @@ final class DrawingViewModel: Identifiable {
         grid = LabelGrid(existing.flatMap { $0.labels.dims == volume.dims ? $0.labels : nil } ?? empty)
         let start = existing != nil && !labels.isEmpty ? labels : [Self.newLabel(id: 1)]
         self.labels = start
+        openingLabels = start
         active = start[0].id
         self.mainAxis = mainAxis
         refAxis = mainAxis == 2 ? 1 : 2
@@ -147,13 +153,31 @@ final class DrawingViewModel: Identifiable {
         return SIMD2(brushMM / 2 / size[plane.col], brushMM / 2 / size[plane.row])
     }
 
+    /// What the stroke under way has changed (its slice, rows touched), for the smoothing
+    /// bookkeeping.
+    private var strokeBox: VoxelBox?
+
     private func touched(_ plane: SlicePlane, _ rows: ClosedRange<Int>) {
         edited = true
         markDirty(plane.z(rows: rows))
+        var b = plane.box
+        b.lo[plane.row] = rows.lowerBound; b.hi[plane.row] = rows.upperBound + 1
+        strokeBox = b.union(strokeBox)
+    }
+
+    /// Labels already smoothed remember `box` as edited since (the eraser, undo and redo may
+    /// have touched any label; the brush and fill only the active one).
+    private func noteEdit(_ box: VoxelBox?, allLabels: Bool) {
+        guard let box else { return }
+        for i in labels.indices where labels[i].smoothed == true && (allLabels || labels[i].id == active) {
+            labels[i].unsmoothedBox = box.union(labels[i].unsmoothedBox)
+        }
     }
 
     private func commit(plane: SlicePlane, before: [UInt8], rows: ClosedRange<Int>?) {
         if let rows { touched(plane, rows) }
+        noteEdit(strokeBox, allLabels: tool == .eraser)
+        strokeBox = nil
         pushUndo(plane.box, before)
         lastCommit = .now // a finger-tap undo may still drop this stroke (see tapUndo)
         flush()
@@ -195,6 +219,7 @@ final class DrawingViewModel: Identifiable {
         to.append((step.box, LabelPainter.read(grid, box: step.box)))
         LabelPainter.write(grid, box: step.box, step.values)
         edited = true
+        noteEdit(step.box, allLabels: true)
         markDirty(step.box.z)
         flush()
     }
@@ -209,19 +234,34 @@ final class DrawingViewModel: Identifiable {
 
     private(set) var isSmoothing = false
 
+    /// Why the last smoothing did nothing, for the editor; nil otherwise.
+    private(set) var smoothingNote: String?
+
     /// Smooths the surface of the label being edited in 3D (see LabelPainter.smoothed), as
-    /// one undo step; other labels stay as they are.
+    /// one undo step; other labels stay as they are. Once a label has been smoothed, only
+    /// what was edited since is smoothed again (else repeated passes erode it); `whole`
+    /// smooths all of it regardless.
     /// Runs in the background on a snapshot; drawing waits until it's done.
-    func smooth(_ strength: Smoothing) async {
-        guard !isSmoothing else { return }
+    func smooth(_ strength: Smoothing, whole: Bool = false) async {
+        guard !isSmoothing, let i = labels.firstIndex(where: { $0.id == active }) else { return }
         flush()
+        smoothingNote = nil
+        let region = whole || labels[i].smoothed != true ? nil : labels[i].unsmoothedBox
+        if !whole, labels[i].smoothed == true, region == nil {
+            let note = "\(labels[i].name) is already smoothed; nothing edited since. (Hold the wand for Whole Label.)"
+            smoothingNote = note
+            Task { try? await Task.sleep(for: .seconds(4)); if smoothingNote == note { smoothingNote = nil } }
+            return
+        }
         isSmoothing = true
         defer { isSmoothing = false }
         let data = grid.data, dims = grid.dims, ids = [active]
         let size = SIMD3(volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2)
         let result = await Task.detached(priority: .userInitiated) {
-            LabelPainter.smoothed(data, dims: dims, voxelSize: size, sigmaMM: strength.rawValue, labels: ids)
+            LabelPainter.smoothed(data, dims: dims, voxelSize: size, sigmaMM: strength.rawValue, labels: ids, region: region)
         }.value
+        labels[i].smoothed = true
+        labels[i].unsmoothedBox = nil
         guard let result else { return }
         pushUndo(result.box, LabelPainter.read(grid, box: result.box))
         LabelPainter.write(grid, box: result.box, result.values)

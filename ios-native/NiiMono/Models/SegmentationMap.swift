@@ -67,6 +67,15 @@ struct CustomLabel: Codable, Equatable, Identifiable {
     var id: Int
     var name: String
     var color: [Float]
+    /// Smoothing bookkeeping, so the wand doesn't smooth the same surface twice: whether the
+    /// label has been smoothed, and the box edited since (lo x y z, hi x y z; nil = none).
+    var smoothed: Bool? = nil
+    var unsmoothed: [Int]? = nil
+
+    var unsmoothedBox: VoxelBox? {
+        get { unsmoothed.flatMap { $0.count == 6 ? VoxelBox(lo: SIMD3($0[0], $0[1], $0[2]), hi: SIMD3($0[3], $0[4], $0[5])) : nil } }
+        set { unsmoothed = newValue.map { [$0.lo.x, $0.lo.y, $0.lo.z, $0.hi.x, $0.hi.y, $0.hi.z] } }
+    }
 }
 
 extension LabelTable {

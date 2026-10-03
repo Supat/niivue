@@ -12,6 +12,11 @@ struct VoxelBox: Equatable {
     var size: SIMD3<Int> { hi &- lo }
     var count: Int { size.x * size.y * size.z }
     var z: Range<Int> { lo.z..<hi.z }
+
+    func union(_ o: VoxelBox?) -> VoxelBox {
+        guard let o else { return self }
+        return VoxelBox(lo: pointwiseMin(lo, o.lo), hi: pointwiseMax(hi, o.hi))
+    }
 }
 
 /// One slice of a grid, addressed like the slice views: `c` along the column axis and `v`
@@ -184,7 +189,11 @@ enum LabelPainter {
     /// ponytail: the labels share the box around all of them. Memory is two Float
     /// buffers the size of that padded box (a whole-body drawing: ~0.5 GB); work in z slabs
     /// if that bites.
-    static func smoothed(_ data: [UInt8], dims: (Int, Int, Int), voxelSize: SIMD3<Float>, sigmaMM: Float, labels: [Int]) -> (box: VoxelBox, values: [UInt8])? {
+    /// With `region`, only voxels within it (grown by the kernel radius, so new edges blend
+    /// in) change; the blur still reads the true labels around them, and surfaces smoothed
+    /// before stay as they are.
+    static func smoothed(_ data: [UInt8], dims: (Int, Int, Int), voxelSize: SIMD3<Float>, sigmaMM: Float, labels: [Int],
+                         region: VoxelBox? = nil) -> (box: VoxelBox, values: [UInt8])? {
         let n = SIMD3(dims.0, dims.1, dims.2)
         // Box around the labels: on a copy holding only them (one table lookup), empty rows are
         // skipped with one memcmp each, and in the rest only the ends are scanned.
@@ -216,7 +225,12 @@ enum LabelPainter {
 
         // The region any label can reach (rlo..<rhi), and around it a further r of padding
         // (zeros outside the volume) for the convolutions.
-        let rlo = pointwiseMax(lo &- r, .zero), rhi = pointwiseMin(hi &+ r, n), rs = rhi &- rlo
+        var rlo = pointwiseMax(lo &- r, .zero), rhi = pointwiseMin(hi &+ r, n)
+        if let region {
+            rlo = pointwiseMax(rlo, region.lo &- r); rhi = pointwiseMin(rhi, region.hi &+ r)
+            guard all(rlo .< rhi) else { return nil }
+        }
+        let rs = rhi &- rlo
         let box = VoxelBox(lo: rlo, hi: rhi)
         var result = read(data, dims: dims, box: box)
         let ps = rs &+ r &* 2, plo = rlo &- r
