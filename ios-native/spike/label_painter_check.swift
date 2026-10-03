@@ -85,3 +85,12 @@ precondition(after[at(5, 5, 5)] == 0 && after.filter { $0 == 2 }.count > 300)
 // Anisotropic voxels: σ in mm, so 3 mm slices blur less along z than 1 mm pixels along x.
 precondition(LabelPainter.smoothed([UInt8](repeating: 0, count: 8), dims: (2, 2, 2), voxelSize: SIMD3(1, 1, 3), sigmaMM: 1, labels: [1]) == nil)
 print("smoothing ok: cube \(cubeBefore) → \(cubeAfter)")
+
+// Copying labels into the drawing: relabel (others become 0), then fill only the drawing's
+// unlabelled voxels.
+let copied = LabelPainter.relabelled([0, 1, 2, 3, 2, 1, 255, 3], dims: (4, 2, 1), mapping: [1: 5, 3: 6])
+precondition(copied == [0, 5, 0, 6, 0, 5, 0, 6], "\(copied)")
+let merged = LabelPainter.fillingUnlabelled([0, 0, 9, 9, 0, 0, 0, 0], from: copied, rowLength: 4)
+precondition(merged == [0, 5, 9, 9, 0, 5, 0, 6], "\(merged)")
+precondition(LabelPainter.fillingUnlabelled([1, 2, 3, 4], from: [0, 0, 0, 0], rowLength: 4) == [1, 2, 3, 4])
+print("copy ok")

@@ -133,6 +133,43 @@ enum LabelPainter {
         } }
     }
 
+    /// `data` relabelled through `mapping` (labels not in it become 0), through one vImage
+    /// table lookup rather than a per-voxel loop (64 M voxels).
+    static func relabelled(_ data: [UInt8], dims: (Int, Int, Int), mapping: [Int: Int]) -> [UInt8] {
+        let table = (0..<256).map { UInt8(clamping: mapping[$0] ?? 0) }
+        var out = data
+        out.withUnsafeMutableBytes { p in
+            var b = vImage_Buffer(data: p.baseAddress, height: vImagePixelCount(dims.1 * dims.2), width: vImagePixelCount(dims.0), rowBytes: dims.0)
+            _ = vImageTableLookUp_Planar8(&b, &b, table, vImage_Flags(kvImageNoFlags))
+        }
+        return out
+    }
+
+    /// `base` with its unlabelled voxels taken from `add` (labelled voxels of `base` win).
+    /// Rows of `add` with nothing in them are skipped with a memcmp; the rest go through vDSP
+    /// (new = base + (1 - min(base, 1)) · add), not a per-voxel loop.
+    static func fillingUnlabelled(_ base: [UInt8], from add: [UInt8], rowLength n: Int) -> [UInt8] {
+        var out = base
+        var b = [Float](repeating: 0, count: n), a = [Float](repeating: 0, count: n), m = [Float](repeating: 0, count: n)
+        var zero: Float = 0, one: Float = 1, negOne: Float = -1
+        let zeros = [UInt8](repeating: 0, count: n), nw = vDSP_Length(n)
+        add.withUnsafeBufferPointer { ad in out.withUnsafeMutableBufferPointer { o in zeros.withUnsafeBufferPointer { z in
+        b.withUnsafeMutableBufferPointer { bf in a.withUnsafeMutableBufferPointer { af in m.withUnsafeMutableBufferPointer { mf in
+            let bp = bf.baseAddress!, ap = af.baseAddress!, mp = mf.baseAddress!
+            for start in stride(from: 0, to: add.count, by: n) {
+                let src = ad.baseAddress! + start, dst = o.baseAddress! + start
+                guard memcmp(src, z.baseAddress!, n) != 0 else { continue }
+                vDSP_vfltu8(dst, 1, bp, 1, nw)                     // base
+                vDSP_vfltu8(src, 1, ap, 1, nw)                     // add
+                vDSP_vclip(bp, 1, &zero, &one, mp, 1, nw)          // min(base, 1)
+                vDSP_vsmsa(mp, 1, &negOne, &one, mp, 1, nw)        // 1 where base is unlabelled
+                vDSP_vma(mp, 1, ap, 1, bp, 1, bp, 1, nw)           // base + m · add
+                vDSP_vfixu8(bp, 1, dst, 1, nw)
+            }
+        } } } } } }
+        return out
+    }
+
     // MARK: Smoothing
 
     /// 3D surface smoothing: each label's mask is blurred with a Gaussian of `sigmaMM` (per

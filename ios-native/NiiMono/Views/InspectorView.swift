@@ -258,9 +258,15 @@ extension Color {
 private struct CustomSegmentationSection: View {
     let model: ViewerViewModel
     @State private var importing = false
+    @State private var copying = false
 
     var body: some View {
         Section("Custom Segmentation") {
+            if let shown = model.segmentation.map, !shown.isCustom {
+                Button("Copy Labels to Drawing…", systemImage: "doc.on.doc") { copying = true }
+                    .disabled(model.segmentation.isGenerating || model.customFileBusy)
+                    .sheet(isPresented: $copying) { CopyLabelsSheet(model: model, source: shown) }
+            }
             Button(model.segmentation.customMap == nil ? "Draw Segmentation…" : "Edit Drawing…",
                    systemImage: "pencil.and.scribble") { model.startDrawing() }
                 .disabled(model.segmentation.isGenerating || model.customFileBusy)
@@ -277,5 +283,53 @@ private struct CustomSegmentationSection: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
             if case .success(let url) = result { Task { await model.importCustomSegmentation(from: url) } }
         }
+    }
+}
+
+/// Picks which labels of the map on screen to add to the drawing; starts from the visible ones.
+private struct CopyLabelsSheet: View {
+    let model: ViewerViewModel
+    let source: SegmentationMap
+    @State private var chosen: Set<Int> = []
+    @Environment(\.dismiss) private var dismiss
+
+    private var present: [Int] { source.labelRange.filter { source.counts[$0] > 0 } }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(present, id: \.self) { label in
+                        Toggle(isOn: Binding(get: { chosen.contains(label) }, set: { if $0 { chosen.insert(label) } else { chosen.remove(label) } })) {
+                            HStack(spacing: 8) {
+                                Circle().fill(Color(source.table.color(label))).frame(width: 12, height: 12)
+                                Text(source.table.name(label))
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Added to the drawing: a label with the same name there gains these voxels, the others become new labels. Voxels already drawn keep their label.")
+                }
+            }
+            .navigationTitle("Copy from \(source.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Copy \(chosen.count)") {
+                        let ids = present.filter(chosen.contains)
+                        dismiss()
+                        Task { await model.copyToDrawing(ids) }
+                    }
+                    .disabled(chosen.isEmpty)
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button("Select All") { chosen = Set(present) }
+                    Spacer()
+                    Button("Select None") { chosen = [] }
+                }
+            }
+        }
+        .onAppear { chosen = Set(present.filter { model.segmentation.isVisible($0) }) }
     }
 }

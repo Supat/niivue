@@ -57,6 +57,43 @@ import Observation
         }
     }
 
+    /// Adds labels `ids` of the map on screen (a generated or loaded one) to the drawing, with
+    /// their names and colours, and opens the editor. A copied label takes the id of a drawn
+    /// label with the same name (so copying it again adds to it), else a free id; voxels
+    /// already drawn keep their label.
+    func copyToDrawing(_ ids: [Int]) async {
+        guard let source = segmentation.map, !source.isCustom, !ids.isEmpty else { return }
+        customFileBusy = true
+        defer { customFileBusy = false }
+        let existing = segmentation.customMap
+        var labels = existing == nil ? [] : segmentation.customLabels
+        var mapping: [Int: Int] = [:], skipped = 0
+        for id in ids {
+            let name = source.table.name(id)
+            if let same = labels.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                mapping[id] = same.id
+            } else if let free = (1...255).first(where: { f in !labels.contains { $0.id == f } }) {
+                let c = source.table.color(id)
+                labels.append(CustomLabel(id: free, name: name, color: [c.x, c.y, c.z]))
+                mapping[id] = free
+            } else {
+                skipped += 1 // all 255 ids in use
+            }
+        }
+        let volume = volume, grid = source.labels, base = existing?.labels.data, all = labels
+        let map = await Task.detached(priority: .userInitiated) {
+            let copied = LabelPainter.relabelled(grid.data, dims: grid.dims, mapping: mapping)
+            let data = base.map { LabelPainter.fillingUnlabelled($0, from: copied, rowLength: grid.dims.0) } ?? copied
+            return SegmentationMap(labels: LabelVolume(dims: grid.dims, data: data, maxLabel: all.map(\.id).max() ?? 0),
+                                   name: LabelTable.customMapName, volume: volume, table: .custom(all))
+        }.value
+        segmentation.showCustom(map, labels: labels)
+        let n = ids.count - skipped
+        customFileStatus = "Added \(n) label\(n == 1 ? "" : "s") from \(source.name) to the drawing."
+            + (skipped > 0 ? " \(skipped) didn't fit (255 labels at most)." : "")
+        startDrawing()
+    }
+
     /// Writes the drawing as `<scan>_drawing.nii.gz` (the scan's grid and orientation, label
     /// names in the header) and opens the share sheet.
     func exportCustomSegmentation() async {

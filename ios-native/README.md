@@ -136,7 +136,11 @@ the steps between drawn slices, bumps and pinholes, and also anything thinner th
 lone painted slice). One undo step; vDSP throughout, ~1 s for a whole-body grid even in Debug. "Done" shows the drawing as the segmentation
 ("Custom drawing", alongside any generated or loaded maps in the Show picker; "Remove
 Segmentation" removes only the map on screen) and the sidecar
-saves it with its label names; "Edit Drawing…" reopens it. "Export…" shares the drawing as
+saves it with its label names; "Edit Drawing…" reopens it. "Copy Labels to Drawing…" adds labels of the generated (or loaded)
+map on screen to the drawing: a sheet lists them, ticked as they are visible; a copied label
+joins a drawn label of the same name (so copying it again adds to it), the rest become new
+labels with their names and colours, and voxels already drawn keep their label. The editor
+then opens on the result. "Export…" shares the drawing as
 `<scan>_drawing.nii.gz`: a uint8 label NIfTI on the scan's own grid and orientation (its voxels
 back in the file's index order under a copy of the scan's header, so ITK-SNAP, 3D Slicer or
 FSLeyes overlay it on the original scan), with the label names and colours as JSON in a header
