@@ -131,7 +131,12 @@ and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so
 across zoom and anisotropic voxels. Labels are named and coloured from the label menu; undo
 and redo work per stroke (⌘Z / ⇧⌘Z, 50 steps). "Done" shows the drawing as the segmentation
 ("Custom drawing"; a generated map it replaces is kept for the Show picker) and the sidecar
-saves it with its label names; "Edit Drawing…" reopens it. Strokes change the label grid in
+saves it with its label names; "Edit Drawing…" reopens it. "Export…" shares the drawing as
+`<scan>_drawing.nii.gz`: a uint8 label NIfTI on the scan's own grid and orientation (its voxels
+back in the file's index order under a copy of the scan's header, so ITK-SNAP, 3D Slicer or
+FSLeyes overlay it on the original scan), with the label names and colours as JSON in a header
+extension. "Import…" takes any label map on the scan's grid as the drawing, reading the names
+back from our own exports and naming other labels "Label n". Strokes change the label grid in
 place (`LabelGrid`) and are published ~30 times a second: the slice panes recomposite and the
 3D render re-uploads only the z slices touched.
 
@@ -148,11 +153,12 @@ the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YE
 | `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` + `LabelGrid` and the slice compositing; `LabelPainter` (brush, line, fill on a slice); `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
 | `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs), `DrawingViewModel` (segmentation editor: labels, tools, undo). |
 | `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `SegmentationEditor`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
-| `NiiMono/Services` | `SidecarStore`; `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
+| `NiiMono/Services` | `SidecarStore`; `CustomSegmentationFile` (drawing import/export); `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
+| `spike/label_export_check.swift` | Round trip of the drawing export on real scans (permuted and flipped orientations): same labels back, scan affine kept, JSON extension intact. |
 | `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, undo round trip (build line in its header). |
 | `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 

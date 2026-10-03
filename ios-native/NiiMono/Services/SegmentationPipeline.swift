@@ -16,7 +16,7 @@ final class CancelFlag: @unchecked Sendable {
 
 enum SegmentationPipeline {
     /// Read a NIfTI file, optionally through a security scope.
-    private static func read(_ url: URL, scoped: Bool) throws -> Data {
+    static func read(_ url: URL, scoped: Bool) throws -> Data {
         let accessed = scoped && url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         return try Data(contentsOf: url)

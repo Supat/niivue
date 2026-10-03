@@ -32,6 +32,9 @@ struct NiftiVolume: @unchecked Sendable {
     /// A JSON document carried in the header extension (the stitching pipeline embeds its
     /// acquisition metadata there), so it travels with the file.
     var embeddedJSON: Data?
+    /// The file's own 348-byte header (little-endian files only), so a label map can be written
+    /// back on the file's grid and orientation (see `labelFile(_:like:json:)`).
+    var header: Data?
 
     var voxelCount: Int { dims.0 * dims.1 * dims.2 }
 
@@ -389,7 +392,8 @@ enum NIfTI {
             displayMin: winLo, displayMax: winHi,
             subject: SubjectInfo(headerOf: d, voxOffset: L.voxOffset),
             filePerm: L.perm, fileFlip: L.flip,
-            embeddedJSON: embeddedJSON(in: d, voxOffset: L.voxOffset)
+            embeddedJSON: embeddedJSON(in: d, voxOffset: L.voxOffset),
+            header: L.bigEndian ? nil : Data(d.prefix(348))
         )
     }
 
@@ -465,6 +469,70 @@ enum NIfTI {
         putF(280, voxelSize.0); putF(300, voxelSize.1); putF(320, voxelSize.2) // srow diagonals
         h.replaceSubrange(344..<348, with: [0x6e, 0x2b, 0x31, 0x00]) // "n+1\0"
         return gzip(h + Data(labels.data))
+    }
+
+    /// A label map on `volume`'s original grid: voxels back in the file's index order and its
+    /// header (so its qform/sform), with `json` in a header extension (ecode 6). Other tools
+    /// then overlay it on the scan; the app reads it back through `parseLabels`. Falls back to
+    /// the RAS layout of `labelFile(_:voxelSize:)` when the scan's header wasn't kept.
+    static func labelFile(_ labels: LabelVolume, like volume: NiftiVolume, json: Data?) -> Data {
+        guard let src = volume.header, src.count >= 348 else { return labelFile(labels, voxelSize: volume.voxelSize) }
+        let od = [labels.dims.0, labels.dims.1, labels.dims.2]
+        var fd = [0, 0, 0]
+        for w in 0..<3 { fd[volume.filePerm[w]] = od[w] }
+        let fs = [1, fd[0], fd[0] * fd[1]]
+        // File offset of each RAS coordinate, per axis: RAS axis w is file axis filePerm[w],
+        // reversed when fileFlip[w].
+        let off = (0..<3).map { w in (0..<od[w]).map { i in (volume.fileFlip[w] ? od[w] - 1 - i : i) * fs[volume.filePerm[w]] } }
+        var body = [UInt8](repeating: 0, count: labels.data.count)
+        if volume.filePerm[0] == 0 {
+            // RAS x is the file's fastest axis (practically every file): whole rows move with one
+            // copy each, mirrored first in one vImage pass if x is reversed. A per-voxel loop
+            // took ~8 s for a 64 M-voxel scan in a Debug build.
+            var src = labels.data
+            if volume.fileFlip[0] {
+                src.withUnsafeMutableBytes { p in
+                    var b = vImage_Buffer(data: p.baseAddress, height: vImagePixelCount(od[1] * od[2]), width: vImagePixelCount(od[0]), rowBytes: od[0])
+                    _ = vImageHorizontalReflect_Planar8(&b, &b, vImage_Flags(kvImageNoFlags))
+                }
+            }
+            src.withUnsafeBytes { s in body.withUnsafeMutableBytes { d in
+                var row = 0
+                for z in 0..<od[2] { for y in 0..<od[1] {
+                    (d.baseAddress! + off[1][y] + off[2][z]).copyMemory(from: s.baseAddress! + row * od[0], byteCount: od[0])
+                    row += 1
+                } }
+            } }
+        } else {
+            labels.data.withUnsafeBufferPointer { src in body.withUnsafeMutableBufferPointer { dst in
+                var i = 0
+                for z in 0..<od[2] { for y in 0..<od[1] {
+                    let base = off[1][y] + off[2][z]
+                    for x in 0..<od[0] { dst[base + off[0][x]] = src[i]; i += 1 }
+                } }
+            } }
+        }
+
+        var h = Data(src.prefix(348))
+        func put<T: FixedWidthInteger>(_ o: Int, _ v: T) { var x = v.littleEndian; withUnsafeBytes(of: &x) { h.replaceSubrange(o..<o + MemoryLayout<T>.size, with: $0) } }
+        func putF(_ o: Int, _ v: Float) { put(o, v.bitPattern) }
+        put(0, Int32(348))
+        put(40, Int16(3)); put(42, Int16(fd[0])); put(44, Int16(fd[1])); put(46, Int16(fd[2]))
+        for o in stride(from: 48, through: 54, by: 2) { put(o, Int16(1)) }
+        put(70, Int16(2)); put(72, Int16(8))                  // DT_UINT8, bitpix
+        putF(112, 1); putF(116, 0)                            // scl_slope, scl_inter
+        putF(124, 0); putF(128, 0)                            // cal_max, cal_min
+        h.replaceSubrange(344..<348, with: [0x6e, 0x2b, 0x31, 0x00]) // "n+1\0"
+        var ext = Data([json == nil ? 0 : 1, 0, 0, 0])
+        if let json {
+            let esize = (8 + json.count + 15) / 16 * 16
+            var e = Data(); var size = Int32(esize).littleEndian, code = Int32(6).littleEndian
+            withUnsafeBytes(of: &size) { e.append(contentsOf: $0) }; withUnsafeBytes(of: &code) { e.append(contentsOf: $0) }
+            e.append(json); e.append(Data(count: esize - e.count))
+            ext.append(e)
+        }
+        putF(108, Float(348 + ext.count))                     // vox_offset
+        return gzip(h + ext + Data(body))
     }
 
     /// gzip-wrap raw deflate from the Compression framework (header, body, CRC-32, size).

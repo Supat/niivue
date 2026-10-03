@@ -43,13 +43,7 @@ struct InspectorView: View {
             case .segmentation:
                 ImageSection(model: model.segmentation) // the Dixon role and companions the tissue classes need
                 SegmentationSection(model: model.segmentation)
-                Section("Custom Segmentation") {
-                    Button(model.segmentation.customMap == nil ? "Draw Segmentation…" : "Edit Drawing…",
-                           systemImage: "pencil.and.scribble") { model.startDrawing() }
-                        .disabled(model.segmentation.isGenerating)
-                    Text("Draw labels slice by slice with Apple Pencil, alongside a reference slice and the 3D render.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+                CustomSegmentationSection(model: model)
                 if let map = model.segmentation.map, map.name != LabelTable.customMapName { // no tissue densities for drawn labels
                     BodyCompositionSection(model: model.bodyComposition, map: map)
                 }
@@ -258,4 +252,30 @@ private struct ImageSection: View {
 
 extension Color {
     init(_ rgb: SIMD3<Float>) { self.init(red: Double(rgb.x), green: Double(rgb.y), blue: Double(rgb.z)) }
+}
+
+/// Draw, import and export the hand-drawn segmentation.
+private struct CustomSegmentationSection: View {
+    let model: ViewerViewModel
+    @State private var importing = false
+
+    var body: some View {
+        Section("Custom Segmentation") {
+            Button(model.segmentation.customMap == nil ? "Draw Segmentation…" : "Edit Drawing…",
+                   systemImage: "pencil.and.scribble") { model.startDrawing() }
+                .disabled(model.segmentation.isGenerating || model.customFileBusy)
+            Button("Import…", systemImage: "square.and.arrow.down") { importing = true }
+                .disabled(model.customFileBusy)
+            Button("Export…", systemImage: "square.and.arrow.up") { Task { await model.exportCustomSegmentation() } }
+                .disabled(model.segmentation.customMap == nil || model.customFileBusy)
+            if model.customFileBusy { ProgressView() }
+            if let status = model.customFileStatus { Text(status).font(.footnote).foregroundStyle(.secondary) }
+            Text("Draw labels slice by slice with Apple Pencil, alongside a reference slice and the 3D render. Exports are label NIfTIs on the scan's own grid and orientation, with the label names inside; any label map on this grid can be imported.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        // ponytail: .gzip admits any .gz and .data any file; a bad pick fails with the reader's error.
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
+            if case .success(let url) = result { Task { await model.importCustomSegmentation(from: url) } }
+        }
+    }
 }

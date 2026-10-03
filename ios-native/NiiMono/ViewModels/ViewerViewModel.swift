@@ -36,6 +36,46 @@ import Observation
                                    labels: segmentation.customLabels, mainAxis: plane.axis ?? 2)
     }
 
+    /// Import/export of the drawing: true while a file is read or written, and the outcome.
+    private(set) var customFileBusy = false
+    private(set) var customFileStatus: String?
+
+    /// A label file on this scan's grid becomes the drawing (names from our own exports).
+    func importCustomSegmentation(from url: URL) async {
+        customFileBusy = true
+        defer { customFileBusy = false }
+        let volume = volume
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try CustomSegmentationFile.read(from: url, scoped: true, volume: volume) }
+        }.value
+        switch result {
+        case .success(let r):
+            segmentation.showCustom(r.map, labels: r.labels)
+            customFileStatus = "Imported \(url.lastPathComponent): \(r.labels.count) label\(r.labels.count == 1 ? "" : "s")."
+        case .failure(let e):
+            customFileStatus = "Couldn't import \(url.lastPathComponent): \(e.localizedDescription)"
+        }
+    }
+
+    /// Writes the drawing as `<scan>_drawing.nii.gz` (the scan's grid and orientation, label
+    /// names in the header) and opens the share sheet.
+    func exportCustomSegmentation() async {
+        guard let map = segmentation.customMap else { return }
+        customFileBusy = true
+        defer { customFileBusy = false }
+        let volume = volume, labels = segmentation.customLabels
+        let base = fileURL.map { SegmentationPipeline.tags(of: $0)[0] } ?? "Segmentation"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
+            .appendingPathComponent("\(base)_drawing.nii.gz")
+        let written = await Task.detached(priority: .userInitiated) { () -> Bool in
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return (try? CustomSegmentationFile.export(map, labels: labels, like: volume).write(to: url, options: .atomic)) != nil
+        }.value
+        guard written else { customFileStatus = "Couldn't write the export."; return }
+        customFileStatus = nil
+        SnapshotPanes.share(url)
+    }
+
     /// Closes the editor, showing the drawing if anything was drawn.
     func finishDrawing() async {
         guard let d = drawing else { return }
