@@ -29,6 +29,10 @@ struct RenderView: UIViewRepresentable {
         var renderer: VolumeRenderer?
         var onTap: () -> Void = {}
         var presetTick = 0
+        /// What the last frame was drawn from; SwiftUI updates this view for many changes
+        /// that don't touch the render (another pane panning, chrome, the inspector), and a
+        /// full raycast for each is wasted power.
+        var drawnInputs: Inputs?
         let gizmo = OrientationGizmo()
         let scaleBar = ScaleBarView()
         let orbit = UIPanGestureRecognizer()
@@ -48,6 +52,24 @@ struct RenderView: UIViewRepresentable {
             view?.setNeedsDisplay()
         }
 
+        /// Gestures under way. While any is, frames render at 1 pixel per point (a quarter of
+        /// the raycasting on a 2× screen, at up to 120 Hz); the frame after the last one ends
+        /// is full resolution again. A moving image hides the softness.
+        private var activeGestures = 0
+        private func track(_ g: UIGestureRecognizer) {
+            guard let view = g.view as? MTKView else { return }
+            switch g.state {
+            case .began: activeGestures += 1
+            case .ended, .cancelled, .failed: activeGestures = max(0, activeGestures - 1)
+            default: return
+            }
+            let scale = activeGestures > 0 ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
+            guard view.contentScaleFactor != scale else { return }
+            view.contentScaleFactor = scale
+            renderer?.pointScale = scale
+            view.setNeedsDisplay()
+        }
+
         private func aspect(_ v: UIView) -> Float { Float(v.bounds.width / max(v.bounds.height, 1)) }
         private func ndc(_ p: CGPoint, in v: UIView) -> simd_float2 {
             simd_float2(Float(2 * p.x / max(v.bounds.width, 1) - 1), Float(1 - 2 * p.y / max(v.bounds.height, 1)))
@@ -62,6 +84,7 @@ struct RenderView: UIViewRepresentable {
 
         @objc func orbited(_ g: UIPanGestureRecognizer) {
             guard let renderer, let view = g.view else { return }
+            track(g)
             let t = g.translation(in: view)
             g.setTranslation(.zero, in: view)
             renderer.orbit(dx: Float(t.x), dy: Float(t.y))
@@ -71,6 +94,7 @@ struct RenderView: UIViewRepresentable {
         /// Two-finger drag, or secondary-button drag with a mouse/trackpad.
         @objc func panned(_ g: UIPanGestureRecognizer) {
             guard let renderer, let view = g.view else { return }
+            track(g)
             let t = g.translation(in: view)
             g.setTranslation(.zero, in: view)
             let delta = simd_float2(Float(2 * t.x / max(view.bounds.width, 1)), Float(-2 * t.y / max(view.bounds.height, 1)))
@@ -82,6 +106,7 @@ struct RenderView: UIViewRepresentable {
             guard let renderer, let view = g.view else { return }
             // Trackpad pinches arrive as transform events with no touches; check both, as the
             // event type isn't always seen by shouldReceive.
+            track(g)
             if g.state == .began { trackpadPinch = trackpadPinch || g.numberOfTouches == 0 }
             let scale = trackpadPinch ? pow(Float(g.scale), Self.trackpadPinchDamping) : Float(g.scale)
             renderer.zoom(by: scale, atNDC: ndc(g.location(in: view), in: view), aspect: aspect(view))
@@ -92,6 +117,7 @@ struct RenderView: UIViewRepresentable {
         /// Mouse wheel / trackpad scroll zooms towards the pointer.
         @objc func scrolled(_ g: UIPanGestureRecognizer) {
             guard let renderer, let view = g.view else { return }
+            track(g)
             let dy = Float(g.translation(in: view).y)
             g.setTranslation(.zero, in: view)
             renderer.zoom(by: exp(dy * 0.005), atNDC: ndc(g.location(in: view), in: view), aspect: aspect(view))
@@ -188,11 +214,29 @@ struct RenderView: UIViewRepresentable {
         renderer.setOverlay(overlay)
         renderer.cameraClipFraction = cameraClip
         renderer.pointScale = view.contentScaleFactor
-        if presetTick != c.presetTick, let preset {
+        let presetChanged = presetTick != c.presetTick
+        if presetChanged, let preset {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }
         c.presetTick = presetTick
+        let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipHighlight: clipHighlight,
+                            crosshair: crosshair, overlay: overlay.map(Inputs.Overlay.init), fov: fov, cameraClip: cameraClip)
+        guard presetChanged || inputs != c.drawnInputs else { return }
+        c.drawnInputs = inputs
         c.cameraChanged(view)
+    }
+
+    /// Everything this view passes the renderer that changes the picture (the camera is
+    /// redrawn by the gestures themselves).
+    struct Inputs: Equatable {
+        var lo: Float, hi: Float, mode: RenderMode, clips: [ClipSetting], clipCutaway: Bool, clipHighlight: Bool
+        var crosshair: SIMD3<Float>?, overlay: Overlay?, fov: [FOVBox], cameraClip: Float
+        struct Overlay: Equatable {
+            var mapID: UUID, revision: Int, lut: [SIMD4<UInt8>], opacity: Float, ghost: Bool, hideScan: Bool
+            init(_ o: SegmentationOverlay) {
+                (mapID, revision, lut, opacity, ghost, hideScan) = (o.mapID, o.revision, o.lut, o.opacity, o.ghost, o.hideScan)
+            }
+        }
     }
 }
 
