@@ -55,6 +55,44 @@ struct SlicePlane: Equatable {
 enum LabelPainter {
     static let unlocked = [Bool](repeating: false, count: 256)
 
+    // MARK: Bricks (edit tracking for smoothing)
+
+    /// Edge of the cubes edits are tracked in: small, so the margin smoothing adds around an
+    /// edit (whole bricks covering the kernel radius) stays close to that radius.
+    static let brick = 4
+
+    static func brickCounts(_ dims: (Int, Int, Int)) -> SIMD3<Int> {
+        SIMD3((dims.0 + brick - 1) / brick, (dims.1 + brick - 1) / brick, (dims.2 + brick - 1) / brick)
+    }
+
+    /// For each label whose voxels differ between `before` and `after` (both the contents of
+    /// `box`, x fastest), the bricks where they do. Brick-sized row pieces are compared with
+    /// memcmp; only differing pieces are looked at voxel by voxel.
+    static func changedBricks(before: [UInt8], after: [UInt8], box b: VoxelBox, dims: (Int, Int, Int)) -> [Int: Set<Int>] {
+        let nb = brickCounts(dims), w = b.size.x
+        var out: [Int: Set<Int>] = [:]
+        before.withUnsafeBufferPointer { o in after.withUnsafeBufferPointer { a in
+            var row = 0
+            for z in b.lo.z..<b.hi.z { for y in b.lo.y..<b.hi.y {
+                defer { row += w }
+                guard memcmp(o.baseAddress! + row, a.baseAddress! + row, w) != 0 else { continue } // the usual case
+                var x = b.lo.x
+                while x < b.hi.x {
+                    let end = min(b.hi.x, (x / brick + 1) * brick), at = row + x - b.lo.x, n = end - x
+                    if memcmp(o.baseAddress! + at, a.baseAddress! + at, n) != 0 {
+                        let index = x / brick + nb.x * (y / brick + nb.y * (z / brick))
+                        for i in at..<(at + n) where o[i] != a[i] {
+                            if o[i] != 0 { out[Int(o[i]), default: []].insert(index) }
+                            if a[i] != 0 { out[Int(a[i]), default: []].insert(index) }
+                        }
+                    }
+                    x = end
+                }
+            } }
+        } }
+        return out
+    }
+
     /// Sets the voxels inside an ellipse (centre `p`, radii `r`, both in voxels) to `value`,
     /// always including the voxel under the centre, but never a voxel whose label is
     /// `locked` (256 entries; nil = none). Returns the rows touched.
@@ -196,11 +234,11 @@ enum LabelPainter {
     /// ponytail: the labels share the box around all of them. Memory is two Float
     /// buffers the size of that padded box (a whole-body drawing: ~0.5 GB); work in z slabs
     /// if that bites.
-    /// With `region`, only voxels within it (grown by the kernel radius, so new edges blend
-    /// in) change; the blur still reads the true labels around them, and surfaces smoothed
-    /// before stay as they are.
+    /// With `bricks` (see changedBricks), only voxels in those bricks and within the kernel
+    /// radius of them change, so new edges blend in; the blur still reads the true labels
+    /// around them, and surfaces smoothed before stay as they are.
     static func smoothed(_ data: [UInt8], dims: (Int, Int, Int), voxelSize: SIMD3<Float>, sigmaMM: Float, labels: [Int],
-                         region: VoxelBox? = nil) -> (box: VoxelBox, values: [UInt8])? {
+                         bricks: Set<Int>? = nil) -> (box: VoxelBox, values: [UInt8])? {
         let n = SIMD3(dims.0, dims.1, dims.2)
         // Box around the labels: on a copy holding only them (one table lookup), empty rows are
         // skipped with one memcmp each, and in the rest only the ends are scanned.
@@ -233,8 +271,20 @@ enum LabelPainter {
         // The region any label can reach (rlo..<rhi), and around it a further r of padding
         // (zeros outside the volume) for the convolutions.
         var rlo = pointwiseMax(lo &- r, .zero), rhi = pointwiseMin(hi &+ r, n)
-        if let region {
-            rlo = pointwiseMax(rlo, region.lo &- r); rhi = pointwiseMin(rhi, region.hi &+ r)
+        // Bricks that may change: the edited ones grown by the kernel radius (in bricks).
+        var writable: Set<Int>?
+        if let bricks {
+            guard !bricks.isEmpty else { return nil }
+            let nb = brickCounts(dims), g = (r &+ (brick - 1)) / brick
+            var grown = Set<Int>(), blo = nb, bhi = SIMD3<Int>.zero
+            for i in bricks {
+                let c = SIMD3(i % nb.x, (i / nb.x) % nb.y, i / (nb.x * nb.y))
+                let a = pointwiseMax(c &- g, .zero), e = pointwiseMin(c &+ g, nb &- 1)
+                for z in a.z...e.z { for y in a.y...e.y { for x in a.x...e.x { grown.insert(x + nb.x * (y + nb.y * z)) } } }
+                blo = pointwiseMin(blo, a); bhi = pointwiseMax(bhi, e &+ 1)
+            }
+            writable = grown
+            rlo = pointwiseMax(rlo, blo &* brick); rhi = pointwiseMin(rhi, pointwiseMin(bhi &* brick, n))
             guard all(rlo .< rhi) else { return nil }
         }
         let rs = rhi &- rlo
@@ -313,6 +363,32 @@ enum LabelPainter {
                     blur += rs.x; dst += rs.x
                 }
             } } } } }
+        }
+        // Outside the writable bricks, put the labels back as they were. Rows in a band of
+        // bricks with none writable go back whole, in one copy.
+        if let writable {
+            let nb = brickCounts(dims), original = read(data, dims: dims, box: box)
+            var bands = Set<Int>() // y-brick + nb.y · z-brick
+            for i in writable { bands.insert(i / nb.x) }
+            original.withUnsafeBytes { src in result.withUnsafeMutableBytes { dst in
+                var row = 0
+                for z in box.lo.z..<box.hi.z { for y in box.lo.y..<box.hi.y {
+                    defer { row += rs.x }
+                    guard bands.contains(y / brick + nb.y * (z / brick)) else {
+                        (dst.baseAddress! + row).copyMemory(from: src.baseAddress! + row, byteCount: rs.x)
+                        continue
+                    }
+                    var x = box.lo.x
+                    while x < box.hi.x {
+                        let end = min(box.hi.x, (x / brick + 1) * brick)
+                        if !writable.contains(x / brick + nb.x * (y / brick + nb.y * (z / brick))) {
+                            let at = row + x - box.lo.x
+                            (dst.baseAddress! + at).copyMemory(from: src.baseAddress! + at, byteCount: end - x)
+                        }
+                        x = end
+                    }
+                } }
+            } }
         }
         return (box, result)
     }

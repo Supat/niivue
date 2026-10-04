@@ -108,19 +108,34 @@ precondition((0..<two.count).allSatisfy { (two[$0] == 2) == (tg.data[$0] == 2) }
 precondition(tg.data[at(9, 17, 17)] == 0 && tg.data[at(15, 15, 15)] == 1, "label 1 not smoothed")
 print("single-label smoothing ok")
 
-// Smoothing a region only: outside it (grown by the kernel radius) nothing changes.
-var reg = [UInt8](repeating: 0, count: 40 * 40 * 40)
-for z in 5..<35 { for y in 10..<26 { for x in 10..<26 { reg[at(x, y, z)] = 1 } } }
-reg[at(9, 17, 8)] = 1; reg[at(9, 17, 30)] = 1                            // bumps low and high in z
-let region = VoxelBox(lo: SIMD3(0, 0, 25), hi: SIMD3(40, 40, 35))       // the "edited" part, z 25..<35
-let part = LabelPainter.smoothed(reg, dims: sd, voxelSize: SIMD3(1, 1, 1), sigmaMM: 1, labels: [1], region: region)!
-precondition(part.box.lo.z >= 25 - 3, "box \(part.box)")
+// Edit tracking: changedBricks finds the bricks (and labels) a change touched, nothing else.
+var edBefore = [UInt8](repeating: 0, count: 40 * 40 * 40)
+for z in 5..<35 { for y in 10..<26 { for x in 10..<26 { edBefore[at(x, y, z)] = 1 } } }
+var edAfter = edBefore
+edAfter[at(9, 17, 30)] = 1                                                    // a bump drawn at z 30
+edAfter[at(12, 12, 6)] = 0                                                    // a voxel of 1 erased at z 6
+let full = VoxelBox(lo: .zero, hi: SIMD3(40, 40, 40))
+let changed = LabelPainter.changedBricks(before: edBefore, after: edAfter, box: full, dims: sd)
+let nb = LabelPainter.brickCounts(sd)
+let bk = LabelPainter.brick
+func brickOf(_ x: Int, _ y: Int, _ z: Int) -> Int { x / bk + nb.x * (y / bk + nb.y * (z / bk)) }
+precondition(changed == [1: [brickOf(9, 17, 30), brickOf(12, 12, 6)]], "\(changed)")
+
+// Smoothing only the edited bricks: a bump far from them survives; outside the bricks grown
+// by the kernel radius nothing changes.
+var reg = edAfter
+reg[at(9, 17, 18)] = 1                                                      // an old bump, 12 slices away
+let part = LabelPainter.smoothed(reg, dims: sd, voxelSize: SIMD3(1, 1, 1), sigmaMM: 1, labels: [1], bricks: [brickOf(9, 17, 30)])!
 let pg = LabelGrid(LabelVolume(dims: sd, data: reg, maxLabel: 1))
 LabelPainter.write(pg, box: part.box, part.values)
-precondition(pg.data[at(9, 17, 30)] == 0, "bump in the region survived")
-precondition(pg.data[at(9, 17, 8)] == 1, "bump outside the region was smoothed")
-precondition((0..<(40 * 40 * 20)).allSatisfy { pg.data[$0] == reg[$0] }, "below the region changed")
-print("region smoothing ok")
+precondition(pg.data[at(9, 17, 30)] == 0, "the new bump survived")
+precondition(pg.data[at(9, 17, 18)] == 1, "an old bump far from the edit was smoothed")
+// Kernel radius 3 → the edited brick and one brick around it may change.
+let eb = SIMD3(9 / bk, 17 / bk, 30 / bk), wlo = (eb &- 1) &* bk, whi = (eb &+ 2) &* bk
+for z in 0..<40 { for y in 0..<40 { for x in 0..<40 where !(x >= wlo.x && x < whi.x && y >= wlo.y && y < whi.y && z >= wlo.z && z < whi.z) {
+    precondition(pg.data[at(x, y, z)] == reg[at(x, y, z)], "changed outside the edit at \(x),\(y),\(z)")
+} } }
+print("brick smoothing ok")
 
 // Locked labels: brush, eraser and fill leave their voxels alone.
 g = grid()

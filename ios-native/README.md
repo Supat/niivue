@@ -149,10 +149,12 @@ and it only grows into unlabelled voxels) (tap:
 σ 2 mm; hold for light 1 mm or strong 3.5 mm): the label's mask is Gaussian-blurred (σ in mm
 per axis, so anisotropic voxels are handled) and kept where it is above one half, which removes
 the steps between drawn slices, bumps and pinholes, and also anything thinner than about σ (a
-lone painted slice). Once a label has been smoothed, the wand smooths only what was edited since (that
-region, plus the kernel radius so new edges blend in), so repeated passes don't erode it;
-"Whole Label" in its menu smooths all of it again. The bookkeeping (smoothed, edited box) is
-kept with the label names in the sidecar. One undo step; vDSP throughout, ~1 s for a whole-body grid even in Debug. "Done" shows the drawing as the segmentation
+lone painted slice). Once a label has been smoothed, the wand smooths only what was edited since: strokes,
+fills and undo record the 4³-voxel bricks where the label's voxels actually changed, and
+smoothing writes only there plus a brick around (covering the kernel radius) so new edges
+blend in; everything else keeps its earlier smoothing. "Whole Label" in its menu smooths all
+of it again. The bookkeeping (smoothed, edited bricks) is kept with the label names in the
+sidecar. One undo step; vDSP throughout, ~1 s for a whole-body grid even in Debug. "Done" shows the drawing as the segmentation
 ("Custom drawing", alongside any generated or loaded maps in the Show picker; "Remove
 Segmentation" removes only the map on screen) and the sidecar
 saves it with its label names; "Edit Drawing…" reopens it. "Copy Labels to Drawing…" adds labels of the generated (or loaded)
