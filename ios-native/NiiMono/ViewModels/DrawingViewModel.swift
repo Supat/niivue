@@ -89,7 +89,7 @@ final class DrawingViewModel: Identifiable {
 
     func overlay(opacity: Float, in3D: Bool = false) -> SegmentationOverlay {
         var lut = [SIMD4<UInt8>](repeating: .zero, count: 256)
-        for l in labels where l.color.count == 3 {
+        for l in labels where l.color.count == 3 && l.hidden != true {
             lut[l.id] = SIMD4(UInt8(l.color[0] * 255), UInt8(l.color[1] * 255), UInt8(l.color[2] * 255), 255)
         }
         return SegmentationOverlay(mapID: mapID, labels: grid, lut: lut, opacity: opacity, ghost: in3D && showThrough,
@@ -249,6 +249,7 @@ final class DrawingViewModel: Identifiable {
     }
 
     var activeIsLocked: Bool { activeLabel?.locked == true }
+    var activeIsHidden: Bool { activeLabel?.hidden == true }
 
     /// Smooths the surface of the label being edited in 3D (see LabelPainter.smoothed), as
     /// one undo step; other labels stay as they are. Once a label has been smoothed, only

@@ -212,6 +212,7 @@ struct SegmentationEditor: View {
                     Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
                     Text(drawing.activeLabel?.name ?? "").lineLimit(1)
                     if drawing.activeIsLocked { Image(systemName: "lock.fill").font(.caption).foregroundStyle(.orange) }
+                    if drawing.activeIsHidden { Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary) }
                     Image(systemName: "chevron.up.chevron.down").font(.caption2)
                 }
                 .frame(maxWidth: 180, alignment: .leading)
@@ -327,6 +328,13 @@ private struct LabelList: View {
                                     supportsOpacity: false)
                             .labelsHidden()
                         TextField("Name", text: $label.name)
+                        // Hidden: left out of all three panes until shown again.
+                        Button { label.hidden = label.hidden == true ? nil : true } label: {
+                            Image(systemName: label.hidden == true ? "eye.slash" : "eye")
+                                .foregroundStyle(label.hidden == true ? Color.secondary : Color.accentColor)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(label.hidden == true ? "Show \(label.name)" : "Hide \(label.name)")
                         // Locked: nothing draws over, erases, fills or smooths its voxels.
                         Button { label.locked = label.locked == true ? nil : true } label: {
                             Image(systemName: label.locked == true ? "lock.fill" : "lock.open")

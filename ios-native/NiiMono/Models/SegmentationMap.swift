@@ -74,6 +74,8 @@ struct CustomLabel: Codable, Equatable, Identifiable {
     var unsmoothedBricks: [Int]? = nil
     /// Locked in the editor: nothing draws over, erases or fills its voxels.
     var locked: Bool? = nil
+    /// Hidden in the editor's panes (its voxels stay, and drawing with it still works).
+    var hidden: Bool? = nil
 
 }
 
