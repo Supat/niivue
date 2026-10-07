@@ -8,6 +8,7 @@ import SwiftUI
 struct InspectorView: View {
     @Bindable var model: ViewerViewModel
     @AppStorage("inspectorPage") private var page = InspectorPage.image
+    @State private var confirmDeleteSidecar = false
 
     var body: some View {
         let volume = model.volume
@@ -65,7 +66,13 @@ struct InspectorView: View {
                         }
                         Text("Settings, the segmentation maps, the companion images and the profile photos are remembered here and restored when the scan is opened again.")
                             .font(.caption2).foregroundStyle(.secondary)
-                        Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
+                        // Asks first: this drops everything remembered for the scan at once.
+                        Button("Delete Sidecar", role: .destructive) { confirmDeleteSidecar = true }
+                            .confirmationDialog("Delete this scan's sidecar?", isPresented: $confirmDeleteSidecar, titleVisibility: .visible) {
+                                Button("Delete Sidecar", role: .destructive) { model.deleteSidecar() }
+                            } message: {
+                                Text("The saved settings, segmentation maps, drawing, noise mask, scan repair, companion images and profile photos for this scan are deleted. The scan itself is not.")
+                            }
                     }
                 }
                 Section("Info") {
@@ -398,35 +405,36 @@ private struct NoiseSection: View {
     }
 }
 
-/// Thin banding painted by hand and filled in along z (see BandRepair), and the export of
+/// Scan repair painted by hand (bands filled along z, blemishes from all around, see
+/// ScanRepair), and the export of
 /// the scan with noise removed and banding repaired.
 private struct BandingSection: View {
     @Bindable var model: ViewerViewModel
     @State private var confirmUndo = false
 
     var body: some View {
-        Section("Banding Repair") {
-            Button(model.bandRepair == nil ? "Repair Banding…" : "Edit Banding Repair…", systemImage: "line.3.horizontal.decrease") {
-                model.startBandingRepair()
+        Section("Scan Repair") {
+            Button(model.scanRepair == nil ? "Repair Scan…" : "Edit Scan Repair…", systemImage: "bandage") {
+                model.startScanRepair()
             }
             .disabled(model.repairing)
             if model.repairing { ProgressView("Repairing…") }
-            if model.bandRepair != nil {
-                Button("Undo Banding Repair", role: .destructive) { confirmUndo = true }
+            if model.scanRepair != nil {
+                Button("Undo Scan Repair", role: .destructive) { confirmUndo = true }
                     .confirmationDialog("Put the original intensities back?", isPresented: $confirmUndo, titleVisibility: .visible) {
-                        Button("Undo Repair", role: .destructive) { Task { await model.applyBandRepair(nil) } }
+                        Button("Undo Repair", role: .destructive) { Task { await model.applyScanRepair(nil) } }
                     }
             }
-            Text("Paint over a thin band (best in a coronal or sagittal view, where it runs across); its voxels are filled in from the slices just above and below it. Used everywhere, Generate Segmentation included; the scan file isn't changed.")
+            Text("Band: paint over a thin band (best in a coronal or sagittal view, where it runs across); its voxels are filled in from the slices just above and below. Blemish: paint over a streak or spot; it is filled in from the tissue around it on all sides. Used everywhere, Generate Segmentation included; the scan file isn't changed.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
-        if model.noise != nil || model.bandRepair != nil {
+        if model.noise != nil || model.scanRepair != nil {
             Section("Cleaned Scan") {
                 Button("Export Cleaned Scan…", systemImage: "square.and.arrow.up") { Task { await model.exportCleanedScan() } }
                     .disabled(model.cleanExportBusy)
                 if model.cleanExportBusy { ProgressView("Writing cleaned scan…") }
                 if let error = model.cleanExportError { Text(error).font(.footnote).foregroundStyle(.red) }
-                Text("The scan with the marked noise removed and the banding repaired, as a NIfTI on its own grid and orientation.")
+                Text("The scan with the marked noise removed and the repairs applied, as a NIfTI on its own grid and orientation.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

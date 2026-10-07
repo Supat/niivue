@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct SegmentationSection: View {
     @Bindable var model: SegmentationViewModel
     @State private var importing = false
+    @State private var confirmRemove = false
 
     var body: some View {
         Section("Segmentation") {
@@ -70,6 +71,13 @@ struct SegmentationSection: View {
                 }
             }
         }
-        Button("Remove Segmentation", role: .destructive) { model.remove() }
+        // Asks first: the map is dropped from the sidecar too, and a generated one took minutes.
+        Button("Remove Segmentation", role: .destructive) { confirmRemove = true }
+            .confirmationDialog("Remove \(map.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                Button("Remove Segmentation", role: .destructive) { model.remove() }
+            } message: {
+                Text(map.isCustom ? "The drawing and its labels are removed from this scan."
+                     : "It is removed from this scan; a generated map would have to be generated again.")
+            }
     }
 }

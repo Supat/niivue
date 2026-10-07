@@ -68,6 +68,7 @@ struct ViewerView: View {
                 }
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
                 if UserDefaults.standard.bool(forKey: "openEditor") { model.startDrawing() } // for checks
+                if UserDefaults.standard.bool(forKey: "openRepair") { model.startScanRepair() } // for checks
             }
             .task(id: model.segmentation.mapIDs) { await model.updateScanLandmarks() }
             .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { model.landscape = $0 }

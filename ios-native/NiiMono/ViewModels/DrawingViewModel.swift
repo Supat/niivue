@@ -24,7 +24,7 @@ final class DrawingViewModel: Identifiable {
     let volume: NiftiVolume
     /// A segmentation, or the noise mask (one fixed "Noise" label; what it marks is removed
     /// from the scan's display).
-    enum Purpose { case segmentation, noise, banding }
+    enum Purpose { case segmentation, noise, repair }
     let purpose: Purpose
     /// Drawn in place; starts as the existing drawing's voxels (shared until the first stroke,
     /// so Cancel leaves that map untouched).
@@ -83,7 +83,7 @@ final class DrawingViewModel: Identifiable {
         let empty = LabelVolume(dims: volume.dims, data: [UInt8](repeating: 0, count: volume.voxelCount), maxLabel: 0)
         let seed = existingGrid ?? existing?.labels
         grid = LabelGrid(seed.flatMap { $0.dims == volume.dims ? $0 : nil } ?? empty)
-        let start = purpose == .noise ? [Self.noiseLabel] : purpose == .banding ? [Self.bandLabel]
+        let start = purpose == .noise ? [Self.noiseLabel] : purpose == .repair ? Self.repairLabels
             : existing != nil && !labels.isEmpty ? labels : [Self.newLabel(id: 1)]
         self.labels = start
         openingLabels = start
@@ -93,7 +93,21 @@ final class DrawingViewModel: Identifiable {
     }
 
     static let noiseLabel = CustomLabel(id: 1, name: "Noise", color: [1, 0.25, 0.85])
-    static let bandLabel = CustomLabel(id: 1, name: "Band", color: [1, 0.6, 0.1])
+    /// Scan repair: a band is filled in along z, a blemish from around it within the slice it
+    /// was painted on (see ScanRepair) — one blemish label per plane, all shown as "Blemish".
+    static let repairLabels = [CustomLabel(id: Int(ScanRepair.band), name: "Band", color: [1, 0.6, 0.1])]
+        + ScanRepair.blemishValues.map { CustomLabel(id: Int($0), name: "Blemish", color: [0.2, 0.85, 0.8]) }
+        + [CustomLabel(id: Int(ScanRepair.cut), name: "Cut", color: [0.95, 0.25, 0.3])]
+
+    /// Repair mode: the paint to use on the drawing pane (the blemish label of its plane).
+    var repairPaint: String {
+        get { active == Int(ScanRepair.band) ? "Band" : active == Int(ScanRepair.cut) ? "Cut" : "Blemish" }
+        set { active = newValue == "Band" ? Int(ScanRepair.band) : newValue == "Cut" ? Int(ScanRepair.cut) : Int(ScanRepair.blemish(axis: mainAxis)) }
+    }
+
+    /// Repair mode: a stroke is repeated on this many slices either side of the one it was
+    /// drawn on (its in-plane shape, same paint), for a streak that runs through several.
+    var repeatSlices = 0
 
     /// The noise mask as drawn, nil when nothing was changed.
     var editedGrid: LabelVolume? {
@@ -196,9 +210,33 @@ final class DrawingViewModel: Identifiable {
 
     private func commit(plane: SlicePlane, before: [UInt8], rows: ClosedRange<Int>?) {
         if let rows { touched(plane, rows) }
-        noteEdit(plane.box, before: before)
-        repairBanding(plane.box, before: before)
-        pushUndo(plane.box, before)
+        var box = plane.box, before = before
+        if purpose == .repair, repeatSlices > 0, let changed = LabelPainter.changedBounds(before: before, after: LabelPainter.read(grid, box: box), box: box) {
+            // Repeat the stroke on the slices either side: one undo step covers them all.
+            let after = LabelPainter.read(grid, box: box)
+            LabelPainter.write(grid, box: box, before) // so the snapshot is "before" everywhere
+            let n = [volume.dims.0, volume.dims.1, volume.dims.2][plane.axis]
+            var wide = changed
+            wide.lo[plane.axis] = max(0, plane.index - repeatSlices); wide.hi[plane.axis] = min(n, plane.index + repeatSlices + 1)
+            let snapshot = LabelPainter.read(grid, box: wide)
+            LabelPainter.write(grid, box: box, after)
+            // Copy the changed pixels of the stroke slice to each other slice in the range.
+            let (nx, ny, _) = volume.dims
+            let stride = [1, nx, nx * ny][plane.axis]
+            grid.data.withUnsafeMutableBufferPointer { d in
+                for z in changed.lo.z..<changed.hi.z { for y in changed.lo.y..<changed.hi.y { for x in changed.lo.x..<changed.hi.x {
+                    let i = x + nx * (y + ny * z)
+                    let bi = (x - box.lo.x) + box.size.x * ((y - box.lo.y) + box.size.y * (z - box.lo.z))
+                    guard before[bi] != after[bi] else { continue }
+                    for k in wide.lo[plane.axis]..<wide.hi[plane.axis] where k != plane.index { d[i + (k - plane.index) * stride] = after[bi] }
+                } } }
+            }
+            markDirty(wide.z)
+            box = wide; before = snapshot
+        }
+        noteEdit(box, before: before)
+        repairScan(box, before: before)
+        pushUndo(box, before)
         lastCommit = .now // a finger-tap undo may still drop this stroke (see tapUndo)
         flush()
     }
@@ -231,7 +269,7 @@ final class DrawingViewModel: Identifiable {
         }
         let current = LabelPainter.read(grid, box: step.box)
         LabelPainter.write(grid, box: step.box, step.values)
-        repairBanding(step.box, before: current)
+        repairScan(step.box, before: current)
         markDirty(step.box.z)
         flush()
     }
@@ -243,7 +281,7 @@ final class DrawingViewModel: Identifiable {
         LabelPainter.write(grid, box: step.box, step.values)
         edited = true
         noteEdit(step.box, before: current)
-        repairBanding(step.box, before: current)
+        repairScan(step.box, before: current)
         markDirty(step.box.z)
         flush()
     }
@@ -304,7 +342,7 @@ final class DrawingViewModel: Identifiable {
         let before = LabelPainter.read(grid, box: result.box)
         pushUndo(result.box, before)
         LabelPainter.write(grid, box: result.box, result.values)
-        repairBanding(result.box, before: before)
+        repairScan(result.box, before: before)
         edited = true
         markDirty(result.box.z)
         flush()
@@ -333,10 +371,11 @@ final class DrawingViewModel: Identifiable {
     }
 
     /// After a change to the mask in `box` (`before` → now): every column through the changed
-    /// voxels is filled in again along z (BandRepair's rule), and voxels no longer painted get
-    /// their original values back. Cost follows the columns a stroke touches.
-    private func repairBanding(_ box: VoxelBox, before: [UInt8]) {
-        guard purpose == .banding,
+    /// voxels is filled in again along z (ScanRepair's band rule), blemish voxels near the change
+    /// are filled in again from all around, and voxels no longer painted get their original
+    /// values back. Cost follows the columns a stroke touches.
+    private func repairScan(_ box: VoxelBox, before: [UInt8]) {
+        guard purpose == .repair,
               let changed = LabelPainter.changedBounds(before: before, after: LabelPainter.read(grid, box: box), box: box) else { return }
         let (nx, ny, nz) = volume.dims, plane = nx * ny
         var v = preview ?? volume // the first stroke copies the scan once
@@ -346,7 +385,11 @@ final class DrawingViewModel: Identifiable {
                 for z in 0..<nz {
                     let i = x + nx * (y + ny * z)
                     var want = original(i, o)
-                    if m[i] != 0 {
+                    if ScanRepair.isBlemish(m[i]) {
+                        continue // filled below, once the band voxels around it are in place
+                    } else if m[i] == ScanRepair.cut {
+                        want = volume.dataMin
+                    } else if m[i] != 0 {
                         var below = z - 1, above = z + 1
                         while below >= 0, m[i - (z - below) * plane] != 0 { below -= 1 }
                         while above < nz, m[i + (above - z) * plane] != 0 { above += 1 }
@@ -367,6 +410,18 @@ final class DrawingViewModel: Identifiable {
                 }
             } }
         } } }
+        // Blemish voxels around the change: filled in from their surroundings (the band repair
+        // and the stroke's erasures already in place). A margin lets a stroke that extends
+        // an existing blemish re-fill the part it joins.
+        let margin = SIMD3(repeating: 8)
+        let healBox = VoxelBox(lo: pointwiseMax(changed.lo &- margin, .zero), hi: pointwiseMin(changed.hi &+ margin, SIMD3(nx, ny, nz)))
+        let healed = ScanRepair.healed(data: v.data, mask: grid.data, dims: volume.dims, in: healBox)
+        v.data.withUnsafeMutableBufferPointer { d in
+            for (i, value) in zip(healed.indices, healed.values) where d[Int(i)] != value {
+                d[Int(i)] = value; repaired += 1
+                let z = Int(i) / plane; zlo = min(zlo, z); zhi = max(zhi, z)
+            }
+        }
         // Say what happened, so a stroke that changes nothing doesn't look like a broken tool.
         if repaired > 0 || restored > 0 {
             show(note: (repaired > 0 ? "Repaired \(repaired.formatted()) voxels" : "") + (repaired > 0 && restored > 0 ? ", " : "")
@@ -374,7 +429,7 @@ final class DrawingViewModel: Identifiable {
         } else if wholeColumns > 0 {
             show(note: "Nothing to fill in from: the paint covers whole columns from top to bottom.")
         } else {
-            show(note: "Nothing changed: the painted voxels already match the slices above and below.")
+            show(note: "Nothing changed: the painted voxels already match their surroundings.")
         }
         guard zhi >= 0 else { return }
         v.id = UUID()
@@ -382,9 +437,9 @@ final class DrawingViewModel: Identifiable {
         preview = v
     }
 
-    /// Done in banding mode: the repaired scan, and for every voxel it changed its original
+    /// Done in repair mode: the repaired scan, and for every voxel it changed its original
     /// value (for editing again or undoing); nil when nothing was painted this time.
-    func bandingResult() -> (volume: NiftiVolume, mask: LabelVolume, indices: [Int32], originals: [Float])? {
+    func repairResult() -> (volume: NiftiVolume, mask: LabelVolume, indices: [Int32], originals: [Float])? {
         flush()
         guard edited, let preview else { return nil }
         let (nx, ny, nz) = volume.dims, plane = nx * ny

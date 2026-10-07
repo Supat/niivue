@@ -79,27 +79,29 @@ import Observation
 
     func clearNoise() { noise = nil; saveNoise() }
 
-    // MARK: Banding repair
+    // MARK: Scan repair (banding and blemishes)
 
-    /// The banding repair in force: the painted mask, and the original values of the voxels
-    /// it replaced (so it can be edited again or undone).
-    struct BandRepairState { let mask: LabelVolume; let indices: [Int32]; let originals: [Float] }
-    private(set) var bandRepair: BandRepairState?
+    /// The scan repair in force: the painted mask (band / blemish, see ScanRepair), and the
+    /// original values of the voxels it replaced (so it can be edited again or undone).
+    struct ScanRepairState { let mask: LabelVolume; let indices: [Int32]; let originals: [Float] }
+    private(set) var scanRepair: ScanRepairState?
     private(set) var repairing = false
 
-    func startBandingRepair() {
-        let d = DrawingViewModel(volume: volume, existing: nil, labels: [], mainAxis: plane.axis == 2 ? 1 : (plane.axis ?? 1),
-                                 purpose: .banding, existingGrid: bandRepair?.mask)
-        if let r = bandRepair { d.setPreviousRepair(mask: r.mask.data, indices: r.indices, originals: r.originals) }
+    /// Opens on the slice view in use (coronal from 3D / Multi), with the Blemish paint.
+    func startScanRepair() {
+        let d = DrawingViewModel(volume: volume, existing: nil, labels: [], mainAxis: plane.axis ?? 1,
+                                 purpose: .repair, existingGrid: scanRepair?.mask)
+        if let r = scanRepair { d.setPreviousRepair(mask: r.mask.data, indices: r.indices, originals: r.originals) }
+        d.repairPaint = "Blemish"
         drawing = d
     }
 
     /// Puts the original values back, then repairs what `mask` marks (nil: just undo).
-    func applyBandRepair(_ mask: LabelVolume?, save: Bool = true) async {
+    func applyScanRepair(_ mask: LabelVolume?, save: Bool = true) async {
         repairing = true
         defer { repairing = false }
-        let current = volume, previous = bandRepair
-        let result = await Task.detached(priority: .userInitiated) { () -> (NiftiVolume, BandRepairState?, Range<Int>?) in
+        let current = volume, previous = scanRepair
+        let result = await Task.detached(priority: .userInitiated) { () -> (NiftiVolume, ScanRepairState?, Range<Int>?) in
             var v = current
             var zs: [Int] = []
             let plane = v.dims.0 * v.dims.1
@@ -112,24 +114,24 @@ import Observation
                 v.id = UUID()
                 return (v, nil, zs.isEmpty ? nil : zs.min()!..<(zs.max()! + 1))
             }
-            let r = BandRepair.repaired(data: v.data, mask: mask.data, dims: v.dims)
+            let r = ScanRepair.repaired(data: v.data, mask: mask.data, dims: v.dims, background: v.dataMin)
             var originals = [Float](); originals.reserveCapacity(r.indices.count)
             v.data.withUnsafeMutableBufferPointer { d in
                 for (i, value) in zip(r.indices, r.values) { originals.append(d[Int(i)]); d[Int(i)] = value; zs.append(Int(i) / plane) }
             }
             v.id = UUID()
-            return (v, BandRepairState(mask: mask, indices: r.indices, originals: originals), zs.isEmpty ? nil : zs.min()!..<(zs.max()! + 1))
+            return (v, ScanRepairState(mask: mask, indices: r.indices, originals: originals), zs.isEmpty ? nil : zs.min()!..<(zs.max()! + 1))
         }.value
         volumeDirtyZ = result.2
         volume = result.0
         segmentation.volume = result.0
-        bandRepair = result.1
-        if save { saveBandRepair() }
+        scanRepair = result.1
+        if save { saveScanRepair() }
     }
 
-    private func saveBandRepair() {
+    private func saveScanRepair() {
         guard let sidecar, sidecarProblem == nil, !restoring else { return }
-        let mask = bandRepair?.mask, voxel = volume.voxelSize
+        let mask = scanRepair?.mask, voxel = volume.voxelSize
         Task { [weak self] in
             await Task.detached(priority: .utility) { try? sidecar.saveLabels(mask, slot: "repair", voxelSize: voxel) }.value
             self?.scheduleSidecarSave()
@@ -143,7 +145,7 @@ import Observation
     /// The scan with the noise mask applied, as `<scan>_clean.nii.gz` (float32, the scan's own
     /// grid, orientation and header, its embedded metadata kept), in the share sheet.
     func exportCleanedScan() async {
-        guard noise != nil || bandRepair != nil else { return }
+        guard noise != nil || scanRepair != nil else { return }
         cleanExportBusy = true
         cleanExportError = nil
         defer { cleanExportBusy = false }
@@ -250,14 +252,14 @@ import Observation
     /// Closes the editor, showing the drawing if anything was drawn.
     func finishDrawing() async {
         guard let d = drawing else { return }
-        if d.purpose == .banding {
+        if d.purpose == .repair {
             // The editor repaired the scan as the band was painted: keep its result.
-            if let r = d.bandingResult() {
+            if let r = d.repairResult() {
                 volumeDirtyZ = nil
                 volume = r.volume
                 segmentation.volume = r.volume
-                bandRepair = r.indices.isEmpty ? nil : BandRepairState(mask: r.mask, indices: r.indices, originals: r.originals)
-                saveBandRepair()
+                scanRepair = r.indices.isEmpty ? nil : ScanRepairState(mask: r.mask, indices: r.indices, originals: r.originals)
+                saveScanRepair()
             }
             drawing = nil
             return
@@ -374,7 +376,7 @@ import Observation
                           clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y], enabled: $0.enabled) },
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks,
-                          noise: noise != nil, removeNoise: removeNoise, repair: bandRepair != nil,
+                          noise: noise != nil, removeNoise: removeNoise, repair: scanRepair != nil,
                           clipKeepSegments: clipKeepSegments),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
                                 mask: segmentation.mask,
@@ -440,11 +442,11 @@ import Observation
         await profile.restore()
         let volume = volume
         if s.viewer.repair == true {
-            openingStage = "Repairing banding…"
+            openingStage = "Repairing the scan…"
             if let mask = await Task.detached(priority: .userInitiated, operation: { sidecar.loadLabels(slot: "repair", volume: volume) }).value {
-                await applyBandRepair(mask, save: false)
+                await applyScanRepair(mask, save: false)
             } else {
-                sidecarProblem = "Couldn't read the banding repair from the sidecar. Saving is paused so it isn't overwritten; reopen the scan to try again."
+                sidecarProblem = "Couldn't read the scan repair from the sidecar. Saving is paused so it isn't overwritten; reopen the scan to try again."
             }
         }
         var missingNoise = false

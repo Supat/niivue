@@ -48,7 +48,7 @@ struct SegmentationEditor: View {
                     Button("Discard Changes", role: .destructive) { model.drawing = nil }
                 }
             Spacer()
-            Text(noiseMode ? "Remove Noise" : bandingMode ? "Repair Banding" : "Draw Segmentation").font(.headline)
+            Text(noiseMode ? "Remove Noise" : repairMode ? "Repair Scan" : "Draw Segmentation").font(.headline)
             Spacer()
             HStack(spacing: 4) {
                 // Black / white levels of the slices and the paint's opacity (the viewer's own, so
@@ -88,7 +88,7 @@ struct SegmentationEditor: View {
     // MARK: Panes
 
     private var noiseMode: Bool { drawing.purpose == .noise }
-    private var bandingMode: Bool { drawing.purpose == .banding }
+    private var repairMode: Bool { drawing.purpose == .repair }
     /// Noise and banding: one fixed label, no 3D paint (it isn't a segmentation).
     private var fixedLabel: Bool { drawing.purpose != .segmentation }
 
@@ -108,7 +108,7 @@ struct SegmentationEditor: View {
 
     /// The image on the slice panes and its levels (the scan's are the viewer's own).
     private var displayed: (id: DrawingViewModel.DisplayImage, name: String, volume: NiftiVolume, lo: Float, hi: Float) {
-        let pick = bandingMode ? images[0] : images.first { $0.id == drawing.display } ?? images[0] // a removed companion falls back to the scan
+        let pick = repairMode ? images[0] : images.first { $0.id == drawing.display } ?? images[0] // a removed companion falls back to the scan
         // Banding: the scan as repaired so far.
         if pick.id == .scan { return (pick.id, pick.name, drawing.preview ?? pick.volume, model.lo, model.hi) }
         let l = drawing.levels[pick.id] ?? SIMD2(pick.volume.displayMin, pick.volume.displayMax)
@@ -118,7 +118,7 @@ struct SegmentationEditor: View {
     @ViewBuilder private var imagePicker: some View {
         let list = images
         // Banding repairs the opened scan only: no other image to look at.
-        if list.count > 1, !bandingMode {
+        if list.count > 1, !repairMode {
             Menu {
                 Picker("Image", selection: $drawing.display) {
                     ForEach(list, id: \.id) { Text($0.name).tag($0.id) }
@@ -132,7 +132,7 @@ struct SegmentationEditor: View {
     /// The paint on the slice panes, or none while hidden.
     /// Banding: a faint tint only, or the paint would hide the repair it causes.
     private var slicePaint: SegmentationOverlay? {
-        drawing.hidePaint ? nil : drawing.overlay(opacity: bandingMode ? min(0.2, model.segmentation.opacity) : model.segmentation.opacity)
+        drawing.hidePaint ? nil : drawing.overlay(opacity: repairMode ? min(0.2, model.segmentation.opacity) : model.segmentation.opacity)
     }
 
     private var main: some View {
@@ -192,6 +192,7 @@ struct SegmentationEditor: View {
                     }
                     Button("Swap Views", systemImage: "arrow.left.arrow.right") {
                         (drawing.mainAxis, drawing.refAxis) = (drawing.refAxis, drawing.mainAxis)
+                        if repairMode { drawing.repairPaint = drawing.repairPaint } // blemish label of the new plane
                     }
                 }
                 .labelStyle(.iconOnly)
@@ -260,10 +261,30 @@ struct SegmentationEditor: View {
     private var tools: some View {
         HStack(spacing: 14) {
             if fixedLabel {
-                // One fixed label: no list, no colour.
-                HStack(spacing: 6) {
-                    Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
-                    Text(drawing.activeLabel?.name ?? "")
+                // Fixed labels: no list, no colour. Repair has two (band: filled along z;
+                // blemish: filled from all around), picked here.
+                if repairMode {
+                    Picker("Paint", selection: $drawing.repairPaint) {
+                        Text("Band").tag("Band")
+                        Text("Blemish").tag("Blemish")
+                        Text("Cut").tag("Cut")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 230)
+                    // A stroke repeated on the slices either side, for a streak through several.
+                    Menu {
+                        Picker("Repeat on slices either side", selection: $drawing.repeatSlices) {
+                            ForEach([0, 1, 2, 3, 5, 10, 20], id: \.self) { Text($0 == 0 ? "This slice only" : "±\($0) slices").tag($0) }
+                        }
+                    } label: {
+                        Label(drawing.repeatSlices == 0 ? "±0" : "±\(drawing.repeatSlices)", systemImage: "square.stack.3d.up")
+                            .labelStyle(.titleAndIcon).font(.footnote.monospacedDigit())
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
+                        Text(drawing.activeLabel?.name ?? "")
+                    }
                 }
             } else {
             Button { showingLabels = true } label: {

@@ -156,21 +156,33 @@ run on the original water/fat images and are cleared after, avoiding two more 25
 orientation under a copy of its header (embedded metadata kept), noise set to the scan's
 minimum (`spike/clean_export_check.swift` round-trips it).
 
-**Banding repair.** Inspector › Image › Banding Repair › "Repair Banding…" opens the editor
-with one fixed "Band" label (coronal view first, where a band between stitched stations runs
-across). Paint over the band: after every stroke (and fill, erase, undo, smoothing) the columns
-it touched are filled in again, each painted voxel getting a value interpolated along z
-(head–foot) between the nearest unpainted voxels above and below it, and voxels no longer
-painted getting their original values back — so the slice panes and the 3D pane show the
-repair as it is painted (~0.1 s a stroke in Debug). Done keeps it, Cancel drops it. The same
-rule repairs a saved mask on opening (`BandRepair.repaired`; `spike/band_repair_check.swift`). Unlike noise removal this changes
+**Scan repair (banding and blemishes).** Inspector › Image › Scan Repair › "Repair Scan…"
+opens the editor with three fixed paints, Blemish selected, on the slice view in use (coronal
+from 3D or Multi). *Band* (coronal view first, where a band between
+stitched stations runs across): every painted voxel gets a value interpolated along z
+(head–foot) between the nearest unpainted voxels above and below it in its column. *Blemish*
+(a streak or spot inside tissue): the painted voxels are filled in from the unpainted voxels
+around them within the slice they were painted on — Laplace's equation solved over the paint
+with the surroundings fixed (Gauss–Seidel with over-relaxation), so a streak in a smooth
+region comes out as that region's own gradient. In-plane rather than 3D because the slices
+either side often carry the same streak and a 3D fill would feed it back in; a streak that
+shows on several slices is painted on each (the mask records the plane: 2 sagittal,
+3 coronal, 4 axial). *Cut* (value 5): the painted voxels go to the scan's background, what
+Remove Noise does but written into the repaired scan. The ± menu next to the paints repeats
+each stroke on that many slices either side (its in-plane shape, same paint, one undo step),
+for a streak that runs through several slices. Both repair live: after every stroke (and fill, erase, undo, smoothing)
+the columns it touched are filled in again and blemish paint within 8 voxels re-solved, voxels
+no longer painted getting their original values back, so the slice panes and the 3D pane show
+the repair as it is painted (~0.1 s a stroke in Debug); a note under the top bar says what
+each stroke changed. Done keeps it, Cancel drops it. Unlike noise removal this changes
 intensities, so the viewer holds a repaired copy of the scan (one 250 MB copy while it is
 made) used everywhere — slices, 3D (only the touched z slices are re-uploaded), Generate
 Segmentation, the cleaned-scan export — and keeps the original values of the replaced voxels,
-so "Edit Banding Repair…" and "Undo Banding Repair" put them back first. The mask is saved in
-the sidecar as `repair.nii.gz` and re-applied on opening; the scan file isn't written.
-"Export Cleaned Scan…" (its own section once either exists) writes noise removed and banding
-repaired.
+so "Edit Scan Repair…" and "Undo Scan Repair" put them back first. The mask (1 = band,
+2–4 = blemish by plane) is saved in the sidecar as `repair.nii.gz` and re-applied on opening
+(`ScanRepair.repaired`; `spike/scan_repair_check.swift`); the scan file isn't written.
+"Export Cleaned Scan…" (its own section once either exists) writes noise removed and repairs
+applied.
 
 **In-phase and opposed-phase images.** Inspector › Segmentation › Image can add the scan's
 Dixon in-phase (`<tag>_in`) and opposed-phase (`<tag>_opp`) images ("Add" when they lie beside
@@ -218,7 +230,7 @@ place (`LabelGrid`) and are published ~30 times a second: the slice panes recomp
 Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
-the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YES` (opens the segmentation editor).
+the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YES` (opens the segmentation editor), `-openRepair YES` (the scan repair editor).
 
 ## Files (MVVM)
 
