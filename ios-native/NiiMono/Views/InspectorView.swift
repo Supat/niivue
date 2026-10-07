@@ -391,6 +391,7 @@ private struct NoiseSection: View {
     var body: some View {
         Section("Noise Removal") {
             Button(model.noise == nil ? "Remove Noise…" : "Edit Noise…", systemImage: "wand.and.rays") { model.startNoiseEditing() }
+                .disabled(model.cleanupFileBusy == .noise)
             if model.noise != nil {
                 Toggle("Remove Marked Noise", isOn: $model.removeNoise)
 
@@ -399,9 +400,34 @@ private struct NoiseSection: View {
                         Button("Clear", role: .destructive) { model.clearNoise() }
                     }
             }
-            Text("Paint over noise with the drawing tools; it is blacked out on the slices, left out of the 3D render, and removed before Generate Segmentation runs. The scan file itself isn't changed.")
+            CleanupMaskRows(model: model, kind: .noise, hasMask: model.noise != nil)
+            Text("Paint over noise with the drawing tools; it is blacked out on the slices, left out of the 3D render, and removed before Generate Segmentation runs. The scan file itself isn't changed. Export the mask to mark the same voxels on another image of this acquisition (water, fat, in-phase, opposed-phase: the same grid); any mask NIfTI on this grid can be imported.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Import and export of the noise mask or the scan repair as a NIfTI on the scan's grid, so
+/// the same marks can be applied to another image of the acquisition.
+private struct CleanupMaskRows: View {
+    let model: ViewerViewModel
+    let kind: CleanupMaskFile.Kind
+    let hasMask: Bool
+    @State private var importing = false
+
+    var body: some View {
+        let name = kind == .noise ? "Noise Mask" : "Scan Repair"
+        let busy = model.cleanupFileBusy != nil || model.repairing
+        Button("Import \(name)…", systemImage: "square.and.arrow.down") { importing = true }
+            .disabled(busy)
+            // ponytail: .gzip admits any .gz and .data any file; a bad pick fails with the reader's error.
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
+                if case .success(let url) = result { Task { await model.importCleanupMask(kind, from: url) } }
+            }
+        Button("Export \(name)…", systemImage: "square.and.arrow.up") { Task { await model.exportCleanupMask(kind) } }
+            .disabled(!hasMask || busy)
+        if model.cleanupFileBusy == kind { ProgressView() }
+        if let status = model.cleanupFileStatus[kind] { Text(status).font(.footnote).foregroundStyle(.secondary) }
     }
 }
 
@@ -417,15 +443,17 @@ private struct BandingSection: View {
             Button(model.scanRepair == nil ? "Repair Scan…" : "Edit Scan Repair…", systemImage: "bandage") {
                 model.startScanRepair()
             }
-            .disabled(model.repairing)
+            .disabled(model.repairing || model.cleanupFileBusy == .repair)
             if model.repairing { ProgressView("Repairing…") }
             if model.scanRepair != nil {
                 Button("Undo Scan Repair", role: .destructive) { confirmUndo = true }
                     .confirmationDialog("Put the original intensities back?", isPresented: $confirmUndo, titleVisibility: .visible) {
                         Button("Undo Repair", role: .destructive) { Task { await model.applyScanRepair(nil) } }
                     }
+                    .disabled(model.cleanupFileBusy == .repair)
             }
-            Text("Band: paint over a thin band (best in a coronal or sagittal view, where it runs across); its voxels are filled in from the slices just above and below. Blemish: paint over a streak or spot; it is filled in from the tissue around it on all sides. Used everywhere, Generate Segmentation included; the scan file isn't changed.")
+            CleanupMaskRows(model: model, kind: .repair, hasMask: model.scanRepair != nil)
+            Text("Band: paint over a thin band (best in a coronal or sagittal view, where it runs across); its voxels are filled in from the slices just above and below. Blemish: paint over a streak or spot; it is filled in from the tissue around it on all sides. Used everywhere, Generate Segmentation included; the scan file isn't changed. Export the repair to apply the same paint to another image of this acquisition (water, fat, in-phase, opposed-phase: the same grid); importing one replaces the repair here and applies it.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if model.noise != nil || model.scanRepair != nil {

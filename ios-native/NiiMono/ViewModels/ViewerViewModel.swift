@@ -171,6 +171,60 @@ import Observation
         }
     }
 
+    // MARK: Noise mask and scan repair as files
+
+    /// Import/export of the noise mask and the scan repair, to apply the same marks to another
+    /// image of the acquisition: which kind is being read or written, and the outcome per kind.
+    private(set) var cleanupFileBusy: CleanupMaskFile.Kind?
+    private(set) var cleanupFileStatus: [CleanupMaskFile.Kind: String] = [:]
+
+    /// A mask file on this scan's grid replaces the noise mask, or the scan repair (which is
+    /// then applied). Any nonzero voxel counts as noise; repair paint keeps its values (1 band,
+    /// 2–4 blemish by plane, 5 cut), other values are dropped.
+    func importCleanupMask(_ kind: CleanupMaskFile.Kind, from url: URL) async {
+        guard cleanupFileBusy == nil, !repairing else { return }
+        cleanupFileBusy = kind
+        defer { cleanupFileBusy = nil }
+        let volume = volume
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try CleanupMaskFile.read(from: url, scoped: true, kind: kind, volume: volume) }
+        }.value
+        switch result {
+        case .success(let r):
+            switch kind {
+            case .noise:
+                noise = NoiseMask(labels: r.mask)
+                removeNoise = true
+                saveNoise()
+            case .repair:
+                await applyScanRepair(r.mask)
+            }
+            cleanupFileStatus[kind] = "Imported \(url.lastPathComponent): \(r.marked.formatted()) voxels"
+                + (r.ignored > 0 ? "; \(r.ignored.formatted()) with values that aren't repair paint were dropped." : ".")
+        case .failure(let e):
+            cleanupFileStatus[kind] = "Couldn't import \(url.lastPathComponent): \(e.localizedDescription)"
+        }
+    }
+
+    /// Writes the noise mask or the repair mask as `<scan>_noise.nii.gz` / `<scan>_repair.nii.gz`
+    /// (the scan's grid and orientation, what it is in the header) and opens the share sheet.
+    func exportCleanupMask(_ kind: CleanupMaskFile.Kind) async {
+        guard cleanupFileBusy == nil, let mask = kind == .noise ? noise?.labels : scanRepair?.mask else { return }
+        cleanupFileBusy = kind
+        defer { cleanupFileBusy = nil }
+        let volume = volume
+        let base = fileURL.map { SegmentationPipeline.tags(of: $0)[0] } ?? "Scan"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
+            .appendingPathComponent("\(base)_\(kind.rawValue).nii.gz")
+        let written = await Task.detached(priority: .userInitiated) { () -> Bool in
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return (try? CleanupMaskFile.export(mask, kind: kind, like: volume).write(to: url, options: .atomic)) != nil
+        }.value
+        guard written else { cleanupFileStatus[kind] = "Couldn't write the export."; return }
+        cleanupFileStatus[kind] = nil
+        SnapshotPanes.share(url)
+    }
+
     /// Import/export of the drawing: true while a file is read or written, and the outcome.
     private(set) var customFileBusy = false
     private(set) var customFileStatus: String?
@@ -524,7 +578,7 @@ import Observation
     }
 
     /// Sidecar files of the shown map and the others, in that order.
-    private static let mapSlots = ["shown", "kept", "kept2"]
+    nonisolated private static let mapSlots = ["shown", "kept", "kept2"] // read from a detached task too
 
     /// Write the current maps (after a generation, load, switch or removal) in the background,
     /// one save after another (two at once could leave the slots mixed), plus a backup of the

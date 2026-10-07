@@ -154,7 +154,13 @@ noise set to background and clears noise voxels from both generated maps (the ti
 run on the original water/fat images and are cleared after, avoiding two more 250 MB copies).
 "Export Cleaned Scan…" writes `<scan>_clean.nii.gz`: float32 on the scan's own grid and
 orientation under a copy of its header (embedded metadata kept), noise set to the scan's
-minimum (`spike/clean_export_check.swift` round-trips it).
+minimum (`spike/clean_export_check.swift` round-trips it). "Export Noise Mask…" shares the
+mask itself as `<scan>_noise.nii.gz` (uint8 on the scan's grid and orientation, tagged
+`{"niimono":"noise"}` in a header extension), so the same voxels can be marked on another
+image of the acquisition — the Dixon water, fat, in-phase and opposed-phase images share
+the grid — by opening that image and choosing "Import Noise Mask…"; any mask NIfTI on the
+scan's grid imports, every nonzero voxel counting as noise, replacing the mask in place
+(`CleanupMaskFile.swift`; `spike/mask_file_check.swift` round-trips both kinds).
 
 **Scan repair (banding and blemishes).** Inspector › Image › Scan Repair › "Repair Scan…"
 opens the editor with three fixed paints, Blemish selected, on the slice view in use (coronal
@@ -181,6 +187,11 @@ Segmentation, the cleaned-scan export — and keeps the original values of the r
 so "Edit Scan Repair…" and "Undo Scan Repair" put them back first. The mask (1 = band,
 2–4 = blemish by plane) is saved in the sidecar as `repair.nii.gz` and re-applied on opening
 (`ScanRepair.repaired`; `spike/scan_repair_check.swift`); the scan file isn't written.
+"Export Scan Repair…" shares that mask as `<scan>_repair.nii.gz` (uint8 on the scan's grid
+and orientation, tagged `{"niimono":"repair"}`), and "Import Scan Repair…" on another image
+of the acquisition (the Dixon variants share the grid) replaces the repair there with it and
+applies it: paint values 1–5 are kept, other nonzero values dropped (the status line says how
+many), and a file our export tagged as a noise mask is refused rather than taken as band.
 "Export Cleaned Scan…" (its own section once either exists) writes noise removed and repairs
 applied.
 
@@ -240,13 +251,14 @@ the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YE
 | `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` + `LabelGrid` and the slice compositing; `LabelPainter` (brush, line, fill on a slice); `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
 | `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs), `DrawingViewModel` (segmentation editor: labels, tools, undo). |
 | `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `SegmentationEditor`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
-| `NiiMono/Services` | `SidecarStore`; `CustomSegmentationFile` (drawing import/export); `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
+| `NiiMono/Services` | `SidecarStore`; `CustomSegmentationFile` (drawing import/export); `CleanupMaskFile` (noise mask and scan repair import/export); `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
 | `NiiMono/Rendering` | `VolumeRenderer` (Metal) and `Raycaster.metal`. |
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
 | `spike/label_export_check.swift` | Round trip of the drawing export on real scans (permuted and flipped orientations): same labels back, scan affine kept, JSON extension intact. |
 | `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, undo round trip (build line in its header). |
+| `spike/mask_file_check.swift` | Round trip of the noise mask and scan repair exports on real scans: same voxels back, repair paint kept and other values dropped, a mask of the other kind refused, an empty one refused. |
 | `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 
 Run the reader check (Swift only allows top-level code in `main.swift`, hence the copy):
