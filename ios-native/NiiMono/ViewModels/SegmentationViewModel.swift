@@ -7,7 +7,8 @@ import Foundation
 import Observation
 
 @Observable @MainActor final class SegmentationViewModel {
-    let volume: NiftiVolume
+    /// The scan (replaced, same grid, when its intensities are repaired by hand).
+    var volume: NiftiVolume
 
     /// Every map this scan has — after generation the tissue classes and the structures, or a
     /// loaded file, plus the drawing — and which one is on screen.
@@ -41,6 +42,11 @@ import Observation
     var waterImage: NiftiVolume? { role == .water ? volume : water }
     var fatImage: NiftiVolume? { role == .fat ? volume : fat }
     var canClassifyTissue: Bool { waterImage != nil && fatImage != nil }
+    /// The hand-drawn noise mask while it is applied (set by the viewer): generation removes it.
+    var noise: [UInt8]?
+    /// In-phase / opposed-phase images, only when added (each is the scan's size in memory).
+    private(set) var phase: [PhaseImage: NiftiVolume] = [:]
+    private(set) var phaseURL: [PhaseImage: URL] = [:]
     /// The networks run on the water image where there is one (what TotalSegmentator's
     /// total_mr was used on), else on the opened file.
     var modelInput: NiftiVolume { waterImage ?? volume }
@@ -132,6 +138,22 @@ import Observation
         }
     }
 
+    /// Load an in-phase or opposed-phase image (must share the scan's grid).
+    func loadPhase(_ which: PhaseImage, from url: URL, scoped: Bool, quiet: Bool = false) async {
+        companionLoading = true
+        companionError = nil
+        defer { companionLoading = false }
+        let volume = volume
+        let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume) } }.value
+        switch result {
+        case .success(let v): phase[which] = v; phaseURL[which] = url
+        case .failure(let e): if !quiet { companionError = e.localizedDescription }
+        }
+    }
+
+    /// Frees the image (and forgets it in the sidecar).
+    func removePhase(_ which: PhaseImage) { phase[which] = nil; phaseURL[which] = nil }
+
     var companionLoading = false
     var companionError: String?
 
@@ -174,11 +196,11 @@ import Observation
         progress = 0
         let flag = CancelFlag()
         cancel = flag
-        let volume = volume, input = modelInput, water = waterImage, fat = fatImage
+        let volume = volume, input = modelInput, water = waterImage, fat = fatImage, noise = noise
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 Result {
-                    try SegmentationPipeline.generate(volume: volume, modelInput: input, water: water, fat: fat, progress: { stage, p in
+                    try SegmentationPipeline.generate(volume: volume, modelInput: input, water: water, fat: fat, noise: noise, progress: { stage, p in
                         Task { @MainActor in self?.stage = stage; self?.progress = p }
                     }, cancel: flag)
                 }

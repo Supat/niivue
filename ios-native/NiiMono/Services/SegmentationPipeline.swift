@@ -41,9 +41,15 @@ enum SegmentationPipeline {
     /// Run the bundled TotalSegmentator models (organs, then muscles/bones) on `modelInput`,
     /// merge them, and — given both Dixon images — derive the 14 tissue classes. Returns the
     /// map to show and, when a tissue map was made, the structure map to keep alongside it.
-    static func generate(volume: NiftiVolume, modelInput: NiftiVolume, water: NiftiVolume?, fat: NiftiVolume?,
+    /// `noise`: a hand-drawn noise mask (ViewerViewModel.noise). The networks see the scan
+    /// with it removed, and nothing it marks is labelled in either map. (The tissue classes
+    /// run on the original water / fat images and are cleared after, so no further 250 MB
+    /// copies are made at the pipeline's most memory-hungry point.)
+    static func generate(volume: NiftiVolume, modelInput original: NiftiVolume, water: NiftiVolume?, fat: NiftiVolume?,
+                         noise: [UInt8]? = nil,
                          progress: @escaping (String, Double) -> Void,
                          cancel: CancelFlag) throws -> (shown: SegmentationMap, kept: SegmentationMap?) {
+        let modelInput = noise.map { original.removing($0) } ?? original
         guard let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else { throw SegmenterError.noMetal }
         func run(_ model: String, classes: Int, stage: String, from: Double, to: Double) throws -> LabelVolume {
             guard let url = Bundle.main.url(forResource: model, withExtension: "mlmodelc") else { throw SegmenterError.missingModel(model) }
@@ -62,12 +68,14 @@ enum SegmentationPipeline {
                 for i in 0..<m.count where m[i] != 0 { o[i] = m[i] + UInt8(TotalMR.organCount) }
             }
         }
+        if let noise { merged = LabelPainter.clearing(merged, where: noise) }
         let all = LabelVolume(dims: volume.dims, data: merged, maxLabel: TotalMR.names.count)
         let structures = SegmentationMap(labels: all, name: "structures (total_mr)", volume: volume)
         guard let water, let fat else { MemoryLog.mark("pipeline: done (structures only)"); return (structures, nil) }
         progress("tissue classes", 0.9)
-        let tissue = try TissueClassifier.classify(water: water, fat: fat, labels: all, library: library,
+        var tissue = try TissueClassifier.classify(water: water, fat: fat, labels: all, library: library,
                                                    progress: { progress("tissue classes", 0.9 + 0.1 * $0) })
+        if let noise { tissue.data = LabelPainter.clearing(tissue.data, where: noise) }
         MemoryLog.mark("pipeline: done")
         return (SegmentationMap(labels: tissue, name: "tissues (generated)", volume: volume), structures)
     }

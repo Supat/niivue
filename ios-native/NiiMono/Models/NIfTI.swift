@@ -15,6 +15,9 @@ import zlib
 /// Voxels are reoriented to the closest RAS+ layout at load time (x → Right,
 /// y → Anterior, z → Superior), so nothing downstream deals with orientation.
 struct NiftiVolume: @unchecked Sendable {
+    /// Which loaded image this is (copies share it), so views caching a slice image can tell
+    /// two images apart.
+    var id = UUID()
     var dims: (Int, Int, Int)          // voxel counts x,y,z (RAS)
     var voxelSize: (Float, Float, Float) // mm per voxel
     var data: [Float]                  // length = nx*ny*nz, scl_slope/inter applied
@@ -513,13 +516,19 @@ enum NIfTI {
             } }
         }
 
+        return gzip(orientedHeader(src, fileDims: fd, datatype: 2, bitpix: 8, json: json) + Data(body))
+    }
+
+    /// The scan's own header for a file on its grid (fileDims in file order): 3D, the given
+    /// datatype, no scaling or display range, `json` as a header extension (ecode 6).
+    private static func orientedHeader(_ src: Data, fileDims fd: [Int], datatype: Int16, bitpix: Int16, json: Data?) -> Data {
         var h = Data(src.prefix(348))
         func put<T: FixedWidthInteger>(_ o: Int, _ v: T) { var x = v.littleEndian; withUnsafeBytes(of: &x) { h.replaceSubrange(o..<o + MemoryLayout<T>.size, with: $0) } }
         func putF(_ o: Int, _ v: Float) { put(o, v.bitPattern) }
         put(0, Int32(348))
         put(40, Int16(3)); put(42, Int16(fd[0])); put(44, Int16(fd[1])); put(46, Int16(fd[2]))
         for o in stride(from: 48, through: 54, by: 2) { put(o, Int16(1)) }
-        put(70, Int16(2)); put(72, Int16(8))                  // DT_UINT8, bitpix
+        put(70, datatype); put(72, bitpix)
         putF(112, 1); putF(116, 0)                            // scl_slope, scl_inter
         putF(124, 0); putF(128, 0)                            // cal_max, cal_min
         h.replaceSubrange(344..<348, with: [0x6e, 0x2b, 0x31, 0x00]) // "n+1\0"
@@ -532,7 +541,54 @@ enum NIfTI {
             ext.append(e)
         }
         putF(108, Float(348 + ext.count))                     // vox_offset
-        return gzip(h + ext + Data(body))
+        return h + ext
+    }
+
+    /// The scan's intensities (`volume.data`, scaling applied) as float32 on its own grid and
+    /// orientation, with voxels `mask` marks set to `background`: the cleaned scan, ready for
+    /// other tools. Its header (affine) and any embedded JSON are the scan's. Built row by row
+    /// with vDSP straight into the output; nil when the scan's header wasn't kept.
+    static func floatFile(_ volume: NiftiVolume, mask: [UInt8]?, background: Float) -> Data? {
+        guard let src = volume.header, src.count >= 348 else { return nil }
+        let od = [volume.dims.0, volume.dims.1, volume.dims.2]
+        var fd = [0, 0, 0]
+        for w in 0..<3 { fd[volume.filePerm[w]] = od[w] }
+        let fs = [1, fd[0], fd[0] * fd[1]]
+        let off = (0..<3).map { w in (0..<od[w]).map { i in (volume.fileFlip[w] ? od[w] - 1 - i : i) * fs[volume.filePerm[w]] } }
+        let header = orientedHeader(src, fileDims: fd, datatype: 16, bitpix: 32, json: volume.embeddedJSON)
+        let n = od[0], count = volume.data.count
+        var out = Data(count: header.count + count * 4)
+        out.replaceSubrange(0..<header.count, with: header)
+        var row = [Float](repeating: 0, count: n), keep = [Float](repeating: 0, count: n)
+        var zero: Float = 0, one: Float = 1, negOne: Float = -1, bg = background, negBg = -background
+        out.withUnsafeMutableBytes { o in volume.data.withUnsafeBufferPointer { d in row.withUnsafeMutableBufferPointer { r in keep.withUnsafeMutableBufferPointer { k in
+            let body = (o.baseAddress! + header.count).assumingMemoryBound(to: Float.self)
+            let nw = vDSP_Length(n)
+            var i = 0
+            for z in 0..<od[2] { for y in 0..<od[1] {
+                defer { i += n }
+                let rp = r.baseAddress!
+                rp.update(from: d.baseAddress! + i, count: n)
+                if let mask {
+                    mask.withUnsafeBufferPointer { m in
+                        vDSP_vfltu8(m.baseAddress! + i, 1, k.baseAddress!, 1, nw)            // marked → ≥1
+                        vDSP_vclip(k.baseAddress!, 1, &zero, &one, k.baseAddress!, 1, nw)
+                        vDSP_vsmsa(k.baseAddress!, 1, &negOne, &one, k.baseAddress!, 1, nw)  // keep = 1 - marked
+                        vDSP_vsadd(rp, 1, &negBg, rp, 1, nw)                                 // (v - bg) · keep + bg
+                        vDSP_vmul(rp, 1, k.baseAddress!, 1, rp, 1, nw)
+                        vDSP_vsadd(rp, 1, &bg, rp, 1, nw)
+                    }
+                }
+                if volume.filePerm[0] == 0 {
+                    if volume.fileFlip[0] { vDSP_vrvrs(rp, 1, nw) }
+                    (body + off[1][y] + off[2][z]).update(from: rp, count: n)
+                } else {
+                    let base = off[1][y] + off[2][z]
+                    for x in 0..<n { body[base + off[0][x]] = rp[x] }
+                }
+            } }
+        } } } }
+        return gzip(out)
     }
 
     /// gzip-wrap raw deflate from the Compression framework (header, body, CRC-32, size).

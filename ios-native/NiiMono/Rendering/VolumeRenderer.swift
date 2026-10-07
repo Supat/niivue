@@ -31,6 +31,8 @@ struct Uniforms {
     var cameraClip: Float
     var fovCount: Int32
     var crosshairStep: Float
+    var cutoutOn: Int32
+    var clipKeepLabels: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -39,6 +41,34 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let pipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
     private let volumeTex: MTLTexture
+    private var volumeID: UUID
+
+    /// The scan's intensities changed in place (banding repair): upload the z slices `z`
+    /// (nil = all) again. The scaling stays the scan's original data range.
+    func updateVolume(_ volume: NiftiVolume, z: Range<Int>?) {
+        guard volume.id != volumeID else { return }
+        volumeID = volume.id
+        Self.uploadVolume(volume, z: (z ?? 0..<volume.dims.2).clamped(to: 0..<volume.dims.2), into: volumeTex)
+    }
+
+    // Float → UInt16 with vDSP, one z-slice at a time: a plain Swift loop over a whole-body
+    // volume (60M+ voxels) blocks the main thread for seconds in Debug, and slice-sized
+    // scratch buffers avoid a second full-volume copy.
+    private static func uploadVolume(_ volume: NiftiVolume, z range: Range<Int>, into tex: MTLTexture) {
+        let (nx, ny, _) = volume.dims, n = nx * ny
+        var k = 65535 / max(volume.dataMax - volume.dataMin, .leastNonzeroMagnitude)
+        var bias = -volume.dataMin * k
+        var scaled = [Float](repeating: 0, count: n)
+        var texels = [UInt16](repeating: 0, count: n)
+        volume.data.withUnsafeBufferPointer { src in
+            for z in range {
+                vDSP_vsmsa(src.baseAddress! + z * n, 1, &k, &bias, &scaled, 1, vDSP_Length(n))
+                vDSP_vfixru16(scaled, 1, &texels, 1, vDSP_Length(n))
+                tex.replace(region: MTLRegionMake3D(0, 0, z, nx, ny, 1), mipmapLevel: 0, slice: 0,
+                            withBytes: texels, bytesPerRow: nx * 2, bytesPerImage: n * 2)
+            }
+        }
+    }
     private let cmapTex: MTLTexture
     private let labelLUT: MTLTexture   // 256 × RGBA, alpha 0 = hidden label
     private var labelTex: MTLTexture?  // r8Uint labels, same grid as the volume
@@ -61,6 +91,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var mode: Int32 = 0 // RenderMode.shaderMode
     var clips: [ClipSetting] = [] // at most ClipSetting.maxCount are used
     var clipCutaway = false
+    var clipKeepLabels = false // clipping spares voxels of visible segments
     var clipHighlight = false
     var crosshair: simd_float3? // box-space point, or nil for none
     /// Station FOV boxes as [lo, hi] pairs in box space (see RenderView), drawn as wireframes.
@@ -115,22 +146,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
         }
         volumeTex = tex
-        // Float → UInt16 with vDSP, one z-slice at a time: a plain Swift loop over a
-        // whole-body volume (60M+ voxels) blocks the main thread for seconds in Debug,
-        // and slice-sized scratch buffers avoid a second full-volume copy.
-        var k = 65535 / max(volume.dataMax - volume.dataMin, .leastNonzeroMagnitude)
-        var bias = -volume.dataMin * k
-        let n = nx * ny
-        var scaled = [Float](repeating: 0, count: n)
-        var texels = [UInt16](repeating: 0, count: n)
-        volume.data.withUnsafeBufferPointer { src in
-            for z in 0..<nz {
-                vDSP_vsmsa(src.baseAddress! + z * n, 1, &k, &bias, &scaled, 1, vDSP_Length(n))
-                vDSP_vfixru16(scaled, 1, &texels, 1, vDSP_Length(n))
-                tex.replace(region: MTLRegionMake3D(0, 0, z, nx, ny, 1), mipmapLevel: 0, slice: 0,
-                            withBytes: texels, bytesPerRow: nx * 2, bytesPerImage: n * 2)
-            }
-        }
+        volumeID = volume.id
+        Self.uploadVolume(volume, z: 0..<nz, into: tex)
 
         // Colormap: grayscale 256. ponytail: niivue's 73 JSON cmaps drop straight
         // in here — load R/G/B arrays into this 1D texture, nothing else changes.
@@ -171,7 +188,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private var skipResizeGlide = false
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        defer { lastSize = size }
+        // Any new size needs a frame (rotation, split view): the view draws only on request,
+        // and RenderView no longer asks on every SwiftUI update.
+        defer { lastSize = size; view.setNeedsDisplay() }
         if skipResizeGlide { skipResizeGlide = false; return }
         guard lastSize.width > 0, size.width > 0, size.height > 0,
               lastSize.height == size.height, lastSize.width != size.width else { return }
@@ -224,6 +243,10 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             g.done?()
         }
     }
+
+    /// Removed noise: a mask whose marked voxels the render treats as empty.
+    private var cutout = GridTexture()
+    func setCutout(_ mask: SegmentationOverlay?) { cutout.sync(mask, device: device) }
 
     /// Attach (or detach) a segmentation; the label volume is uploaded once per map.
     func setOverlay(_ seg: SegmentationOverlay?) {
@@ -283,6 +306,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentTexture(cmapTex, index: 1)
         enc.setFragmentTexture(labelTex ?? noLabels, index: 2)
         enc.setFragmentTexture(labelLUT, index: 3)
+        enc.setFragmentTexture(cutout.texture ?? noLabels, index: 4)
         enc.setFragmentSamplerState(sampler, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
@@ -344,7 +368,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         crosshairOn: crosshair == nil ? 0 : 1, crosshair: crosshair ?? .zero,
                         overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost,
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
-                        fovCount: Int32(fov.count / 2), crosshairStep: 0)
+                        fovCount: Int32(fov.count / 2), crosshairStep: 0,
+                        cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipKeepLabels ? 1 : 0)
     }
 }
 
@@ -444,4 +469,40 @@ func lookAt(eye: simd_float3, center: simd_float3, up: simd_float3) -> simd_floa
         simd_float4(s.z, u.z, -f.z, 0),
         simd_float4(-dot(s, eye), -dot(u, eye), dot(f, eye), 1)
     ))
+}
+
+/// A label grid as an r8Uint 3D texture, uploaded once per grid and then only the z slices a
+/// drawing changed (see SegmentationOverlay.revision / dirtyZ).
+private struct GridTexture {
+    private(set) var texture: MTLTexture?
+    private var source: UUID?
+    private var revision = 0
+
+    mutating func sync(_ grid: SegmentationOverlay?, device: MTLDevice) {
+        guard let grid else { texture = nil; source = nil; return }
+        let (nx, ny, nz) = grid.labels.dims
+        if source == grid.mapID, let tex = texture {
+            guard revision != grid.revision else { return }
+            let z = grid.revision == revision + 1 ? grid.dirtyZ ?? 0..<nz : 0..<nz
+            Self.upload(grid.labels, z: z.clamped(to: 0..<nz), into: tex)
+            revision = grid.revision
+            return
+        }
+        let td = MTLTextureDescriptor()
+        td.textureType = .type3D; td.pixelFormat = .r8Uint
+        td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
+        guard let tex = device.makeTexture(descriptor: td) else { return }
+        Self.upload(grid.labels, z: 0..<nz, into: tex)
+        texture = tex; source = grid.mapID; revision = grid.revision
+    }
+
+    private static func upload(_ labels: LabelGrid, z range: Range<Int>, into tex: MTLTexture) {
+        let (nx, ny, _) = labels.dims
+        labels.data.withUnsafeBytes { raw in
+            for z in range { // per slice: keeps the staging copy small
+                tex.replace(region: MTLRegionMake3D(0, 0, z, nx, ny, 1), mipmapLevel: 0, slice: 0,
+                            withBytes: raw.baseAddress! + z * nx * ny, bytesPerRow: nx, bytesPerImage: nx * ny)
+            }
+        }
+    }
 }

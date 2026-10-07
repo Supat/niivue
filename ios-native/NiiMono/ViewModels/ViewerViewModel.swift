@@ -8,7 +8,11 @@ import Foundation
 import Observation
 
 @Observable @MainActor final class ViewerViewModel {
-    let volume: NiftiVolume
+    /// The scan as shown and analysed: the file's, with any banding repair applied (the file
+    /// itself is never written).
+    private(set) var volume: NiftiVolume
+    /// The z slices the last change to `volume` touched, for the 3D view's texture.
+    private(set) var volumeDirtyZ: Range<Int>?
     let fileURL: URL?
     let segmentation: SegmentationViewModel
     let bodyComposition = BodyCompositionViewModel()
@@ -50,6 +54,119 @@ import Observation
     func startDrawing() {
         drawing = DrawingViewModel(volume: volume, existing: segmentation.customMap,
                                    labels: segmentation.customLabels, mainAxis: plane.axis ?? 2)
+    }
+
+    // MARK: Noise removal
+
+    /// A mask of noise drawn by hand: the voxels it marks are blacked out on the slices and
+    /// left out of the 3D render. The scan's data is untouched (erasing the mask brings them
+    /// back, and the scan isn't held twice).
+    struct NoiseMask { let id = UUID(); let labels: LabelVolume }
+    private(set) var noise: NoiseMask? { didSet { syncNoise() } }
+    /// Apply the mask (off shows the original scan, and generation uses it as is).
+    var removeNoise = true { didSet { syncNoise() } }
+    private func syncNoise() { segmentation.noise = removeNoise ? noise?.labels.data : nil }
+
+    var noiseCutout: SegmentationOverlay? {
+        guard removeNoise, let noise else { return nil }
+        return SegmentationOverlay(mapID: noise.id, labels: LabelGrid(noise.labels), lut: [], opacity: 0, ghost: false)
+    }
+
+    func startNoiseEditing() {
+        drawing = DrawingViewModel(volume: volume, existing: nil, labels: [], mainAxis: plane.axis ?? 2,
+                                   purpose: .noise, existingGrid: noise?.labels)
+    }
+
+    func clearNoise() { noise = nil; saveNoise() }
+
+    // MARK: Banding repair
+
+    /// The banding repair in force: the painted mask, and the original values of the voxels
+    /// it replaced (so it can be edited again or undone).
+    struct BandRepairState { let mask: LabelVolume; let indices: [Int32]; let originals: [Float] }
+    private(set) var bandRepair: BandRepairState?
+    private(set) var repairing = false
+
+    func startBandingRepair() {
+        let d = DrawingViewModel(volume: volume, existing: nil, labels: [], mainAxis: plane.axis == 2 ? 1 : (plane.axis ?? 1),
+                                 purpose: .banding, existingGrid: bandRepair?.mask)
+        if let r = bandRepair { d.setPreviousRepair(mask: r.mask.data, indices: r.indices, originals: r.originals) }
+        drawing = d
+    }
+
+    /// Puts the original values back, then repairs what `mask` marks (nil: just undo).
+    func applyBandRepair(_ mask: LabelVolume?, save: Bool = true) async {
+        repairing = true
+        defer { repairing = false }
+        let current = volume, previous = bandRepair
+        let result = await Task.detached(priority: .userInitiated) { () -> (NiftiVolume, BandRepairState?, Range<Int>?) in
+            var v = current
+            var zs: [Int] = []
+            let plane = v.dims.0 * v.dims.1
+            v.data.withUnsafeMutableBufferPointer { d in
+                if let previous {
+                    for (i, o) in zip(previous.indices, previous.originals) { d[Int(i)] = o; zs.append(Int(i) / plane) }
+                }
+            }
+            guard let mask, !LabelPainter.isEmpty(mask.data) else {
+                v.id = UUID()
+                return (v, nil, zs.isEmpty ? nil : zs.min()!..<(zs.max()! + 1))
+            }
+            let r = BandRepair.repaired(data: v.data, mask: mask.data, dims: v.dims)
+            var originals = [Float](); originals.reserveCapacity(r.indices.count)
+            v.data.withUnsafeMutableBufferPointer { d in
+                for (i, value) in zip(r.indices, r.values) { originals.append(d[Int(i)]); d[Int(i)] = value; zs.append(Int(i) / plane) }
+            }
+            v.id = UUID()
+            return (v, BandRepairState(mask: mask, indices: r.indices, originals: originals), zs.isEmpty ? nil : zs.min()!..<(zs.max()! + 1))
+        }.value
+        volumeDirtyZ = result.2
+        volume = result.0
+        segmentation.volume = result.0
+        bandRepair = result.1
+        if save { saveBandRepair() }
+    }
+
+    private func saveBandRepair() {
+        guard let sidecar, sidecarProblem == nil, !restoring else { return }
+        let mask = bandRepair?.mask, voxel = volume.voxelSize
+        Task { [weak self] in
+            await Task.detached(priority: .utility) { try? sidecar.saveLabels(mask, slot: "repair", voxelSize: voxel) }.value
+            self?.scheduleSidecarSave()
+        }
+    }
+
+    /// True while the cleaned scan is written; why it couldn't be, if it couldn't.
+    private(set) var cleanExportBusy = false
+    private(set) var cleanExportError: String?
+
+    /// The scan with the noise mask applied, as `<scan>_clean.nii.gz` (float32, the scan's own
+    /// grid, orientation and header, its embedded metadata kept), in the share sheet.
+    func exportCleanedScan() async {
+        guard noise != nil || bandRepair != nil else { return }
+        cleanExportBusy = true
+        cleanExportError = nil
+        defer { cleanExportBusy = false }
+        let volume = volume, mask = noise?.labels.data // the repair is already in `volume`
+        let base = fileURL.map { SegmentationPipeline.tags(of: $0)[0] } ?? "Scan"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
+            .appendingPathComponent("\(base)_clean.nii.gz")
+        let written = await Task.detached(priority: .userInitiated) { () -> Bool in
+            guard let data = NIfTI.floatFile(volume, mask: mask, background: volume.dataMin) else { return false }
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return (try? data.write(to: url, options: .atomic)) != nil
+        }.value
+        guard written else { cleanExportError = "Couldn't write the cleaned scan (the scan's header wasn't kept)."; return }
+        SnapshotPanes.share(url)
+    }
+
+    private func saveNoise() {
+        guard let sidecar, sidecarProblem == nil, !restoring else { return }
+        let labels = noise?.labels, voxel = volume.voxelSize
+        Task { [weak self] in
+            await Task.detached(priority: .utility) { try? sidecar.saveLabels(labels, slot: "noise", voxelSize: voxel) }.value
+            self?.scheduleSidecarSave()
+        }
     }
 
     /// Import/export of the drawing: true while a file is read or written, and the outcome.
@@ -133,6 +250,27 @@ import Observation
     /// Closes the editor, showing the drawing if anything was drawn.
     func finishDrawing() async {
         guard let d = drawing else { return }
+        if d.purpose == .banding {
+            // The editor repaired the scan as the band was painted: keep its result.
+            if let r = d.bandingResult() {
+                volumeDirtyZ = nil
+                volume = r.volume
+                segmentation.volume = r.volume
+                bandRepair = r.indices.isEmpty ? nil : BandRepairState(mask: r.mask, indices: r.indices, originals: r.originals)
+                saveBandRepair()
+            }
+            drawing = nil
+            return
+        }
+        if d.purpose == .noise {
+            if let grid = d.editedGrid {
+                noise = LabelPainter.isEmpty(grid.data) ? nil : NoiseMask(labels: grid)
+                removeNoise = true
+                saveNoise()
+            }
+            drawing = nil
+            return
+        }
         if let map = await d.result() {
             segmentation.showCustom(map, labels: d.labels)
         } else if d.labelsChanged, segmentation.customMap != nil {
@@ -179,6 +317,8 @@ import Observation
         .map { ClipSetting(plane: $0, tilt: SIMD2(UserDefaults.standard.float(forKey: "clipTilt"), 0)) }
     /// Remove only the corner between the planes instead of everything beyond each one.
     var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
+    /// Clip planes remove unlabelled tissue only: visible segments stay whole.
+    var clipKeepSegments = UserDefaults.standard.bool(forKey: "clipKeepSegments") // `-clipKeepSegments YES` for checks
     /// Draw each clip plane as a tinted, outlined sheet so its position is visible.
     var clipHighlight = UserDefaults.standard.bool(forKey: "clipHighlight") // `-clipHighlight YES` for checks
     /// Camera clip: discard everything nearer than this fraction of the way from the eye to
@@ -233,7 +373,9 @@ import Observation
             viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
                           clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y], enabled: $0.enabled) },
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
-                          cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks),
+                          cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks,
+                          noise: noise != nil, removeNoise: removeNoise, repair: bandRepair != nil,
+                          clipKeepSegments: clipKeepSegments),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
                                 mask: segmentation.mask,
                                 shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
@@ -241,6 +383,8 @@ import Observation
                                 customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
             water: segmentation.waterURL.flatMap(SidecarSettings.Companion.init),
             fat: segmentation.fatURL.flatMap(SidecarSettings.Companion.init),
+            inPhase: segmentation.phaseURL[.inPhase].flatMap(SidecarSettings.Companion.init),
+            opposed: segmentation.phaseURL[.opposed].flatMap(SidecarSettings.Companion.init),
             body: .init(weightKg: bodyComposition.weightKg, missing: bodyComposition.missing.map(\.rawValue).sorted(),
                         thighsMissingPercent: bodyComposition.thighsMissingPercent,
                         heightCm: bodyComposition.heightCm, ageYears: bodyComposition.ageYears,
@@ -258,10 +402,12 @@ import Observation
             ClipSetting.Plane(rawValue: c.plane).map { ClipSetting(plane: $0, pos: c.pos, flip: c.flip, enabled: c.enabled ?? true, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0)) }
         }
         clipCutaway = s.viewer.clipCutaway
+        clipKeepSegments = s.viewer.clipKeepSegments ?? false
         clipHighlight = s.viewer.clipHighlight
         cameraClip = s.viewer.cameraClip ?? false
         cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
         bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
+        removeNoise = s.viewer.removeNoise ?? true
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         segmentation.mask = s.segmentation.mask ?? false
@@ -293,7 +439,24 @@ import Observation
         apply(s)
         await profile.restore()
         let volume = volume
-        if s.segmentation.shownName != nil {
+        if s.viewer.repair == true {
+            openingStage = "Repairing banding…"
+            if let mask = await Task.detached(priority: .userInitiated, operation: { sidecar.loadLabels(slot: "repair", volume: volume) }).value {
+                await applyBandRepair(mask, save: false)
+            } else {
+                sidecarProblem = "Couldn't read the banding repair from the sidecar. Saving is paused so it isn't overwritten; reopen the scan to try again."
+            }
+        }
+        var missingNoise = false
+        if s.viewer.noise == true {
+            openingStage = "Loading noise mask…"
+            if let labels = await Task.detached(priority: .userInitiated, operation: { sidecar.loadLabels(slot: "noise", volume: volume) }).value {
+                noise = NoiseMask(labels: labels)
+            } else {
+                missingNoise = true
+            }
+        }
+        if s.segmentation.shownName != nil || missingNoise {
             openingStage = "Loading saved segmentation…"
             let slots = zip(Self.mapSlots, [s.segmentation.shownName, s.segmentation.keptName, s.segmentation.kept2Name])
                 .compactMap { slot, name in name.map { (slot, $0) } }
@@ -315,6 +478,7 @@ import Observation
             segmentation.restore(maps, visible: s.segmentation.visible)
             backedUpDrawing = segmentation.customMap?.id // restored as saved: no new backup needed
             sidecarMapsSaved = missing.isEmpty && !maps.isEmpty
+            if missingNoise { missing.append("the noise mask") }
             if !missing.isEmpty {
                 sidecarProblem = "Couldn't read \(missing.joined(separator: ", ")) from the sidecar. Saving is paused so it isn't overwritten; reopen the scan to try again."
                 MemoryLog.log.notice("sidecar: missing maps \(missing, privacy: .public) in \(sidecar.folder.path, privacy: .public)")
@@ -324,6 +488,11 @@ import Observation
             guard let companion, let url = companion.resolve() else { continue }
             openingStage = "Loading \(which.rawValue.lowercased()) image…"
             await segmentation.loadCompanion(which, from: url, scoped: true, quiet: true)
+        }
+        for (which, companion) in [(PhaseImage.inPhase, s.inPhase), (.opposed, s.opposed)] {
+            guard let companion, let url = companion.resolve() else { continue }
+            openingStage = "Loading \(which.rawValue.lowercased()) image…"
+            await segmentation.loadPhase(which, from: url, scoped: true, quiet: true)
         }
         sidecarSavedAt = (try? sidecar.settingsURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         return true

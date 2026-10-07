@@ -147,3 +147,9 @@ LabelPainter.line(g, plane: axial, from: SIMD2(5, 10), to: SIMD2(15, 10), radius
 precondition(count(g, 7) == 5, "eraser removed a locked label")
 precondition(LabelPainter.fill(g, plane: axial, at: 10, 10, value: 3, locked: lk) == nil, "filled a locked region")
 print("locks ok")
+
+// Noise removal for the models: marked labels cleared, marked intensities set to background.
+precondition(LabelPainter.clearing([1, 2, 3, 4, 0], where: [0, 1, 0, 9, 1]) == [1, 0, 3, 0, 0])
+let nv = NiftiVolume(dims: (5, 1, 1), voxelSize: (1, 1, 1), data: [10, 20, 30, 40, 50], dataMin: 5, dataMax: 50, displayMin: 5, displayMax: 50)
+precondition(nv.removing([0, 1, 0, 2, 0]).data == [10, 5, 30, 5, 50], "\(nv.removing([0, 1, 0, 2, 0]).data)")
+print("noise removal ok")

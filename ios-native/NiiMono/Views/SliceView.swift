@@ -15,6 +15,8 @@ struct SliceView: UIViewRepresentable {
     let hi: Float
     let mirrored: Bool
     var overlay: SegmentationOverlay? = nil
+    /// Removed noise: voxels marked here show black.
+    var cutout: SegmentationOverlay? = nil
     /// Physical size (mm) to fit instead of the slice's own, so several panes share one
     /// scale: pass the envelope of all their extents. nil = fit this slice alone.
     var fitExtent: CGSize? = nil
@@ -53,14 +55,15 @@ struct SliceView: UIViewRepresentable {
     /// Everything the slice image depends on; the image is only rebuilt when this changes
     /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
     struct ImageKey: Equatable {
-        let axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
+        let volumeID: UUID, axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
         let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, lut: [SIMD4<UInt8>]
+        let cutoutID: UUID?, cutoutRevision: Int
     }
 
     func updateUIView(_ view: ZoomView, context: Context) {
-        let key = ImageKey(axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
+        let key = ImageKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
                            mapID: overlay?.mapID, revision: overlay?.revision ?? 0, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
-                           lut: overlay?.lut ?? [])
+                           lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0)
         if view.imageKey != key {
             view.imageKey = key
             if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
@@ -105,14 +108,16 @@ struct SliceView: UIViewRepresentable {
 
     private func makeImage() -> CGImage? {
         if let overlay {
-            let s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
+            var s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
+            if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 4, axis: axis, index: index, mask: cutout.labels) }
             return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
                 CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                         provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
             }
         } else {
-            let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            var s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 1, axis: axis, index: index, mask: cutout.labels) }
             return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
                 CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: s.width,
                         space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),

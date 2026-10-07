@@ -28,6 +28,8 @@ struct Uniforms {
     float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
     int      fovCount;      // station FOV boxes at buffer(1): [lo, hi] pairs in box space
     float    crosshairStep; // box-space spacing of the crosshair's scale ticks (0 = none)
+    int      cutoutOn;      // 1 = a noise mask is bound at texture(4): voxels marked in it are empty
+    int      clipKeepLabels;// 1 = clipping removes unlabelled tissue only; visible segments stay whole
 };
 
 struct VSOut {
@@ -59,7 +61,13 @@ static float2 intersectBox(float3 ro, float3 rd, float3 halfExtent) {
 // `tSurface` receives the ray distance of the first tissue sample (1e20 if none).
 static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
                     texture1d<float> cmap, texture3d<uint> labels, texture1d<float> lut,
+                    texture3d<uint> cutout,
                     sampler samp, float3 ro, float3 rd, float2 hit, thread float& tSurface) {
+    // Removed noise: voxels marked in the cutout mask are treated as empty.
+    float3 cdims = float3(cutout.get_width(), cutout.get_height(), cutout.get_depth());
+    auto cutAt = [&](float3 uvw) -> bool {
+        return u.cutoutOn != 0 && cutout.read(uint3(clamp(uvw, 0.0, 0.9999) * cdims)).r != 0;
+    };
     // Label (0 = none/hidden) and its colour at a texture coordinate.
     float3 ldims = float3(labels.get_width(), labels.get_height(), labels.get_depth());
     auto labelAt = [&](float3 uvw) -> uint {
@@ -72,6 +80,11 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     // removed half-space — (cut0, cut1), one interval since that region is convex — and
     // the marches below skip it.
     bool cutaway = u.clipCutaway != 0;
+    // Keep visible segments: march the whole box and drop only unlabelled samples in the
+    // removed region, so segments show whole inside the clipped-away part.
+    bool keep = u.clipKeepLabels != 0 && u.overlayOn != 0;
+    float2 full = hit;
+    bool rayRemoved = false; // keep: a plane parallel to the ray removes all of it
     float cut0 = -1e20, cut1 = 1e20;
     int enabledClips = 0;
     for (int i = 0; i < u.clipCount; ++i) {
@@ -80,7 +93,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         float o = dot(u.clips[i].xyz, ro), d = dot(u.clips[i].xyz, rd);
         if (abs(d) < 1e-6) { // ray parallel to the plane: entirely kept or entirely removed
             if (cutaway) { if (o <= u.clips[i].w) { cut1 = -1e20; } }
-            else if (o > u.clips[i].w) { return float4(0, 0, 0, 1); }
+            else if (o > u.clips[i].w) { if (keep) { rayRemoved = true; } else { return float4(0, 0, 0, 1); } }
         } else {
             float t = (u.clips[i].w - o) / d; // removed side is beyond t when d > 0
             if (cutaway) { if (d > 0.0) { cut0 = max(cut0, t); } else { cut1 = min(cut1, t); } }
@@ -88,6 +101,11 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         }
     }
     if (!cutaway || enabledClips == 0) { cut1 = -1e20; } // empty interval: nothing skipped
+    float2 kept = hit;
+    if (keep) { hit = full; }
+    auto clippedAt = [&](float t) -> bool {
+        return rayRemoved || t < kept.x || t > kept.y || (t > cut0 && t < cut1);
+    };
     if (hit.x > hit.y || hit.y < 0.0) { return float4(0, 0, 0, 1); } // miss
     // Camera clip: nothing nearer than cameraClip is drawn, so zooming into the volume
     // looks inside instead of at the tissue pressed against the lens.
@@ -117,10 +135,12 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         for (; s <= lenVox; s += 1.0) {
             // Jump over the cutaway. Assign rather than step back and `continue`: float
             // rounding could land just short of skip1 and repeat the jump forever.
-            if (s > skip0 && s < skip1) { s = skip1; if (s > lenVox) { break; } }
+            if (!keep && s > skip0 && s < skip1) { s = skip1; if (s > lenVox) { break; } }
             float3 uvw = uvw0 + stepUVW * s;
+            if (cutAt(uvw)) { continue; }
             float v = vol.sample(samp, uvw, level(0)).r;
             uint lab = labelAt(uvw);
+            if (keep && lab == 0 && clippedAt(tIn + s * tStep)) { continue; }
             if (v <= u.dataMin && lab == 0) { continue; }
             float txl = clamp((v - u.dataMin) / window, 2.0 / 256.0, 1.0);
             float a = txl * (128.0 / 255.0);
@@ -146,11 +166,13 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     uint maxLab = 0;
     for (int i = 0; i < u.steps; ++i) {
         float t = tIn + dt * float(i);
-        if (t > cut0 && t < cut1) { continue; }
+        if (!keep && t > cut0 && t < cut1) { continue; }
         float3 pos = ro + rd * t;
         float3 uvw = pos / (2.0 * u.boxHalf) + 0.5;       // [-half,half] -> [0,1]
+        if (cutAt(uvw)) { continue; }
         float v = vol.sample(samp, uvw, level(0)).r;
         uint lab = labelAt(uvw);
+        if (keep && lab == 0 && clippedAt(t)) { continue; }
         if (u.overlayGhost != 0 && u.overlayOn != 0 && lab == 0) { continue; } // labelled tissue only
         if (v > u.dataMin) { tSurface = min(tSurface, t); }
         if (v > maxV) { maxV = v; maxLab = lab; }          // MIP, remembering the label there
@@ -183,6 +205,7 @@ fragment float4 frag(VSOut in [[stage_in]],
                      texture1d<float> cmap   [[texture(1)]],
                      texture3d<uint> labels  [[texture(2)]],
                      texture1d<float> lut    [[texture(3)]],
+                     texture3d<uint> cutout  [[texture(4)]],
                      sampler samp            [[sampler(0)]]) {
     // Reconstruct a world-space ray through this pixel.
     float4 nearH = u.invViewProj * float4(in.ndc, 0.0, 1.0);
@@ -195,7 +218,7 @@ fragment float4 frag(VSOut in [[stage_in]],
     float2 box = intersectBox(ro, rd, u.boxHalf);
     if (box.x > box.y || box.y < 0.0) { return float4(0, 0, 0, 1); } // ray misses the volume
     float tSurface = 1e20;
-    float4 color = shade(in.position, u, vol, cmap, labels, lut, samp, ro, rd, box, tSurface);
+    float4 color = shade(in.position, u, vol, cmap, labels, lut, cutout, samp, ro, rd, box, tSurface);
 
     if (u.clipHighlight != 0) {
         // Plane highlight: wherever the ray crosses a clip plane inside the volume box,

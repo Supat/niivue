@@ -2,6 +2,7 @@
 //  SegmentationMap.swift — a label map on the scan's grid, with what's known about it.
 //
 
+import Accelerate
 import Foundation
 
 struct SegmentationMap: Identifiable, @unchecked Sendable {
@@ -90,6 +91,48 @@ extension LabelTable {
 }
 
 extension NiftiVolume {
+    /// A copy with the voxels `mask` marks set to the background (`dataMin`): removed noise,
+    /// for the segmentation models. vDSP in 1 M-voxel pieces.
+    func removing(_ mask: [UInt8]) -> NiftiVolume {
+        var copy = self
+        let chunk = 1 << 20
+        var k = [Float](repeating: 0, count: chunk)
+        var zero: Float = 0, one: Float = 1, negOne: Float = -1, bg = dataMin, negBg = -dataMin
+        copy.data.withUnsafeMutableBufferPointer { d in mask.withUnsafeBufferPointer { m in k.withUnsafeMutableBufferPointer { kf in
+            for start in stride(from: 0, to: d.count, by: chunk) {
+                let n = vDSP_Length(min(chunk, d.count - start)), p = d.baseAddress! + start
+                vDSP_vfltu8(m.baseAddress! + start, 1, kf.baseAddress!, 1, n)
+                vDSP_vclip(kf.baseAddress!, 1, &zero, &one, kf.baseAddress!, 1, n)
+                vDSP_vsmsa(kf.baseAddress!, 1, &negOne, &one, kf.baseAddress!, 1, n)   // keep
+                vDSP_vsadd(p, 1, &negBg, p, 1, n)                                     // (v - bg) · keep + bg
+                vDSP_vmul(p, 1, kf.baseAddress!, 1, p, 1, n)
+                vDSP_vsadd(p, 1, &bg, p, 1, n)
+            }
+        } } }
+        return copy
+    }
+
+    /// Removed noise: pixels of slice `index` whose voxel `mask` marks go black. Rows with
+    /// nothing marked are skipped with a memcmp where the slice's rows run along x.
+    func cutOut(_ px: inout [UInt8], width w: Int, height h: Int, bytesPerPixel bpp: Int, axis: Int, index: Int, mask: LabelGrid) {
+        let (nx, ny, _) = dims
+        let k = max(0, min(count(axis: axis) - 1, index))
+        let zeros = [UInt8](repeating: 0, count: w)
+        mask.data.withUnsafeBufferPointer { m in px.withUnsafeMutableBufferPointer { p in zeros.withUnsafeBufferPointer { z in
+            for r in 0..<h {
+                let v = h - 1 - r
+                if axis != 0 { // rows run along x: one memcmp for an empty row
+                    let start = axis == 1 ? nx * (k + ny * v) : nx * (v + ny * k)
+                    guard memcmp(m.baseAddress! + start, z.baseAddress!, w) != 0 else { continue }
+                }
+                for c in 0..<w {
+                    let i = axis == 0 ? k + nx * (c + ny * v) : axis == 1 ? c + nx * (k + ny * v) : c + nx * (v + ny * k)
+                    if m[i] != 0 { let o = (r * w + c) * bpp; for b in 0..<min(bpp, 3) { p[o + b] = 0 } }
+                }
+            }
+        } } }
+    }
+
     /// Grey slice with the segmentation blended in (RGBX, 4 bytes/pixel): pixels whose label
     /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`).
     func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay) -> (width: Int, height: Int, pixels: [UInt8]) {

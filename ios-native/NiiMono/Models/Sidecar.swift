@@ -6,6 +6,14 @@
 
 import Foundation
 
+/// The other two Dixon images, which the segmentation editor can show instead of the scan.
+enum PhaseImage: String, CaseIterable, Identifiable {
+    case inPhase = "In-phase", opposed = "Opposed-phase"
+    var id: Self { self }
+    /// File-name suffix beside the scan's tag (`S_S_in.nii.gz`, `S_S_opp.nii.gz`).
+    var suffix: String { self == .inPhase ? "in" : "opp" }
+}
+
 /// Which Dixon contrast the opened file is; decides which companion images are needed.
 enum ImageRole: String, Codable, CaseIterable, Identifiable {
     case water = "Water", fat = "Fat", other = "Other"
@@ -36,6 +44,11 @@ struct SidecarSettings: Codable, Equatable {
         var clips: [Clip], clipCutaway: Bool, clipHighlight: Bool
         var cameraClip: Bool?, cameraClipDepth: Float? // absent in older sidecars
         var bookmarks: [SliceBookmark]? // absent in older sidecars
+        /// A noise mask is saved (noise.nii.gz), and whether it is applied.
+        var noise: Bool?, removeNoise: Bool?
+        /// A banding repair mask is saved (repair.nii.gz).
+        var repair: Bool?
+        var clipKeepSegments: Bool? // absent in older sidecars
     }
     var viewer: Viewer
 
@@ -53,6 +66,9 @@ struct SidecarSettings: Codable, Equatable {
     /// A companion image: its file name and a bookmark that re-grants access to it.
     struct Companion: Codable, Equatable { var name: String, bookmark: Data }
     var water: Companion?, fat: Companion?
+    /// The Dixon in-phase and opposed-phase images, when added (for spotting cavities while
+    /// drawing); absent in older sidecars.
+    var inPhase: Companion?, opposed: Companion?
 
     struct Body: Codable, Equatable {
         var weightKg: Double, missing: [String], thighsMissingPercent: Double

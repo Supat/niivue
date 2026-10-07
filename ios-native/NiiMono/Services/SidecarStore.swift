@@ -95,10 +95,22 @@ struct SidecarStore {
     }
 
     func saveMap(_ map: SegmentationMap?, slot: String, voxelSize: (Float, Float, Float)) throws {
+        try saveLabels(map?.labels, slot: slot, voxelSize: voxelSize)
+    }
+
+    /// A label volume as `<slot>.nii.gz`; nil removes the file.
+    func saveLabels(_ labels: LabelVolume?, slot: String, voxelSize: (Float, Float, Float)) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = mapURL(slot)
-        guard let map else { try? FileManager.default.removeItem(at: url); return }
-        try NIfTI.labelFile(map.labels, voxelSize: voxelSize).write(to: url, options: .atomic)
+        guard let labels else { try? FileManager.default.removeItem(at: url); return }
+        try NIfTI.labelFile(labels, voxelSize: voxelSize).write(to: url, options: .atomic)
+    }
+
+    func loadLabels(slot: String, volume: NiftiVolume) -> LabelVolume? {
+        guard let data = Self.read(mapURL(slot)),
+              let labels = try? NIfTI.parseLabels(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data),
+              labels.dims == volume.dims else { return nil }
+        return labels
     }
 
     func loadMap(slot: String, name: String, volume: NiftiVolume) -> SegmentationMap? {

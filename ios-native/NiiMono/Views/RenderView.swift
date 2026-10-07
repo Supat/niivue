@@ -13,10 +13,17 @@ struct RenderView: UIViewRepresentable {
     let mode: RenderMode
     let clips: [ClipSetting]
     let clipCutaway: Bool
+    /// Clipping removes unlabelled tissue only; visible segments stay whole.
+    var clipKeepLabels = false
     let clipHighlight: Bool
     /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
     var crosshair: SIMD3<Float>? = nil
     var overlay: SegmentationOverlay? = nil
+    /// Removed noise: voxels marked here are left out of the render.
+    var cutout: SegmentationOverlay? = nil
+    /// z slices whose intensities changed since the volume this view last drew (banding
+    /// repair); nil = all. Only read when `volume` is a new one.
+    var volumeDirtyZ: Range<Int>? = nil
     /// Station FOVs to outline, in voxel edges of the volume.
     var fov: [FOVBox] = []
     var cameraClip: Float = 0 // fraction of the eye→pivot distance, 0 = off
@@ -33,6 +40,7 @@ struct RenderView: UIViewRepresentable {
         /// that don't touch the render (another pane panning, chrome, the inspector), and a
         /// full raycast for each is wasted power.
         var drawnInputs: Inputs?
+        var volumeID: UUID?
         let gizmo = OrientationGizmo()
         let scaleBar = ScaleBarView()
         let orbit = UIPanGestureRecognizer()
@@ -52,18 +60,15 @@ struct RenderView: UIViewRepresentable {
             view?.setNeedsDisplay()
         }
 
-        /// Gestures under way. While any is, frames render at 1 pixel per point (a quarter of
-        /// the raycasting on a 2× screen, at up to 120 Hz); the frame after the last one ends
-        /// is full resolution again. A moving image hides the softness.
-        private var activeGestures = 0
+        /// While a gesture is under way, frames render at 1 pixel per point (a quarter of the
+        /// raycasting on a 2× screen, at up to 120 Hz); the frame after the last one ends is
+        /// full resolution again. A moving image hides the softness. The recognizers' own
+        /// states decide, not a count, so a gesture cancelled by a rotation can't leave the
+        /// view stuck at low resolution.
         private func track(_ g: UIGestureRecognizer) {
-            guard let view = g.view as? MTKView else { return }
-            switch g.state {
-            case .began: activeGestures += 1
-            case .ended, .cancelled, .failed: activeGestures = max(0, activeGestures - 1)
-            default: return
-            }
-            let scale = activeGestures > 0 ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
+            guard let view = g.view as? MTKView, g.state != .changed else { return }
+            let moving = view.gestureRecognizers?.contains { $0.state == .began || $0.state == .changed } ?? false
+            let scale = moving ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
             guard view.contentScaleFactor != scale else { return }
             view.contentScaleFactor = scale
             renderer?.pointScale = scale
@@ -203,6 +208,7 @@ struct RenderView: UIViewRepresentable {
         renderer.mode = mode == .mip ? 0 : 1
         renderer.clips = clips
         renderer.clipCutaway = clipCutaway
+        renderer.clipKeepLabels = clipKeepLabels
         renderer.clipHighlight = clipHighlight
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
         // Voxel edges → box space, cut to the volume (the render stops at its faces).
@@ -212,6 +218,9 @@ struct RenderView: UIViewRepresentable {
             [b.lo, b.hi].map { simd_float4((SIMD3<Float>(simd_clamp($0 / dims, .zero, .one)) - 0.5) * 2 * renderer.boxHalf, Float(b.session)) }
         }
         renderer.setOverlay(overlay)
+        renderer.setCutout(cutout)
+        let volumeChanged = c.volumeID != volume.id
+        if volumeChanged { renderer.updateVolume(volume, z: volumeDirtyZ); c.volumeID = volume.id }
         renderer.cameraClipFraction = cameraClip
         renderer.pointScale = view.contentScaleFactor
         let presetChanged = presetTick != c.presetTick
@@ -219,9 +228,10 @@ struct RenderView: UIViewRepresentable {
             renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
         }
         c.presetTick = presetTick
-        let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipHighlight: clipHighlight,
-                            crosshair: crosshair, overlay: overlay.map(Inputs.Overlay.init), fov: fov, cameraClip: cameraClip)
-        guard presetChanged || inputs != c.drawnInputs else { return }
+        let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipKeepLabels: clipKeepLabels, clipHighlight: clipHighlight,
+                            crosshair: crosshair, overlay: overlay.map(Inputs.Overlay.init), cutout: cutout.map(Inputs.Overlay.init),
+                            fov: fov, cameraClip: cameraClip)
+        guard presetChanged || volumeChanged || inputs != c.drawnInputs else { return }
         c.drawnInputs = inputs
         c.cameraChanged(view)
     }
@@ -229,8 +239,8 @@ struct RenderView: UIViewRepresentable {
     /// Everything this view passes the renderer that changes the picture (the camera is
     /// redrawn by the gestures themselves).
     struct Inputs: Equatable {
-        var lo: Float, hi: Float, mode: RenderMode, clips: [ClipSetting], clipCutaway: Bool, clipHighlight: Bool
-        var crosshair: SIMD3<Float>?, overlay: Overlay?, fov: [FOVBox], cameraClip: Float
+        var lo: Float, hi: Float, mode: RenderMode, clips: [ClipSetting], clipCutaway: Bool, clipKeepLabels: Bool, clipHighlight: Bool
+        var crosshair: SIMD3<Float>?, overlay: Overlay?, cutout: Overlay?, fov: [FOVBox], cameraClip: Float
         struct Overlay: Equatable {
             var mapID: UUID, revision: Int, lut: [SIMD4<UInt8>], opacity: Float, ghost: Bool, hideScan: Bool
             init(_ o: SegmentationOverlay) {
@@ -275,7 +285,11 @@ final class RenderHost: UIView, SnapshotPane {
         }
         let narrowing = old.width > new.width && old.height == new.height && old.width > 0
             && UIView.inheritedAnimationDuration == 0 && pendingSize == nil
-        guard narrowing, let renderer else { mtk.frame = bounds; return }
+        guard narrowing, let renderer else {
+            mtk.frame = bounds
+            if old != new { mtk.setNeedsDisplay() } // e.g. rotation: draw at the new size
+            return
+        }
         pendingSize = new
         renderer.glide(toWidth: new.width * mtk.contentScaleFactor, in: mtk) { [weak self] in
             guard let self, pendingSize == new else { return }

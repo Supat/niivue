@@ -43,6 +43,13 @@ scale and zoom, linked by a crosshair drawn in all four panes. The inspector hol
 (MIP, or Volume — a port of NiiVue's default compositing shader), up to six tiltable
 3D clip planes with cutaway and highlight options, and volume info.
 
+**Clipping around segments.** Inspector › 3D › "Keep Visible Segments" makes the clip planes
+(and the cutaway) remove unlabelled tissue only: voxels of the visible segments are drawn whole
+inside the clipped-away region, so an organ stays complete while the body around it is opened.
+Hidden labels are clipped like the rest. The ray then marches the whole box and drops only the
+unlabelled samples in the removed region (`clipKeepLabels` in Raycaster.metal). Saved in the
+sidecar; `-clipKeepSegments YES` for checks.
+
 **Segmentation overlay.** The inspector's Segmentation section loads a label map on the
 scan's grid (`.nii`/`.nii.gz`, integer labels, 0 = background) and colours slices and the
 3D render with it: per-label toggles, opacity, and a "show through tissue" mode for 3D.
@@ -135,10 +142,48 @@ the simulator's CPU-only Core ML path allocates ~19 GB and dies. Models are rege
 `tools/convert_organ_model.py <out> organs|muscles` (TotalSegmentator weights, Python 3.11
 with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-commercial licence.
 
+**Noise removal.** Inspector › Image › Noise Removal › "Remove Noise…" opens the
+segmentation editor with one fixed "Noise" label: paint over stray signal and artifacts with
+the same tools (brush, eraser, fill, smoothing, undo, Pencil). The slice panes show the paint;
+the 3D pane already renders the scan with it cut out. After Done, the marked voxels are black
+on every slice and left out of the 3D render (a second r8Uint mask texture the raycaster skips),
+"Remove Marked Noise" toggles it, and "Clear Noise Mask" drops it. The scan's data is not
+changed (no second copy in memory, and erasing the mask brings voxels back); the mask is saved
+in the sidecar as `noise.nii.gz`. Generate Segmentation runs the networks on a copy with the
+noise set to background and clears noise voxels from both generated maps (the tissue classes
+run on the original water/fat images and are cleared after, avoiding two more 250 MB copies).
+"Export Cleaned Scan…" writes `<scan>_clean.nii.gz`: float32 on the scan's own grid and
+orientation under a copy of its header (embedded metadata kept), noise set to the scan's
+minimum (`spike/clean_export_check.swift` round-trips it).
+
+**Banding repair.** Inspector › Image › Banding Repair › "Repair Banding…" opens the editor
+with one fixed "Band" label (coronal view first, where a band between stitched stations runs
+across). Paint over the band: after every stroke (and fill, erase, undo, smoothing) the columns
+it touched are filled in again, each painted voxel getting a value interpolated along z
+(head–foot) between the nearest unpainted voxels above and below it, and voxels no longer
+painted getting their original values back — so the slice panes and the 3D pane show the
+repair as it is painted (~0.1 s a stroke in Debug). Done keeps it, Cancel drops it. The same
+rule repairs a saved mask on opening (`BandRepair.repaired`; `spike/band_repair_check.swift`). Unlike noise removal this changes
+intensities, so the viewer holds a repaired copy of the scan (one 250 MB copy while it is
+made) used everywhere — slices, 3D (only the touched z slices are re-uploaded), Generate
+Segmentation, the cleaned-scan export — and keeps the original values of the replaced voxels,
+so "Edit Banding Repair…" and "Undo Banding Repair" put them back first. The mask is saved in
+the sidecar as `repair.nii.gz` and re-applied on opening; the scan file isn't written.
+"Export Cleaned Scan…" (its own section once either exists) writes noise removed and banding
+repaired.
+
+**In-phase and opposed-phase images.** Inspector › Segmentation › Image can add the scan's
+Dixon in-phase (`<tag>_in`) and opposed-phase (`<tag>_opp`) images ("Add" when they lie beside
+the scan, else "Choose…"); their dark rims at water–fat boundaries show cavities clearly.
+They load only when added (each is the scan's size in memory), are kept in the sidecar, and
+"Remove" frees them.
+
 **Drawing a segmentation.** Inspector › Segmentation › "Draw Segmentation…" opens the
 editor full screen: the drawing slice on the right, and on the left a reference slice (tap it
 to move the drawing slice; the plane menu and ⇄ swap the two panes) above the 3D render of the
-labels (the eye button hides the scan so the labels stand alone). Apple Pencil paints with
+labels (the eye button hides the scan so the labels stand alone). The image picker in the top bar switches both slice panes between the scan and any
+loaded companion (water, fat, in-phase, opposed-phase), each with its own levels; the 3D pane
+stays on the scan. Apple Pencil paints with
 the brush, erases, or flood-fills a closed outline on the slice in view; fingers pan, zoom
 and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
 across zoom and anisotropic voxels. Labels are picked, named, coloured and reordered (drag handles; the inspector lists a

@@ -48,15 +48,16 @@ struct SegmentationEditor: View {
                     Button("Discard Changes", role: .destructive) { model.drawing = nil }
                 }
             Spacer()
-            Text("Draw Segmentation").font(.headline)
+            Text(noiseMode ? "Remove Noise" : bandingMode ? "Repair Banding" : "Draw Segmentation").font(.headline)
             Spacer()
             HStack(spacing: 4) {
                 // Black / white levels of the slices and the paint's opacity (the viewer's own, so
                 // they carry over).
                 Button("Adjust Levels and Paint Opacity", systemImage: "circle.lefthalf.filled") { adjusting = true }
                     .labelStyle(.iconOnly)
-                    .popover(isPresented: $adjusting) { LevelsPopover(model: model) }
-                Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair2D)
+                    .popover(isPresented: $adjusting) { LevelsPopover(model: model, drawing: drawing) }
+                imagePicker
+                Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair) // all three panes
                 Toggle("Show Paint", systemImage: drawing.hidePaint ? "paintbrush.pointed" : "paintbrush.pointed.fill",
                        isOn: Binding(get: { !drawing.hidePaint }, set: { drawing.hidePaint = !$0 }))
                     .keyboardShortcut("h", modifiers: .command)
@@ -86,14 +87,60 @@ struct SegmentationEditor: View {
 
     // MARK: Panes
 
+    private var noiseMode: Bool { drawing.purpose == .noise }
+    private var bandingMode: Bool { drawing.purpose == .banding }
+    /// Noise and banding: one fixed label, no 3D paint (it isn't a segmentation).
+    private var fixedLabel: Bool { drawing.purpose != .segmentation }
+
+    // MARK: Image shown
+
+    /// The images the slice panes can show: the opened scan and the companions loaded in
+    /// Inspector › Segmentation › Image.
+    private var images: [(id: DrawingViewModel.DisplayImage, name: String, volume: NiftiVolume)] {
+        let seg = model.segmentation
+        var list: [(id: DrawingViewModel.DisplayImage, name: String, volume: NiftiVolume)] =
+            [(.scan, seg.role == .other ? "Scan" : seg.role.rawValue, model.volume)]
+        if let v = seg.water { list.append((.water, "Water", v)) }
+        if let v = seg.fat { list.append((.fat, "Fat", v)) }
+        for p in PhaseImage.allCases { if let v = seg.phase[p] { list.append((.phase(p), p.rawValue, v)) } }
+        return list
+    }
+
+    /// The image on the slice panes and its levels (the scan's are the viewer's own).
+    private var displayed: (id: DrawingViewModel.DisplayImage, name: String, volume: NiftiVolume, lo: Float, hi: Float) {
+        let pick = bandingMode ? images[0] : images.first { $0.id == drawing.display } ?? images[0] // a removed companion falls back to the scan
+        // Banding: the scan as repaired so far.
+        if pick.id == .scan { return (pick.id, pick.name, drawing.preview ?? pick.volume, model.lo, model.hi) }
+        let l = drawing.levels[pick.id] ?? SIMD2(pick.volume.displayMin, pick.volume.displayMax)
+        return (pick.id, pick.name, pick.volume, l.x, l.y)
+    }
+
+    @ViewBuilder private var imagePicker: some View {
+        let list = images
+        // Banding repairs the opened scan only: no other image to look at.
+        if list.count > 1, !bandingMode {
+            Menu {
+                Picker("Image", selection: $drawing.display) {
+                    ForEach(list, id: \.id) { Text($0.name).tag($0.id) }
+                }
+            } label: {
+                Label(displayed.name, systemImage: "photo.stack").labelStyle(.titleAndIcon)
+            }
+        }
+    }
+
     /// The paint on the slice panes, or none while hidden.
-    private var slicePaint: SegmentationOverlay? { drawing.hidePaint ? nil : drawing.overlay(opacity: model.segmentation.opacity) }
+    /// Banding: a faint tint only, or the paint would hide the repair it causes.
+    private var slicePaint: SegmentationOverlay? {
+        drawing.hidePaint ? nil : drawing.overlay(opacity: bandingMode ? min(0.2, model.segmentation.opacity) : model.segmentation.opacity)
+    }
 
     private var main: some View {
         let axis = drawing.mainAxis
-        return SliceView(volume: model.volume, axis: axis, index: model.slices[axis], lo: model.lo, hi: model.hi,
-                         mirrored: model.mirrored, overlay: slicePaint,
-                         crosshair: drawing.crosshair2D ? model.crosshair(in: axis) : nil,
+        let shown = displayed
+        return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
+                         mirrored: model.mirrored, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
+                         crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
                          onDraw: { phase, p in drawing.handle(phase, p, index: model.slices[axis], mirrored: model.mirrored) },
                          drawsWithFinger: drawing.drawsWithFinger,
                          onTwoFingerTap: { drawing.tapUndo() },
@@ -129,9 +176,10 @@ struct SegmentationEditor: View {
 
     private var reference: some View {
         let axis = drawing.refAxis
-        return SliceView(volume: model.volume, axis: axis, index: model.slices[axis], lo: model.lo, hi: model.hi,
-                         mirrored: model.mirrored, overlay: slicePaint,
-                         crosshair: drawing.crosshair2D ? model.crosshair(in: axis) : nil,
+        let shown = displayed
+        return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
+                         mirrored: model.mirrored, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
+                         crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
                          onLocate: { model.locate($0, in: axis) }, // moves the drawing slice
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
@@ -153,25 +201,29 @@ struct SegmentationEditor: View {
     }
 
     private var render: some View {
-        RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
+        RenderView(volume: drawing.preview ?? model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
                    clips: [], clipCutaway: false, clipHighlight: false,
-                   crosshair: drawing.crosshair3D ? model.crosshairFractions : nil,
+                   crosshair: drawing.crosshair ? model.crosshairFractions : nil,
                    // Hidden paint leaves the plain scan (the eye's labels-only mode needs labels).
-                   overlay: drawing.hidePaint ? nil : drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
+                   // Noise mode: the scan with the noise painted so far already removed.
+                   overlay: fixedLabel || drawing.hidePaint ? nil : drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
+                   cutout: noiseMode ? drawing.overlay(opacity: 0) : model.noiseCutout,
+                   volumeDirtyZ: drawing.preview != nil ? drawing.previewDirtyZ : model.volumeDirtyZ,
                    cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: nil, presetTick: 0, onTap: {})
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 4) {
-                    Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair3D)
                     // The viewer's Clip at Camera (Inspector › 3D): tap to switch, hold for the depth.
                     if model.cameraClip { cameraClipMenu.buttonStyle(.glassProminent) } else { cameraClipMenu }
                     // Fades unlabelled tissue; moot once the scan is hidden altogether.
                     // Both act on the paint, so they wait while it's hidden.
-                    Toggle("Show Through Tissue", systemImage: "cube.transparent", isOn: $drawing.showThrough)
-                        .disabled(drawing.hideScan || drawing.hidePaint)
-                    Toggle("Show Scan", systemImage: drawing.hideScan ? "eye.slash" : "eye",
-                           isOn: Binding(get: { !drawing.hideScan }, set: { drawing.hideScan = !$0 }))
-                        .disabled(drawing.hidePaint)
+                    if !fixedLabel { // noise is cut out in 3D, banding isn't shown there
+                        Toggle("Show Through Tissue", systemImage: "cube.transparent", isOn: $drawing.showThrough)
+                            .disabled(drawing.hideScan || drawing.hidePaint)
+                        Toggle("Show Scan", systemImage: drawing.hideScan ? "eye.slash" : "eye",
+                               isOn: Binding(get: { !drawing.hideScan }, set: { drawing.hideScan = !$0 }))
+                            .disabled(drawing.hidePaint)
+                    }
                 }
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)
@@ -207,6 +259,13 @@ struct SegmentationEditor: View {
 
     private var tools: some View {
         HStack(spacing: 14) {
+            if fixedLabel {
+                // One fixed label: no list, no colour.
+                HStack(spacing: 6) {
+                    Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
+                    Text(drawing.activeLabel?.name ?? "")
+                }
+            } else {
             Button { showingLabels = true } label: {
                 HStack(spacing: 6) {
                     Circle().fill(drawing.activeLabel.map(color) ?? .clear).frame(width: 14, height: 14)
@@ -219,6 +278,7 @@ struct SegmentationEditor: View {
             }
             .popover(isPresented: $showingLabels) { LabelList(drawing: drawing) }
             ColorPicker("Colour", selection: activeColor, supportsOpacity: false).labelsHidden()
+            }
             Picker("Tool", selection: $drawing.tool) {
                 ForEach(DrawingViewModel.Tool.allCases) { Image(systemName: $0.symbol).accessibilityLabel($0.rawValue).tag($0) }
             }
@@ -270,16 +330,34 @@ struct SegmentationEditor: View {
 /// paint's opacity.
 private struct LevelsPopover: View {
     @Bindable var model: ViewerViewModel
+    @Bindable var drawing: DrawingViewModel
 
     var body: some View {
-        let volume = model.volume
+        // The levels of the image the slice panes show: the scan's are the viewer's own, a
+        // companion's are kept by the editor.
+        let companion: NiftiVolume? = {
+            let seg = model.segmentation
+            switch drawing.display {
+            case .scan: return nil
+            case .water: return seg.water
+            case .fat: return seg.fat
+            case .phase(let p): return seg.phase[p]
+            }
+        }()
+        let pick = companion ?? model.volume
+        let isScan = companion == nil // the scan, or a companion removed meanwhile
+        let id = drawing.display
+        let current = drawing.levels[id] ?? SIMD2(pick.displayMin, pick.displayMax)
+        let lo = isScan ? $model.lo : Binding(get: { current.x }, set: { drawing.levels[id] = SIMD2($0, drawing.levels[id]?.y ?? current.y) })
+        let hi = isScan ? $model.hi : Binding(get: { current.y }, set: { drawing.levels[id] = SIMD2(drawing.levels[id]?.x ?? current.x, $0) })
+        let volume = pick
         // Slider traps on an empty range; a constant-intensity volume gets a dummy one.
         let range = volume.dataMin...max(volume.dataMax, volume.dataMin + 1)
         let unit = (range.upperBound - range.lowerBound) / 100
         VStack(alignment: .leading, spacing: 14) {
-            LabeledContent("Black") { StepSlider(value: $model.lo, in: range, unit: unit) }
-            LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
-            Button("Reset") { model.resetWindow() }
+            LabeledContent("Black") { StepSlider(value: lo, in: range, unit: unit) }
+            LabeledContent("White") { StepSlider(value: hi, in: range, unit: unit) }
+            Button("Reset") { if isScan { model.resetWindow() } else { drawing.levels[id] = nil } }
             Divider()
             // How strongly the paint covers the scan, in every pane (Inspector › Segmentation › Opacity).
             LabeledContent("Paint") { StepSlider(value: Binding(get: { model.segmentation.opacity }, set: { model.segmentation.opacity = $0 }), in: 0...1, unit: 0.05) }

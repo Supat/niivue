@@ -55,6 +55,54 @@ struct SlicePlane: Equatable {
 enum LabelPainter {
     static let unlocked = [Bool](repeating: false, count: 256)
 
+    /// `labels` with the voxels `mask` marks cleared (vDSP in 1 M-voxel pieces):
+    /// new = labels · (1 - min(mask, 1)).
+    static func clearing(_ labels: [UInt8], where mask: [UInt8]) -> [UInt8] {
+        var out = labels
+        let chunk = 1 << 20
+        var a = [Float](repeating: 0, count: chunk), k = [Float](repeating: 0, count: chunk)
+        var zero: Float = 0, one: Float = 1, negOne: Float = -1
+        out.withUnsafeMutableBufferPointer { o in mask.withUnsafeBufferPointer { m in a.withUnsafeMutableBufferPointer { af in k.withUnsafeMutableBufferPointer { kf in
+            for start in stride(from: 0, to: o.count, by: chunk) {
+                let n = vDSP_Length(min(chunk, o.count - start))
+                vDSP_vfltu8(m.baseAddress! + start, 1, kf.baseAddress!, 1, n)
+                vDSP_vclip(kf.baseAddress!, 1, &zero, &one, kf.baseAddress!, 1, n)
+                vDSP_vsmsa(kf.baseAddress!, 1, &negOne, &one, kf.baseAddress!, 1, n)
+                vDSP_vfltu8(o.baseAddress! + start, 1, af.baseAddress!, 1, n)
+                vDSP_vmul(af.baseAddress!, 1, kf.baseAddress!, 1, af.baseAddress!, 1, n)
+                vDSP_vfixu8(af.baseAddress!, 1, o.baseAddress! + start, 1, n)
+            }
+        } } } }
+        return out
+    }
+
+    /// True if nothing is labelled (memcmp in 1 MB pieces, not a per-voxel loop).
+    static func isEmpty(_ data: [UInt8]) -> Bool {
+        let chunk = 1 << 20, zeros = [UInt8](repeating: 0, count: chunk)
+        return data.withUnsafeBytes { d in zeros.withUnsafeBytes { z in
+            stride(from: 0, to: d.count, by: chunk).allSatisfy { memcmp(d.baseAddress! + $0, z.baseAddress!, min(chunk, d.count - $0)) == 0 }
+        } }
+    }
+
+    /// The bounding box of the voxels that differ between `before` and `after` (both the
+    /// contents of `box`, x fastest), or nil. Equal rows are skipped with one memcmp.
+    static func changedBounds(before: [UInt8], after: [UInt8], box b: VoxelBox) -> VoxelBox? {
+        let w = b.size.x
+        var lo = b.hi, hi = b.lo
+        before.withUnsafeBufferPointer { o in after.withUnsafeBufferPointer { a in
+            var row = 0
+            for z in b.lo.z..<b.hi.z { for y in b.lo.y..<b.hi.y {
+                defer { row += w }
+                guard memcmp(o.baseAddress! + row, a.baseAddress! + row, w) != 0 else { continue }
+                var first = 0, last = w - 1
+                while o[row + first] == a[row + first] { first += 1 }
+                while o[row + last] == a[row + last] { last -= 1 }
+                lo = pointwiseMin(lo, SIMD3(b.lo.x + first, y, z)); hi = pointwiseMax(hi, SIMD3(b.lo.x + last + 1, y + 1, z + 1))
+            } }
+        } }
+        return all(lo .< hi) ? VoxelBox(lo: lo, hi: hi) : nil
+    }
+
     // MARK: Bricks (edit tracking for smoothing)
 
     /// Edge of the cubes edits are tracked in: small, so the margin smoothing adds around an

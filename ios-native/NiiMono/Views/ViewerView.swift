@@ -238,9 +238,9 @@ private struct VolumeCanvas: View {
 
     private var render: some View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
-                   clips: model.clips, clipCutaway: model.clipCutaway, clipHighlight: model.clipHighlight,
+                   clips: model.clips, clipCutaway: model.clipCutaway, clipKeepLabels: model.clipKeepSegments, clipHighlight: model.clipHighlight,
                    crosshair: model.showCrosshair ? model.crosshairFractions : nil,
-                   overlay: model.segmentation.overlay, fov: model.visibleFOVBoxes, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
+                   overlay: model.segmentation.overlay, cutout: model.noiseCutout, volumeDirtyZ: model.volumeDirtyZ, fov: model.visibleFOVBoxes, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)
             .overlay {
                 if model.showsProfile, let face = model.profile.faceCutout {
@@ -278,7 +278,7 @@ private struct VolumeCanvas: View {
     private func slice(_ axis: Int) -> some View {
         let multi = model.plane == .multi
         return SliceView(volume: model.volume, axis: axis, index: model.slices[axis], lo: model.lo, hi: model.hi,
-                         mirrored: model.mirrored, overlay: model.segmentation.overlay,
+                         mirrored: model.mirrored, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
                          fitExtent: multi ? model.sliceEnvelope : nil,
                          zoom: multi ? model.multiZoom : nil, zoomAnimated: model.multiZoomAnimated,
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,

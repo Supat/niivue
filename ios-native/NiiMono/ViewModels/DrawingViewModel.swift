@@ -22,6 +22,10 @@ final class DrawingViewModel: Identifiable {
 
     let id = UUID()
     let volume: NiftiVolume
+    /// A segmentation, or the noise mask (one fixed "Noise" label; what it marks is removed
+    /// from the scan's display).
+    enum Purpose { case segmentation, noise, banding }
+    let purpose: Purpose
     /// Drawn in place; starts as the existing drawing's voxels (shared until the first stroke,
     /// so Cancel leaves that map untouched).
     let grid: LabelGrid
@@ -45,11 +49,15 @@ final class DrawingViewModel: Identifiable {
     var hideScan = false
     /// 3D pane: fade unlabelled tissue so the labels show through it.
     var showThrough = UserDefaults.standard.bool(forKey: "segGhost")
-    /// 3D pane: the crosshair at the current slices.
-    var crosshair3D = true
-    /// Slice panes: the crosshair. All panes, 3D included: the paint (hidden to see the tissue
-    /// under it; strokes still land).
-    var crosshair2D = true
+    /// Which image the slice panes show: the opened scan or a loaded companion (water, fat,
+    /// in-phase, opposed-phase), each with its own black/white levels.
+    enum DisplayImage: Hashable { case scan, water, fat, phase(PhaseImage) }
+    var display = DisplayImage.scan
+    var levels: [DisplayImage: SIMD2<Float>] = [:]
+
+    /// The crosshair at the current slices, in all three panes.
+    var crosshair = true
+    /// All panes, 3D included: the paint (hidden to see the tissue under it; strokes still land).
     var hidePaint = false
     private(set) var edited = false
 
@@ -68,16 +76,29 @@ final class DrawingViewModel: Identifiable {
     var canRedo: Bool { !redoStack.isEmpty }
     private static let undoLimit = 50
 
-    init(volume: NiftiVolume, existing: SegmentationMap?, labels: [CustomLabel], mainAxis: Int) {
+    init(volume: NiftiVolume, existing: SegmentationMap?, labels: [CustomLabel], mainAxis: Int,
+         purpose: Purpose = .segmentation, existingGrid: LabelVolume? = nil) {
         self.volume = volume
+        self.purpose = purpose
         let empty = LabelVolume(dims: volume.dims, data: [UInt8](repeating: 0, count: volume.voxelCount), maxLabel: 0)
-        grid = LabelGrid(existing.flatMap { $0.labels.dims == volume.dims ? $0.labels : nil } ?? empty)
-        let start = existing != nil && !labels.isEmpty ? labels : [Self.newLabel(id: 1)]
+        let seed = existingGrid ?? existing?.labels
+        grid = LabelGrid(seed.flatMap { $0.dims == volume.dims ? $0 : nil } ?? empty)
+        let start = purpose == .noise ? [Self.noiseLabel] : purpose == .banding ? [Self.bandLabel]
+            : existing != nil && !labels.isEmpty ? labels : [Self.newLabel(id: 1)]
         self.labels = start
         openingLabels = start
         active = start[0].id
         self.mainAxis = mainAxis
         refAxis = mainAxis == 2 ? 1 : 2
+    }
+
+    static let noiseLabel = CustomLabel(id: 1, name: "Noise", color: [1, 0.25, 0.85])
+    static let bandLabel = CustomLabel(id: 1, name: "Band", color: [1, 0.6, 0.1])
+
+    /// The noise mask as drawn, nil when nothing was changed.
+    var editedGrid: LabelVolume? {
+        flush()
+        return edited ? LabelVolume(dims: grid.dims, data: grid.data, maxLabel: 1) : nil
     }
 
     private static func newLabel(id: Int) -> CustomLabel {
@@ -176,6 +197,7 @@ final class DrawingViewModel: Identifiable {
     private func commit(plane: SlicePlane, before: [UInt8], rows: ClosedRange<Int>?) {
         if let rows { touched(plane, rows) }
         noteEdit(plane.box, before: before)
+        repairBanding(plane.box, before: before)
         pushUndo(plane.box, before)
         lastCommit = .now // a finger-tap undo may still drop this stroke (see tapUndo)
         flush()
@@ -207,7 +229,9 @@ final class DrawingViewModel: Identifiable {
         } else {
             return
         }
+        let current = LabelPainter.read(grid, box: step.box)
         LabelPainter.write(grid, box: step.box, step.values)
+        repairBanding(step.box, before: current)
         markDirty(step.box.z)
         flush()
     }
@@ -219,6 +243,7 @@ final class DrawingViewModel: Identifiable {
         LabelPainter.write(grid, box: step.box, step.values)
         edited = true
         noteEdit(step.box, before: current)
+        repairBanding(step.box, before: current)
         markDirty(step.box.z)
         flush()
     }
@@ -276,11 +301,106 @@ final class DrawingViewModel: Identifiable {
         labels[i].smoothed = true
         labels[i].unsmoothedBricks = nil
         guard let result else { return }
-        pushUndo(result.box, LabelPainter.read(grid, box: result.box))
+        let before = LabelPainter.read(grid, box: result.box)
+        pushUndo(result.box, before)
         LabelPainter.write(grid, box: result.box, result.values)
+        repairBanding(result.box, before: before)
         edited = true
         markDirty(result.box.z)
         flush()
+    }
+
+    // MARK: Live banding repair
+
+    /// Banding: the scan with the band painted so far repaired, nil before the first stroke;
+    /// and the z slices the last repair changed (for the 3D texture).
+    private(set) var preview: NiftiVolume?
+    private(set) var previewDirtyZ: Range<Int>?
+    /// The repair in force when the editor opened: its mask and the original values of the
+    /// voxels it replaced (`volume` holds the repaired ones).
+    private var previousMask: [UInt8]?
+    private var previousOriginals: [Int32: Float] = [:]
+
+    func setPreviousRepair(mask: [UInt8], indices: [Int32], originals: [Float]) {
+        previousMask = mask
+        previousOriginals = Dictionary(zip(indices, originals), uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The scan's own value at `i`, before any repair.
+    private func original(_ i: Int, _ current: UnsafeBufferPointer<Float>) -> Float {
+        if let m = previousMask, m[i] != 0, let v = previousOriginals[Int32(i)] { return v }
+        return current[i]
+    }
+
+    /// After a change to the mask in `box` (`before` → now): every column through the changed
+    /// voxels is filled in again along z (BandRepair's rule), and voxels no longer painted get
+    /// their original values back. Cost follows the columns a stroke touches.
+    private func repairBanding(_ box: VoxelBox, before: [UInt8]) {
+        guard purpose == .banding,
+              let changed = LabelPainter.changedBounds(before: before, after: LabelPainter.read(grid, box: box), box: box) else { return }
+        let (nx, ny, nz) = volume.dims, plane = nx * ny
+        var v = preview ?? volume // the first stroke copies the scan once
+        var zlo = Int.max, zhi = -1, repaired = 0, restored = 0, wholeColumns = 0
+        v.data.withUnsafeMutableBufferPointer { d in grid.data.withUnsafeBufferPointer { m in volume.data.withUnsafeBufferPointer { o in
+            for y in changed.lo.y..<changed.hi.y { for x in changed.lo.x..<changed.hi.x {
+                for z in 0..<nz {
+                    let i = x + nx * (y + ny * z)
+                    var want = original(i, o)
+                    if m[i] != 0 {
+                        var below = z - 1, above = z + 1
+                        while below >= 0, m[i - (z - below) * plane] != 0 { below -= 1 }
+                        while above < nz, m[i + (above - z) * plane] != 0 { above += 1 }
+                        let bi = i - (z - below) * plane, ai = i + (above - z) * plane
+                        switch (below >= 0, above < nz) {
+                        case (true, true):
+                            let a = original(bi, o), b = original(ai, o)
+                            want = a + (b - a) * Float(z - below) / Float(above - below)
+                        case (true, false): want = original(bi, o)
+                        case (false, true): want = original(ai, o)
+                        case (false, false): wholeColumns += 1 // a whole column painted: left as it is
+                        }
+                    }
+                    if d[i] != want {
+                        if m[i] != 0 { repaired += 1 } else { restored += 1 }
+                        d[i] = want; zlo = min(zlo, z); zhi = max(zhi, z)
+                    }
+                }
+            } }
+        } } }
+        // Say what happened, so a stroke that changes nothing doesn't look like a broken tool.
+        if repaired > 0 || restored > 0 {
+            show(note: (repaired > 0 ? "Repaired \(repaired.formatted()) voxels" : "") + (repaired > 0 && restored > 0 ? ", " : "")
+                 + (restored > 0 ? "restored \(restored.formatted())" : "") + " on slices \(zlo + 1)–\(zhi + 1)")
+        } else if wholeColumns > 0 {
+            show(note: "Nothing to fill in from: the paint covers whole columns from top to bottom.")
+        } else {
+            show(note: "Nothing changed: the painted voxels already match the slices above and below.")
+        }
+        guard zhi >= 0 else { return }
+        v.id = UUID()
+        previewDirtyZ = zlo..<(zhi + 1)
+        preview = v
+    }
+
+    /// Done in banding mode: the repaired scan, and for every voxel it changed its original
+    /// value (for editing again or undoing); nil when nothing was painted this time.
+    func bandingResult() -> (volume: NiftiVolume, mask: LabelVolume, indices: [Int32], originals: [Float])? {
+        flush()
+        guard edited, let preview else { return nil }
+        let (nx, ny, nz) = volume.dims, plane = nx * ny
+        var indices: [Int32] = [], originals: [Float] = []
+        let zeros = [UInt8](repeating: 0, count: plane)
+        grid.data.withUnsafeBufferPointer { m in preview.data.withUnsafeBufferPointer { p in volume.data.withUnsafeBufferPointer { o in zeros.withUnsafeBufferPointer { zr in
+            for z in 0..<nz {
+                guard memcmp(m.baseAddress! + z * plane, zr.baseAddress!, plane) != 0 else { continue }
+                for i in (z * plane)..<((z + 1) * plane) where m[i] != 0 {
+                    let orig = original(i, o)
+                    if p[i] != orig { indices.append(Int32(i)); originals.append(orig) }
+                }
+            }
+        } } } }
+        _ = (nx, ny)
+        return (preview, LabelVolume(dims: grid.dims, data: grid.data, maxLabel: 1), indices, originals)
     }
 
     // MARK: Publishing

@@ -22,6 +22,8 @@ struct InspectorView: View {
                     LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
                     Button("Reset") { model.resetWindow() }
                 }
+                NoiseSection(model: model)
+                BandingSection(model: model)
                 FOVSection(model: model)
             case .render:
                 Section("3D Rendering") {
@@ -41,7 +43,7 @@ struct InspectorView: View {
                 }
                 ClipPlaneSections(model: model)
             case .segmentation:
-                ImageSection(model: model.segmentation) // the Dixon role and companions the tissue classes need
+                ImageSection(model: model.segmentation, fileURL: model.fileURL) // the Dixon role and companions
                 SegmentationSection(model: model.segmentation)
                 CustomSegmentationSection(model: model)
                 if let map = model.segmentation.map, map.name != LabelTable.customMapName { // no tissue densities for drawn labels
@@ -149,6 +151,11 @@ private struct ClipPlaneSections: View {
             if model.clips.count > 1 {
                 Toggle("Cutaway", isOn: $model.clipCutaway)
             }
+            if !model.clips.isEmpty {
+                // Needs a segmentation; its hidden labels are clipped like the rest.
+                Toggle("Keep Visible Segments", isOn: $model.clipKeepSegments)
+                    .disabled(model.segmentation.map == nil)
+            }
             if model.clips.count < ClipSetting.maxCount {
                 Button("Add Clip Plane", systemImage: "plus") { model.addClip() }
             }
@@ -212,6 +219,9 @@ private struct FOVSection: View {
 /// What the opened file is, and the companion Dixon images the tissue classes need.
 private struct ImageSection: View {
     @Bindable var model: SegmentationViewModel
+    let fileURL: URL?
+    @State private var phaseTarget: PhaseImage = .inPhase
+    @State private var choosingPhase = false
     // The target is kept separately from the presentation flag: SwiftUI clears the
     // presentation binding before (or without) calling the completion handler.
     @State private var target: ImageRole = .water
@@ -224,6 +234,9 @@ private struct ImageSection: View {
             }
             if model.role != .water { companionRow(.water, name: model.waterURL?.lastPathComponent, loaded: model.water != nil) }
             if model.role != .fat { companionRow(.fat, name: model.fatURL?.lastPathComponent, loaded: model.fat != nil) }
+            // In-phase / opposed-phase: dark rims at water–fat boundaries make cavities easy to
+            // see while drawing (Draw Segmentation › image picker). Loaded only when added.
+            ForEach(PhaseImage.allCases) { phaseRow($0) }
             if model.companionLoading { ProgressView("Loading image…") }
             if let error = model.companionError {
                 Text(error).font(.footnote).foregroundStyle(.red)
@@ -235,11 +248,36 @@ private struct ImageSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
+        .fileImporter(isPresented: $choosingPhase, allowedContentTypes: [.nifti, .gzip, .data]) { result in
+            switch result {
+            case .success(let url): Task { await model.loadPhase(phaseTarget, from: url, scoped: true) }
+            case .failure(let error): model.companionError = error.localizedDescription
+            }
+        }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
             switch result {
             case .success(let url): Task { await model.loadCompanion(target, from: url, scoped: true) }
             case .failure(let error): model.companionError = error.localizedDescription
             }
+        }
+    }
+
+    private func phaseRow(_ which: PhaseImage) -> some View {
+        let sibling = fileURL.flatMap { SegmentationPipeline.siblingDixon(of: $0, suffix: which.suffix) }
+        return LabeledContent("\(which.rawValue) image") {
+            HStack(spacing: 8) {
+                if model.phase[which] != nil {
+                    Text(model.phaseURL[which]?.lastPathComponent ?? "loaded").lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                    Button("Remove", role: .destructive) { model.removePhase(which) }
+                } else {
+                    if let sibling {
+                        Button("Add") { Task { await model.loadPhase(which, from: sibling, scoped: false) } }
+                    }
+                    Button("Choose…") { phaseTarget = which; choosingPhase = true }
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.companionLoading)
         }
     }
 
@@ -335,5 +373,62 @@ private struct CopyLabelsSheet: View {
             }
         }
         .onAppear { chosen = Set(present.filter { model.segmentation.isVisible($0) }) }
+    }
+}
+
+/// Noise drawn by hand (in the segmentation editor's noise mode) and cut out of the display.
+private struct NoiseSection: View {
+    @Bindable var model: ViewerViewModel
+    @State private var confirmClear = false
+
+    var body: some View {
+        Section("Noise Removal") {
+            Button(model.noise == nil ? "Remove Noise…" : "Edit Noise…", systemImage: "wand.and.rays") { model.startNoiseEditing() }
+            if model.noise != nil {
+                Toggle("Remove Marked Noise", isOn: $model.removeNoise)
+
+                Button("Clear Noise Mask", role: .destructive) { confirmClear = true }
+                    .confirmationDialog("Clear the noise mask? The marked voxels show again.", isPresented: $confirmClear, titleVisibility: .visible) {
+                        Button("Clear", role: .destructive) { model.clearNoise() }
+                    }
+            }
+            Text("Paint over noise with the drawing tools; it is blacked out on the slices, left out of the 3D render, and removed before Generate Segmentation runs. The scan file itself isn't changed.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Thin banding painted by hand and filled in along z (see BandRepair), and the export of
+/// the scan with noise removed and banding repaired.
+private struct BandingSection: View {
+    @Bindable var model: ViewerViewModel
+    @State private var confirmUndo = false
+
+    var body: some View {
+        Section("Banding Repair") {
+            Button(model.bandRepair == nil ? "Repair Banding…" : "Edit Banding Repair…", systemImage: "line.3.horizontal.decrease") {
+                model.startBandingRepair()
+            }
+            .disabled(model.repairing)
+            if model.repairing { ProgressView("Repairing…") }
+            if model.bandRepair != nil {
+                Button("Undo Banding Repair", role: .destructive) { confirmUndo = true }
+                    .confirmationDialog("Put the original intensities back?", isPresented: $confirmUndo, titleVisibility: .visible) {
+                        Button("Undo Repair", role: .destructive) { Task { await model.applyBandRepair(nil) } }
+                    }
+            }
+            Text("Paint over a thin band (best in a coronal or sagittal view, where it runs across); its voxels are filled in from the slices just above and below it. Used everywhere, Generate Segmentation included; the scan file isn't changed.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if model.noise != nil || model.bandRepair != nil {
+            Section("Cleaned Scan") {
+                Button("Export Cleaned Scan…", systemImage: "square.and.arrow.up") { Task { await model.exportCleanedScan() } }
+                    .disabled(model.cleanExportBusy)
+                if model.cleanExportBusy { ProgressView("Writing cleaned scan…") }
+                if let error = model.cleanExportError { Text(error).font(.footnote).foregroundStyle(.red) }
+                Text("The scan with the marked noise removed and the banding repaired, as a NIfTI on its own grid and orientation.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
     }
 }
