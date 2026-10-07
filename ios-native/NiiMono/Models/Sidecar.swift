@@ -78,7 +78,12 @@ struct SidecarSettings: Codable, Equatable {
 }
 
 extension SidecarSettings.Companion {
-    init?(url: URL) {
+    /// Made when the file is loaded: a bookmark to a file from the picker can only be created
+    /// while its security scope is open (`scoped`), which the load holds and the later
+    /// settings save doesn't.
+    init?(url: URL, scoped: Bool) {
+        let accessed = scoped && url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? url.bookmarkData() else { return nil }
         self.init(name: url.lastPathComponent, bookmark: data)
     }

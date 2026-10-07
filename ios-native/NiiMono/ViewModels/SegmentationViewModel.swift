@@ -38,6 +38,11 @@ import Observation
     private(set) var waterURL: URL?
     private(set) var fat: NiftiVolume?
     private(set) var fatURL: URL?
+    /// The companions as the sidecar records them (name + bookmark), made while each was
+    /// loaded: the bookmark needs the file's security scope, open only during the load.
+    private(set) var waterCompanion: SidecarSettings.Companion?
+    private(set) var fatCompanion: SidecarSettings.Companion?
+    private(set) var phaseCompanion: [PhaseImage: SidecarSettings.Companion] = [:]
     /// Water / fat as the tissue classifier needs them, from the opened file and companions.
     var waterImage: NiftiVolume? { role == .water ? volume : water }
     var fatImage: NiftiVolume? { role == .fat ? volume : fat }
@@ -144,15 +149,17 @@ import Observation
         companionError = nil
         defer { companionLoading = false }
         let volume = volume
-        let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume) } }.value
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { (try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume), SidecarSettings.Companion(url: url, scoped: scoped)) }
+        }.value
         switch result {
-        case .success(let v): phase[which] = v; phaseURL[which] = url
+        case .success(let (v, companion)): phase[which] = v; phaseURL[which] = url; phaseCompanion[which] = companion
         case .failure(let e): if !quiet { companionError = e.localizedDescription }
         }
     }
 
     /// Frees the image (and forgets it in the sidecar).
-    func removePhase(_ which: PhaseImage) { phase[which] = nil; phaseURL[which] = nil }
+    func removePhase(_ which: PhaseImage) { phase[which] = nil; phaseURL[which] = nil; phaseCompanion[which] = nil }
 
     var companionLoading = false
     var companionError: String?
@@ -163,10 +170,12 @@ import Observation
         companionError = nil
         defer { companionLoading = false }
         let volume = volume
-        let result = await Task.detached(priority: .userInitiated) { Result { try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume) } }.value
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { (try SegmentationPipeline.loadVolume(from: url, scoped: scoped, matching: volume), SidecarSettings.Companion(url: url, scoped: scoped)) }
+        }.value
         switch result {
-        case .success(let v):
-            if which == .fat { fat = v; fatURL = url } else { water = v; waterURL = url }
+        case .success(let (v, companion)):
+            if which == .fat { fat = v; fatURL = url; fatCompanion = companion } else { water = v; waterURL = url; waterCompanion = companion }
         case .failure(let e): if !quiet { companionError = e.localizedDescription }
         }
     }
