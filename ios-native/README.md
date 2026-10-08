@@ -40,7 +40,12 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
 indicator. Multi shows coronal, sagittal, axial and 3D in a 2×2 grid at one shared
 scale and zoom, linked by a crosshair drawn in all four panes. The inspector holds window level (Black/White), the 3D rendering mode
-(MIP, or Volume — a port of NiiVue's default compositing shader), up to six tiltable
+(MIP; Volume — a port of NiiVue's default compositing shader; or Surface — everything above
+the Black level drawn as one opaque, lit surface whatever its intensity: an isosurface at the
+window's lower bound, the hit refined by bisection and shaded from a smoothed intensity
+gradient — central differences 1, 2 and 3 voxels apart summed, since a one-voxel or box-filtered
+gradient rings the skin with contour lines — with clip-plane cut faces lit as their plane; labels keep their colour on it, and the
+segmentation's show-through modes see through the skin to the labels), up to six tiltable
 3D clip planes with cutaway and highlight options, and volume info.
 
 **Clipping around segments.** Inspector › 3D › "Keep Visible Segments" makes the clip planes

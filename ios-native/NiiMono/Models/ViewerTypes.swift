@@ -14,8 +14,10 @@ enum Plane: String, CaseIterable, Identifiable {
 
 /// How the 3D view draws the volume.
 enum RenderMode: String, CaseIterable, Identifiable {
-    case volume = "Volume", mip = "MIP" // picker order
+    case volume = "Volume", mip = "MIP", surface = "Surface" // picker order
     var id: Self { self }
+    /// `Uniforms.mode` in Raycaster.metal.
+    var shaderMode: Int32 { self == .mip ? 0 : self == .volume ? 1 : 2 }
 }
 
 /// One clip plane for the 3D view: perpendicular to an anatomical axis, then tilted.

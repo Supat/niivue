@@ -32,6 +32,10 @@ struct InspectorView: View {
                         ForEach(RenderMode.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    if model.renderMode == .surface {
+                        Text("Everything above the Black level is drawn as one opaque, lit surface, whatever its intensity: the skin, and where a clip plane cuts, the cut face.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Toggle("Clip at Camera", isOn: $model.cameraClip)
                     if model.cameraClip {
                         VStack(alignment: .leading) {

@@ -15,7 +15,7 @@ struct Uniforms {
     float    dataMin;
     float    dataMax;
     int      steps;       // samples along the ray (MIP)
-    int      mode;        // 0 = MIP, 1 = niivue-style compositing
+    int      mode;        // 0 = MIP, 1 = niivue-style compositing, 2 = solid lit surface at the Black level
     int      clipCount;   // number of active planes in `clips` (0...6)
     int      clipCutaway; // 0 = keep what is on the kept side of every plane;
                           // 1 = remove only the corner on the removed side of every plane
@@ -87,6 +87,10 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     bool rayRemoved = false; // keep: a plane parallel to the ray removes all of it
     float cut0 = -1e20, cut1 = 1e20;
     int enabledClips = 0;
+    // Surface render: the normal of the face the ray enters tissue through when that is a
+    // clip plane (else the box face or the camera clip, set below), and of the plane that
+    // ends the cutaway; a cut face is lit as that plane rather than by the tissue gradient.
+    float3 entryNormal = float3(0.0), cutNormal = float3(0.0);
     for (int i = 0; i < u.clipCount; ++i) {
         if (all(u.clips[i].xyz == float3(0.0))) { continue; } // plane switched off: keeps its slot (and colour)
         enabledClips += 1;
@@ -96,8 +100,8 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             else if (o > u.clips[i].w) { if (keep) { rayRemoved = true; } else { return float4(0, 0, 0, 1); } }
         } else {
             float t = (u.clips[i].w - o) / d; // removed side is beyond t when d > 0
-            if (cutaway) { if (d > 0.0) { cut0 = max(cut0, t); } else { cut1 = min(cut1, t); } }
-            else { if (d > 0.0) { hit.y = min(hit.y, t); } else { hit.x = max(hit.x, t); } }
+            if (cutaway) { if (d > 0.0) { cut0 = max(cut0, t); } else if (t < cut1) { cut1 = t; cutNormal = u.clips[i].xyz; } }
+            else { if (d > 0.0) { hit.y = min(hit.y, t); } else if (t > hit.x) { hit.x = t; entryNormal = u.clips[i].xyz; } }
         }
     }
     if (!cutaway || enabledClips == 0) { cut1 = -1e20; } // empty interval: nothing skipped
@@ -113,6 +117,93 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     if (tIn >= hit.y) { return float4(0, 0, 0, 1); }
     float window = max(u.dataMax - u.dataMin, 1e-6);
 
+    // One sample per voxel along the ray, for the compositing and surface renders.
+    float3 dims = float3(vol.get_width(), vol.get_height(), vol.get_depth());
+    float3 uvw0 = (ro + rd * tIn) / (2.0 * u.boxHalf) + 0.5;
+    float3 uvw1 = (ro + rd * hit.y) / (2.0 * u.boxHalf) + 0.5;
+    float lenVox = length((uvw1 - uvw0) * dims);
+    float3 stepUVW = (uvw1 - uvw0) / max(lenVox, 1e-6);
+    float tStep = (hit.y - tIn) / max(lenVox, 1e-6); // ray distance per voxel step
+    float skip0 = (cut0 - tIn) / tStep, skip1 = (cut1 - tIn) / tStep;
+
+    if (u.mode == 2) {
+        // Solid surface: the first sample above the Black level, whatever its intensity, is
+        // an opaque surface (the skin, or a cut face), lit from the intensity gradient there —
+        // an isosurface at the window's lower bound. Labels keep their colour on it.
+        if (lenVox < 0.5) { return float4(0, 0, 0, 1); }
+        if (tIn > hit.x) { entryNormal = -rd; } // the camera clip: a face square to the view
+        else if (all(entryNormal == float3(0.0))) { // the box face the ray comes in through
+            float3 pe = (ro + rd * hit.x) / u.boxHalf, ae = abs(pe);
+            entryNormal = ae.x > ae.y && ae.x > ae.z ? float3(sign(pe.x), 0.0, 0.0)
+                        : ae.y > ae.z ? float3(0.0, sign(pe.y), 0.0) : float3(0.0, 0.0, sign(pe.z));
+        }
+        bool ghostly = u.overlayGhost == 1 && u.overlayOn != 0; // see through unlabelled tissue to the labels
+        bool labelsOnly = u.overlayGhost == 2 && u.overlayOn != 0;
+        auto solidAt = [&](float3 uvw, float t, thread uint& lab) -> bool {
+            if (cutAt(uvw)) { return false; }
+            lab = labelAt(uvw);
+            if (lab != 0) { return true; }
+            if (labelsOnly || (keep && clippedAt(t))) { return false; }
+            return vol.sample(samp, uvw, level(0)).r > u.dataMin;
+        };
+        auto lit = [&](float3 base, float3 nrm) -> float3 {
+            float3 L = normalize(-rd + float3(0.0, 0.0, 0.6)); // a headlight, a little from above
+            float diff = max(dot(nrm, L), 0.0);
+            float spec = pow(max(dot(reflect(-L, nrm), -rd), 0.0), 16.0);
+            return base * (0.25 + 0.7 * diff) + 0.08 * spec;
+        };
+        float3 faceN = entryNormal; // non-zero until the ray has passed an empty sample
+        float sPrev = -1.0;         // the last sample known empty, for the refinement
+        float3 ghost = float3(0.0); bool ghosted = false;
+        for (float s = 0.0; s <= lenVox; s += 1.0) {
+            if (!keep && s > skip0 && s < skip1) { s = skip1; faceN = cutNormal; sPrev = -1.0; if (s > lenVox) { break; } }
+            float t = tIn + s * tStep;
+            float3 uvw = uvw0 + stepUVW * s;
+            uint lab = 0;
+            if (!solidAt(uvw, t, lab)) { faceN = float3(0.0); sPrev = s; continue; }
+            // Refine between the last empty sample and this one (four bisections), so the
+            // surface doesn't show whole-voxel steps.
+            float sHit = s;
+            if (sPrev >= 0.0) {
+                float a = sPrev, b = s;
+                for (int k = 0; k < 4; ++k) {
+                    float m = 0.5 * (a + b); uint l2 = 0;
+                    if (solidAt(uvw0 + stepUVW * m, tIn + m * tStep, l2)) { b = m; } else { a = m; }
+                }
+                sHit = b; uvw = uvw0 + stepUVW * sHit;
+            }
+            // Normal: a cut face keeps its plane's; tissue takes the intensity gradient,
+            // facing the camera. Central differences 1, 2 and 3 voxels either side, summed:
+            // the derivative of a tent-shaped kernel, so the normal varies smoothly where a
+            // one-voxel difference (or a box-filtered mip level) rings the skin with contour
+            // lines. Scaled per axis to box units so anisotropic voxels don't skew it.
+            float3 nrm = faceN;
+            if (all(nrm == float3(0.0))) {
+                float3 g = float3(0.0);
+                for (int k = 1; k <= 3; ++k) {
+                    float3 e = float(k) / dims;
+                    g += float3(vol.sample(samp, uvw + float3(e.x, 0, 0), level(0)).r - vol.sample(samp, uvw - float3(e.x, 0, 0), level(0)).r,
+                                vol.sample(samp, uvw + float3(0, e.y, 0), level(0)).r - vol.sample(samp, uvw - float3(0, e.y, 0), level(0)).r,
+                                vol.sample(samp, uvw + float3(0, 0, e.z), level(0)).r - vol.sample(samp, uvw - float3(0, 0, e.z), level(0)).r)
+                         / (2.0 * e * 2.0 * u.boxHalf);
+                }
+                nrm = dot(g, g) > 1e-12 ? normalize(-g) : -rd;
+            }
+            if (dot(nrm, rd) > 0.0) { nrm = -nrm; }
+            float3 base = float3(0.82);
+            if (lab != 0) { base = mix(base, lut.read(lab).rgb, u.overlayOpacity); }
+            float3 col = lit(base, nrm);
+            tSurface = min(tSurface, tIn + sHit * tStep);
+            if (lab == 0 && ghostly) { // keep the skin faintly and go on to the labels
+                if (!ghosted) { ghost = col; ghosted = true; }
+                faceN = float3(0.0); sPrev = -1.0;
+                continue;
+            }
+            return float4(ghosted ? mix(col, ghost, 0.3) : col, 1.0);
+        }
+        return float4(ghosted ? ghost * 0.3 : float3(0.0), 1.0);
+    }
+
     if (u.mode == 1) {
         // Port of niivue's default volume render (fragRenderShader in shader-srcs.ts):
         // front-to-back alpha compositing, one sample per voxel, jittered start, early
@@ -121,16 +212,9 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         // ponytail: classifies the interpolated intensity per sample; niivue interpolates a
         // pre-classified RGBA texture. No clip planes, overlays or gradient lighting —
         // port those from kRenderInit/kRenderTail/fragRenderGradientShader when needed.
-        float3 dims = float3(vol.get_width(), vol.get_height(), vol.get_depth());
-        float3 uvw0 = (ro + rd * tIn) / (2.0 * u.boxHalf) + 0.5;
-        float3 uvw1 = (ro + rd * hit.y) / (2.0 * u.boxHalf) + 0.5;
-        float lenVox = length((uvw1 - uvw0) * dims);
         if (lenVox < 0.5) { return float4(0, 0, 0, 1); }
-        float3 stepUVW = (uvw1 - uvw0) / lenVox;
         const float earlyTermination = 0.95;
         float4 acc = float4(0.0);
-        float tStep = (hit.y - tIn) / lenVox; // ray distance per voxel step
-        float skip0 = (cut0 - tIn) / tStep, skip1 = (cut1 - tIn) / tStep;
         float s = fract(sin(fragPos.x * 12.9898 + fragPos.y * 78.233) * 43758.5453);
         for (; s <= lenVox; s += 1.0) {
             // Jump over the cutaway. Assign rather than step back and `continue`: float

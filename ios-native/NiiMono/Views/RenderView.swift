@@ -205,7 +205,7 @@ struct RenderView: UIViewRepresentable {
         c.onTap = onTap
         renderer.windowLo = (lo - volume.dataMin) / range
         renderer.windowHi = (hi - volume.dataMin) / range
-        renderer.mode = mode == .mip ? 0 : 1
+        renderer.mode = mode.shaderMode
         renderer.clips = clips
         renderer.clipCutaway = clipCutaway
         renderer.clipKeepLabels = clipKeepLabels
