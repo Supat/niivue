@@ -15,27 +15,37 @@ struct ViewerView: View {
     @State private var canvasHeight: CGFloat = 0 // the screen's, since the canvas runs under the bars
     private static let inspectorWidth: CGFloat = 300
 
-    // The view selector sits at the window's horizontal centre whatever else the bar holds.
-    // It can't be a .principal item (that replaces the document title menu), so it is a
-    // trailing item padded on its right by however much puts it at the centre, given where
-    // the button cluster will end: the bar's trailing inset, the cluster (≈ 52 pt a button)
-    // and a gap. The cluster keeps the bar's trailing end whether or not the inspector is
-    // open (the bar spans the column, so it sits over the column then). When that padding
-    // would go negative the cluster folds into a More menu (two buttons); if even that
-    // doesn't fit, the selector gives way to the right by what's missing.
-    private static let pickerWidth: CGFloat = 400 // roomier than the intrinsic size, which cramps the longer labels
-    private static let barInset: CGFloat = 10, clusterGap: CGFloat = 12
-    private static func clusterWidth(buttons: Int) -> CGFloat { 52 * CGFloat(buttons) }
+    // The view selector sits right after the file name, at the same spot in every view, and
+    // the button cluster keeps the bar's trailing end, over the inspector column when that
+    // is open (the bar spans the column). The selector can't be a leading item (those come
+    // before the title) nor .principal (that replaces the document title menu), and a
+    // flexible toolbar spacer does nothing in the navigation bar; so it is a trailing item
+    // padded on its right by what puts its left edge at `selectorLeft`, given where the
+    // cluster (the system's grouped item) will end: the bar's trailing inset, the cluster at
+    // the system's metrics (44 pt buttons, 8 pt apart, a capsule with 4.5 pt ends) and the
+    // bar's spacing between the items. A long file name is truncated by the bar. When the
+    // padding would go negative the cluster folds into a More menu (two buttons); if even
+    // that doesn't fit, the selector gives way to the right by what's missing.
+    private static let selectorLeft: CGFloat = 240 // after the back button and a typical name
+    /// 92 pt a segment where there's room (space around "Coronal" and "Sagittal"); narrower
+    /// in a narrow window so that the folded cluster still fits beside it.
+    private var pickerWidth: CGFloat { min(460, max(320, fullWidth - 560)) }
+    private static let barInset: CGFloat = 9 // the bar's margin after its last item
+    private static let clusterGap: CGFloat = 16.5 // the bar's spacing between the two items (measured)
+    private static func clusterWidth(buttons n: Int) -> CGFloat { 52 * CGFloat(n) + 1 }
     /// Buttons in the full cluster (see `viewControls`, plus Inspector).
     private var clusterButtons: Int {
         5 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 2 : 0) + (model.plane.axis == nil ? 1 : 0)
     }
-    /// The clear width right of the selector that centres it, for a cluster of `buttons`.
+    /// The clear width right of the selector that keeps it at `selectorLeft`, for a cluster
+    /// of `buttons`.
     private func pickerPadding(buttons: Int) -> CGFloat {
         let clusterStart = fullWidth - Self.barInset - Self.clusterWidth(buttons: buttons)
-        return clusterStart - Self.clusterGap - (fullWidth / 2 + Self.pickerWidth / 2)
+        return clusterStart - Self.clusterGap - (Self.selectorLeft + pickerWidth)
     }
-    private var collapsesCluster: Bool { fullWidth > 0 && pickerPadding(buttons: clusterButtons) < 0 }
+    /// Folded until the window is measured too: laid out in full before that, the items
+    /// overflow the bar, and the bar keeps them in its overflow menu afterwards.
+    private var collapsesCluster: Bool { fullWidth == 0 || pickerPadding(buttons: clusterButtons) < 0 }
 
     private func scheduleChromeHide() {
         hideChromeTask?.cancel()
@@ -122,9 +132,9 @@ struct ViewerView: View {
                             ForEach(Plane.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        .frame(width: Self.pickerWidth)
+                        .frame(width: pickerWidth)
                         .environment(\.colorScheme, .dark) // match the dark bar in light mode
-                        // Pads the selector out to the window's centre (see pickerPadding).
+                        // Pads the selector out to its place after the title (see pickerPadding).
                         Color.clear.frame(width: max(0, pickerPadding(buttons: collapsesCluster ? 2 : clusterButtons)))
                             .allowsHitTesting(false)
                     }
@@ -138,7 +148,7 @@ struct ViewerView: View {
                     } else {
                         viewControls
                     }
-                    Button("Inspector", systemImage: "info.circle") { showInspector.toggle() }
+                    Button("Inspector", systemImage: "sidebar.trailing") { showInspector.toggle() }
                 }
             }
             .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar)
@@ -148,8 +158,8 @@ struct ViewerView: View {
             .statusBarHidden(chromeHidden)
     }
 
-    /// The view controls of the toolbar cluster: in the bar, or in a More menu while the
-    /// inspector is open.
+    /// The view controls of the toolbar cluster: in the bar, or in a More menu when the bar
+    /// can't hold them all.
     @ViewBuilder private var viewControls: some View {
         if model.plane != .render {
             Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
@@ -160,10 +170,10 @@ struct ViewerView: View {
         Toggle("Field of View", systemImage: "viewfinder",
                isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
             .disabled(model.fovBoxes.isEmpty)
-        Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $model.showCrosshair)
+        Toggle("Crosshair", systemImage: "dot.crosshair", isOn: $model.showCrosshair)
         if model.plane != .render { BookmarkMenu(model: model) }
         if model.plane.axis == nil { // 3D and multiplanar
-            Menu("View", systemImage: "cube") {
+            Menu("View", systemImage: "move.3d") {
                 ForEach(ViewPreset.allCases) { preset in
                     Button(preset.rawValue) { model.applyPreset(preset) }
                 }
@@ -174,7 +184,7 @@ struct ViewerView: View {
                    isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
                 .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
         } else {
-            Toggle("Show Profile", systemImage: "person.crop.rectangle",
+            Toggle("Show Profile", systemImage: "figure",
                    isOn: Binding(get: { model.showsProfile }, set: { model.showProfile = $0 }))
                 .disabled(model.profile.faceCutout == nil) // needs a Coronal Front photo with a face in it
         }

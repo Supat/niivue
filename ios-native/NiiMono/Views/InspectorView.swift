@@ -109,9 +109,9 @@ enum InspectorPage: String, CaseIterable, Identifiable {
     var id: Self { self }
     var symbol: String {
         switch self {
-        case .image: return "photo"
+        case .image: return "person.crop.rectangle.stack.fill"
         case .render: return "cube"
-        case .segmentation: return "square.3.layers.3d"
+        case .segmentation: return "brain.filled.head.profile"
         case .profile: return "person.crop.rectangle"
         case .info: return "info.circle"
         }
