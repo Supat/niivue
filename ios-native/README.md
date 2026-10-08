@@ -25,7 +25,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 |---|---|
 | Pinch / drag | Zoom and pan (UIScrollView — native bounce and deceleration) |
 | Double-tap | Zoom in on the point / back to fit |
-| Tap | Hide or show the toolbar and scrubber (they also hide by themselves after 4 s) |
+| Tap | Hide or show the toolbar and scrubber (they no longer hide by themselves). In a slice view with the crosshair unlocked a tap moves the crosshair instead; locking it (the lock in the pane's corner) hides them too, and unlocking brings them back |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
 | Scrubber (15% of the screen height up from the bottom) | Jump to a slice |
 | Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector. The view selector follows the file name; the button cluster keeps the bar's trailing end, over the inspector column when that is open; when the bar can't hold every button (a narrow window), everything but Inspector folds into a More menu |
@@ -37,7 +37,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | 3D: pinch, or scroll | Zoom towards the fingers / pointer |
 | 3D: double-tap | Reset to the fitted starting view |
 | 3D Rendering › Clip at Camera | Nothing nearer the camera than a chosen fraction of the way to the orbit pivot is drawn, so zooming into the volume shows its inside |
-| Multi: tap a slice pane | Move the crosshair (and the other two slices) to that point |
+| Tap a slice (any slice view) | Move the crosshair (and the other two slices) to that point, unless the crosshair is locked |
 
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
 indicator. Multi shows coronal, sagittal, axial and 3D in a 2×2 grid at one shared

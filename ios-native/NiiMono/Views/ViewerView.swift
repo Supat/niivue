@@ -9,7 +9,6 @@ struct ViewerView: View {
     @State var model: ViewerViewModel
     private var fileURL: URL? { model.fileURL }
     @State private var chromeHidden = false
-    @State private var hideChromeTask: Task<Void, Never>?
     @State private var showInspector = UserDefaults.standard.bool(forKey: "inspector") // `-inspector YES` for checks
     @State private var fullWidth: CGFloat = 0 // window width including the inspector column
     @State private var canvasHeight: CGFloat = 0 // the screen's, since the canvas runs under the bars
@@ -47,21 +46,15 @@ struct ViewerView: View {
     /// overflow the bar, and the bar keeps them in its overflow menu afterwards.
     private var collapsesCluster: Bool { fullWidth == 0 || pickerPadding(buttons: clusterButtons) < 0 }
 
-    private func scheduleChromeHide() {
-        hideChromeTask?.cancel()
-        guard !chromeHidden, !showInspector else { return }
-        hideChromeTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled, !showInspector else { return }
-            withAnimation { chromeHidden = true }
-        }
-    }
-
     var body: some View {
         let volume = model.volume
+        // The chrome shows and hides on a tap (and comes back on any other interaction);
+        // it no longer hides by itself. In a slice view with the crosshair unlocked a tap
+        // moves the crosshair instead, so locking it hides the chrome too.
         VolumeCanvas(model: model, labelInset: chromeHidden ? 0 : 64,
                      onTap: { withAnimation { chromeHidden.toggle() } },
-                     onInteract: { if chromeHidden { withAnimation { chromeHidden = false } } })
+                     onInteract: { if chromeHidden { withAnimation { chromeHidden = false } } },
+                     onLock: { withAnimation { chromeHidden = true } })
             // Full-bleed under the bars, but not under the inspector column (a trailing
             // safe-area inset), so the image is centred in the space that's actually visible.
             .ignoresSafeArea(edges: .vertical)
@@ -91,7 +84,6 @@ struct ViewerView: View {
             }
             // Chrome auto-hides a few seconds after it appears or was last used, like a
             // video player; a tap brings it back. It stays while the inspector is open.
-            .onAppear(perform: scheduleChromeHide)
             .task { await model.loadFOV() }
             .task {
                 // Sidecar first (it also records the companion images); siblings fill any gaps.
@@ -110,11 +102,6 @@ struct ViewerView: View {
             .onChange(of: model.segmentation.savedOrder) { model.saveSidecarMaps() }
             // A photo alone must still leave a settings.json, or the sidecar isn't found on reopening.
             .onChange(of: model.profile.photos.keys.sorted { $0.rawValue < $1.rawValue }) { model.scheduleSidecarSave() }
-            .onChange(of: chromeHidden) { if !chromeHidden { scheduleChromeHide() } }
-            .onChange(of: showInspector) { showInspector ? hideChromeTask?.cancel() : scheduleChromeHide() }
-            .onChange(of: model.plane) { scheduleChromeHide() }
-            .onChange(of: model.slices) { scheduleChromeHide() }
-            .onChange(of: model.mirrored) { scheduleChromeHide() }
             .modifier(EditorCover(model: model))
             .inspector(isPresented: $showInspector) {
                 InspectorView(model: model)
@@ -164,8 +151,6 @@ struct ViewerView: View {
         if model.plane != .render {
             Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                    isOn: $model.mirrored)
-                Divider()
-                Button("Level", systemImage: "level") { model.applyPreset(.level) } // superior up again
         }
         // Station fields of view from the acquisition metadata (Inspector › Image).
         // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
@@ -179,6 +164,8 @@ struct ViewerView: View {
                 ForEach(ViewPreset.sides) { preset in
                     Button(preset.rawValue) { model.applyPreset(preset) }
                 }
+                Divider()
+                Button("Level", systemImage: "level") { model.applyPreset(.level) } // superior up again
             }
         }
         if model.plane.axis != nil {
@@ -205,6 +192,8 @@ private struct VolumeCanvas: View {
     let onTap: () -> Void
     /// A tap that does something else (moves the crosshair) still brings hidden chrome back.
     let onInteract: () -> Void
+    /// The crosshair was just locked (unlocking counts as an interaction instead).
+    let onLock: () -> Void
 
     var body: some View {
         switch model.plane {
@@ -261,8 +250,8 @@ private struct VolumeCanvas: View {
     private func lockButton(bottom: CGFloat) -> some View {
         Button(model.crosshairLocked ? "Unlock Crosshair" : "Lock Crosshair",
                systemImage: model.crosshairLocked ? "lock.fill" : "lock.open") {
-            onInteract()
             model.crosshairLocked.toggle()
+            if model.crosshairLocked { onLock() } else { onInteract() } // lock: a clean image; unlock: the chrome back
         }
         .labelStyle(.iconOnly)
         .font(.footnote)
