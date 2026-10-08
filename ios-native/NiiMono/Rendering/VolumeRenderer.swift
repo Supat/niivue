@@ -37,7 +37,7 @@ struct Uniforms {
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
-    private let queue: MTLCommandQueue
+    private var queue: MTLCommandQueue // replaced after a GPU error (see recover)
     private let pipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
     private let volumeTex: MTLTexture
@@ -283,18 +283,82 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Frames on the GPU (0 or 1) and whether one was asked for meanwhile. One frame at a
+    /// time: a fast orbit asks for a frame every display refresh, and with up to three of
+    /// them queued on the GPU a whole-body scan's frames add up past the GPU watchdog, which
+    /// kills the one it catches and discards the ones behind it. The next frame is drawn
+    /// when the current one completes, so the orbit keeps up at the rate the GPU manages.
+    private var inFlight = 0, redrawWanted = false
+
     func draw(in view: MTKView) {
-        guard let rpd = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable,
-              let cmd = queue.makeCommandBuffer() else { return }
-        encode(into: rpd, size: view.drawableSize, on: cmd)
-        cmd.present(drawable)
-        cmd.commit()
+        if inFlight > 0 { redrawWanted = true; return }
+        guard let rpd = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else {
+            // No drawable (its allocation failed under memory pressure): a stale frame would
+            // stay on screen, so ask for another go shortly.
+            retryDraw(view, after: 0.25)
+            return
+        }
+        let size = view.drawableSize, strips = Self.strips(for: size)
+        for strip in 0..<strips {
+            guard let cmd = queue.makeCommandBuffer() else { break }
+            encode(into: rpd, size: size, strip: strip, of: strips, on: cmd)
+            if strip == strips - 1 { cmd.present(drawable) }
+            inFlight += 1
+            cmd.addCompletedHandler { [weak self, weak view] buffer in
+                DispatchQueue.main.async { self?.completed(buffer, strip: strip, of: strips, view: view) }
+            }
+            cmd.commit()
+        }
         onDraw?()
     }
 
-    private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, on cmd: MTLCommandBuffer) {
-        guard let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
+    /// The GPU watchdog kills a command buffer that runs too long, so a frame is encoded as
+    /// horizontal strips of at most ~400k pixels, each its own command buffer: a whole-body
+    /// scan's frame at a large size is well over a billion samples, which a single buffer
+    /// couldn't finish in time on some machines even at the sample cap.
+    private static func strips(for size: CGSize) -> Int {
+        max(1, min(16, Int((size.width * size.height / 400_000).rounded(.up))))
+    }
+
+    private func completed(_ buffer: MTLCommandBuffer, strip: Int, of strips: Int, view: MTKView?) {
+        inFlight -= 1
+        let seconds = buffer.gpuEndTime - buffer.gpuStartTime
+        if seconds > 0.5 {
+            MemoryLog.log.notice("3D render: strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) took \(seconds, format: .fixed(precision: 2), privacy: .public) s on the GPU")
+        }
+        if let error = buffer.error { recover(from: error, view: view) } else if strip == strips - 1 { gpuFailures = 0 }
+        if inFlight == 0, redrawWanted { redrawWanted = false; view?.setNeedsDisplay() }
+    }
+
+    /// Frames that failed in a row (a success resets it); after a few, the view waits for
+    /// the next camera change rather than retrying for ever.
+    private var gpuFailures = 0
+
+    /// A command buffer failed: a GPU hang (the watchdog, or a fault under memory pressure)
+    /// or the drawable's allocation. After a hang Metal ignores everything submitted on the
+    /// same queue, so the view would stay blank or stale for the rest of the session: a
+    /// fresh queue starts clean, and the frame is drawn again after a short back-off.
+    private func recover(from error: Error, view: MTKView?) {
+        gpuFailures += 1
+        let size = view?.drawableSize ?? .zero
+        MemoryLog.log.error("3D render: frame \(self.gpuFailures, privacy: .public) failed: \(error.localizedDescription, privacy: .public); drawable \(Int(size.width), privacy: .public)×\(Int(size.height), privacy: .public), free memory \(os_proc_available_memory() >> 20, privacy: .public) MB")
+        guard gpuFailures <= 5 else { return }
+        if let fresh = device.makeCommandQueue() { queue = fresh }
+        retryDraw(view, after: 0.25 * Double(gpuFailures))
+    }
+
+    private func retryDraw(_ view: MTKView?, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in view?.setNeedsDisplay() }
+    }
+
+    /// One strip of the frame (rows `strip`/`strips` to `strip + 1`/`strips` of `size`):
+    /// later strips load what the earlier ones drew rather than clearing it.
+    private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, strip: Int, of strips: Int, on cmd: MTLCommandBuffer) {
+        let pass = strip == 0 ? rpd : (rpd.copy() as! MTLRenderPassDescriptor)
+        if strip > 0 { pass.colorAttachments[0].loadAction = .load }
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
+        let h = Int(size.height), y0 = h * strip / strips, y1 = h * (strip + 1) / strips
+        enc.setScissorRect(MTLScissorRect(x: 0, y: y0, width: Int(size.width), height: max(0, y1 - y0)))
         var u = makeUniforms(aspect: Float(size.width / max(size.height, 1)))
         u.crosshairStep = scaleStep(size: CGSize(width: size.width / max(pointScale, 1), height: size.height / max(pointScale, 1)))
             .map { Float($0.mm) / mmPerUnit } ?? 0
@@ -324,7 +388,13 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         rpd.colorAttachments[0].loadAction = .clear
         rpd.colorAttachments[0].storeAction = .store
         rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        encode(into: rpd, size: size, on: cmd)
+        let strips = Self.strips(for: size)
+        for strip in 0..<strips - 1 { // in strips, as on screen; the queue runs them in order
+            guard let c = queue.makeCommandBuffer() else { return nil }
+            encode(into: rpd, size: size, strip: strip, of: strips, on: c)
+            c.commit()
+        }
+        encode(into: rpd, size: size, strip: strips - 1, of: strips, on: cmd)
         cmd.commit()
         cmd.waitUntilCompleted()
         var bytes = [UInt8](repeating: 0, count: w * h * 4)

@@ -64,10 +64,13 @@ struct RenderView: UIViewRepresentable {
         /// raycasting on a 2× screen, at up to 120 Hz); the frame after the last one ends is
         /// full resolution again. A moving image hides the softness. The recognizers' own
         /// states decide, not a count, so a gesture cancelled by a rotation can't leave the
-        /// view stuck at low resolution.
+        /// view stuck at low resolution. Only our own continuous recognizers count: the
+        /// system's hover recognizers sit in the changed state the whole time a pointer is
+        /// over the view, which kept it at 1 pixel per point for as long as a trackpad or
+        /// mouse was in use.
         private func track(_ g: UIGestureRecognizer) {
             guard let view = g.view as? MTKView, g.state != .changed else { return }
-            let moving = view.gestureRecognizers?.contains { $0.state == .began || $0.state == .changed } ?? false
+            let moving = [orbit, mousePan, pinch, scroll].contains { $0.state == .began || $0.state == .changed }
             let scale = moving ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
             guard view.contentScaleFactor != scale else { return }
             view.contentScaleFactor = scale

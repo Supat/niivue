@@ -125,6 +125,11 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     float3 stepUVW = (uvw1 - uvw0) / max(lenVox, 1e-6);
     float tStep = (hit.y - tIn) / max(lenVox, 1e-6); // ray distance per voxel step
     float skip0 = (cut0 - tIn) / tStep, skip1 = (cut1 - tIn) / tStep;
+    // At most 1024 samples a ray: a whole-body scan's diagonal is 1000-2000 voxels, and a
+    // frame of such rays (every ray that misses the body marches the whole box) can outlast
+    // the GPU watchdog, which kills the frame and the ones queued behind it. Longer rays
+    // take a longer stride; the compositing corrects its opacity for it.
+    float stride = max(1.0, lenVox / 1024.0);
 
     if (u.mode == 2) {
         // Solid surface: the first sample above the Black level, whatever its intensity, is
@@ -155,7 +160,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         float3 faceN = entryNormal; // non-zero until the ray has passed an empty sample
         float sPrev = -1.0;         // the last sample known empty, for the refinement
         float3 ghost = float3(0.0); bool ghosted = false;
-        for (float s = 0.0; s <= lenVox; s += 1.0) {
+        for (float s = 0.0; s <= lenVox; s += stride) {
             if (!keep && s > skip0 && s < skip1) { s = skip1; faceN = cutNormal; sPrev = -1.0; if (s > lenVox) { break; } }
             float t = tIn + s * tStep;
             float3 uvw = uvw0 + stepUVW * s;
@@ -216,7 +221,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         const float earlyTermination = 0.95;
         float4 acc = float4(0.0);
         float s = fract(sin(fragPos.x * 12.9898 + fragPos.y * 78.233) * 43758.5453);
-        for (; s <= lenVox; s += 1.0) {
+        for (; s <= lenVox; s += stride) {
             // Jump over the cutaway. Assign rather than step back and `continue`: float
             // rounding could land just short of skip1 and repeat the jump forever.
             if (!keep && s > skip0 && s < skip1) { s = skip1; if (s > lenVox) { break; } }
@@ -237,6 +242,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             } else if (u.overlayGhost != 0 && u.overlayOn != 0) {
                 a *= u.overlayGhost == 2 ? 0.0 : 0.08;
             }
+            if (stride > 1.0) { a = 1.0 - pow(1.0 - a, stride); } // the opacity of `stride` voxels
             if (a < 0.01) { continue; }
             tSurface = min(tSurface, tIn + s * tStep);
             acc += (1.0 - acc.a) * float4(rgb * a, a);

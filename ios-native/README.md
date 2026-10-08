@@ -283,4 +283,15 @@ swiftc NiiMono/Models/NIfTI.swift /tmp/ncheck/main.swift -O -o /tmp/ncheck/nchec
   gradient lighting.
 - Any `.gz` is openable in the browser (`.nii.gz` has no file type of its own);
   non-NIfTI files fail with an alert.
+- A 3D frame samples each ray at most 1024 times (longer rays take a longer stride, the
+  compositing's opacity corrected for it), is encoded as horizontal strips of ~400k pixels
+  each in its own command buffer, and only one frame is on the GPU at a time: a fast orbit
+  over a whole-body scan used to queue several frames of over a billion samples each, which
+  outlasted the GPU watchdog ("Caused GPU Hang Error", the frames behind it discarded), and
+  even one such frame could on a 1× display. A strip that takes over 0.5 s is logged.
+- A 3D frame whose command buffer fails (a GPU hang, or a drawable that couldn't be allocated
+  under memory pressure) is logged with the free memory and the drawable size, and drawn again
+  after a short back-off on a fresh command queue, since Metal ignores everything submitted on
+  the old one after a hang; after five failures in a row the view waits for the next camera
+  change. Without this the render stayed blank or stale for the rest of the session.
 - Loading is vectorised (vDSP), so even Debug builds open a 64-million-voxel whole-body scan in about a second; the segmentation models and the tissue classifier are GPU/Neural Engine work and don't care much about the build configuration, but the remaining CPU passes (flood fills, hull) are several times slower in Debug.
