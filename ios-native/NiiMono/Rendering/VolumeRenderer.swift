@@ -33,6 +33,7 @@ struct Uniforms {
     var crosshairStep: Float
     var cutoutOn: Int32
     var clipKeepLabels: Int32
+    var sampleStride: Float
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -189,6 +190,12 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private var glideLink: CADisplayLink?
     private weak var glideView: MTKView?
     private var skipResizeGlide = false
+    /// While the image glides its frames take four times the sample stride (a quarter of
+    /// the raycasting, so the ~20 frames keep up with the display) and the last one is drawn
+    /// at the full sampling again. Not a lower drawable resolution, as during a gesture:
+    /// resizing the layer's drawable shows the previous frame mapped into the new size for
+    /// a frame or two, a visible lurch at both ends of the glide.
+    private var glideCoarse = false
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         // Any new size needs a frame (rotation, split view): the view draws only on request,
@@ -225,6 +232,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private func startGlide(to target: SIMD2<Float>, in view: MTKView, done: (() -> Void)? = nil) {
         glide = (SIMD2(glideShift, glideScale), target, CACurrentMediaTime(), done)
         glideView = view
+        glideCoarse = true
         if glideLink == nil {
             glideLink = CADisplayLink(target: self, selector: #selector(glideTick))
             glideLink?.add(to: .main, forMode: .common)
@@ -243,6 +251,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             glideLink?.invalidate()
             glideLink = nil
             glide = nil
+            glideCoarse = false
             g.done?()
         }
     }
@@ -293,8 +302,21 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// when the current one completes, so the orbit keeps up at the rate the GPU manages.
     private var inFlight = 0, redrawWanted = false
 
+    /// A frame for a view whose size just changed, presented in the same transaction as the
+    /// new size: otherwise the layer shows the previous frame squeezed or stretched into the
+    /// new bounds until the next one lands, a lurch at the end of the inspector's glide.
+    func drawWithResize(in view: MTKView) {
+        guard let layer = view.layer as? CAMetalLayer else { view.setNeedsDisplay(); return }
+        layer.presentsWithTransaction = true
+        synchronous = true
+        view.draw()
+        synchronous = false
+        layer.presentsWithTransaction = false
+    }
+    private var synchronous = false
+
     func draw(in view: MTKView) {
-        if inFlight > 0 { redrawWanted = true; return }
+        if inFlight > 0, !synchronous { redrawWanted = true; return }
         guard let rpd = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else {
             // No drawable (its allocation failed under memory pressure): a stale frame would
             // stay on screen, so ask for another go shortly.
@@ -311,6 +333,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                 DispatchQueue.main.async { self?.completed(buffer, strip: strip, of: strips, view: view) }
             }
             cmd.commit()
+            if synchronous, strip == strips - 1 { cmd.waitUntilScheduled() } // presentsWithTransaction needs the present scheduled now
         }
         onDraw?()
     }
@@ -443,7 +466,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost,
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
                         fovCount: Int32(fov.count / 2), crosshairStep: 0,
-                        cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipKeepLabels ? 1 : 0)
+                        cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipKeepLabels ? 1 : 0,
+                        sampleStride: glideCoarse ? 4 : 1)
     }
 }
 

@@ -304,7 +304,7 @@ final class RenderHost: UIView, SnapshotPane {
             && UIView.inheritedAnimationDuration == 0 && pendingSize == nil
         guard narrowing, let renderer else {
             mtk.frame = bounds
-            if old != new { mtk.setNeedsDisplay() } // e.g. rotation: draw at the new size
+            if old != new { renderer?.drawWithResize(in: mtk) } // widening, rotation: the new size's frame with the resize
             return
         }
         pendingSize = new
@@ -312,6 +312,7 @@ final class RenderHost: UIView, SnapshotPane {
             guard let self, pendingSize == new else { return }
             pendingSize = nil
             mtk.frame = bounds
+            renderer.drawWithResize(in: mtk)
         }
     }
 }

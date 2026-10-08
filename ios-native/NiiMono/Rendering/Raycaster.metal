@@ -30,6 +30,7 @@ struct Uniforms {
     float    crosshairStep; // box-space spacing of the crosshair's scale ticks (0 = none)
     int      cutoutOn;      // 1 = a noise mask is bound at texture(4): voxels marked in it are empty
     int      clipKeepLabels;// 1 = clipping removes unlabelled tissue only; visible segments stay whole
+    float    sampleStride;  // multiplies the stride along the ray (4 while the image glides: cheaper frames)
 };
 
 struct VSOut {
@@ -129,7 +130,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     // frame of such rays (every ray that misses the body marches the whole box) can outlast
     // the GPU watchdog, which kills the frame and the ones queued behind it. Longer rays
     // take a longer stride; the compositing corrects its opacity for it.
-    float stride = max(1.0, lenVox / 1024.0);
+    float stride = max(1.0, lenVox / 1024.0) * max(u.sampleStride, 1.0);
 
     if (u.mode == 2) {
         // Solid surface: the first sample above the Black level, whatever its intensity, is
@@ -251,10 +252,11 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         return float4(acc.rgb / earlyTermination, 1.0);
     }
 
-    float dt = (hit.y - tIn) / float(u.steps);
+    int steps = max(32, int(float(u.steps) / max(u.sampleStride, 1.0)));
+    float dt = (hit.y - tIn) / float(steps);
     float maxV = 0.0;
     uint maxLab = 0;
-    for (int i = 0; i < u.steps; ++i) {
+    for (int i = 0; i < steps; ++i) {
         float t = tIn + dt * float(i);
         if (!keep && t > cut0 && t < cut1) { continue; }
         float3 pos = ro + rd * t;
