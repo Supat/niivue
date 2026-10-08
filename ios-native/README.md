@@ -27,7 +27,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | Double-tap | Zoom in on the point / back to fit |
 | Tap | Hide or show the toolbar and scrubber (they also hide by themselves after 4 s) |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
-| Bottom scrubber | Jump to a slice |
+| Scrubber (15% of the screen height up from the bottom) | Jump to a slice |
 | Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector. The view selector stays at the window's horizontal centre; the button cluster keeps the bar's trailing end, over the inspector column when that is open; when the space right of the selector can't hold every button (a narrow window), everything but Inspector folds into a More menu |
 | Slider track | A tap either side of the knob nudges the value one unit |
 | 3D: drag | Orbit |

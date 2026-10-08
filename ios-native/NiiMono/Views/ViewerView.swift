@@ -12,6 +12,7 @@ struct ViewerView: View {
     @State private var hideChromeTask: Task<Void, Never>?
     @State private var showInspector = UserDefaults.standard.bool(forKey: "inspector") // `-inspector YES` for checks
     @State private var fullWidth: CGFloat = 0 // window width including the inspector column
+    @State private var canvasHeight: CGFloat = 0 // the screen's, since the canvas runs under the bars
     private static let inspectorWidth: CGFloat = 300
 
     // The view selector sits at the window's horizontal centre whatever else the bar holds.
@@ -69,9 +70,13 @@ struct ViewerView: View {
                 }
             }
             .animation(.default, value: model.openingStage == nil)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { canvasHeight = $0 }
             .overlay(alignment: .bottom) {
+                // The scrubber's bottom edge sits 15% of the screen height up from the bottom,
+                // in either orientation, clear of the thumb and the home indicator.
                 if !chromeHidden, let axis = model.plane.axis, volume.count(axis: axis) > 1 {
                     SliceScrubber(model: model, axis: axis, count: volume.count(axis: axis))
+                        .padding(.bottom, max(0, canvasHeight * 0.15 - 16)) // less the scrubber's own margin
                 }
             }
             // Chrome auto-hides a few seconds after it appears or was last used, like a
