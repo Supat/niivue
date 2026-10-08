@@ -229,7 +229,8 @@ blend in; everything else keeps its earlier smoothing. "Whole Label" in its menu
 of it again. The bookkeeping (smoothed, edited bricks) is kept with the label names in the
 sidecar. One undo step; vDSP throughout, ~1 s for a whole-body grid even in Debug. "Done" shows the drawing as the segmentation
 ("Custom drawing", alongside any generated or loaded maps in the Show picker; "Remove
-Segmentation" removes only the map on screen) and the sidecar
+Segmentation" removes only the map on screen; Generate Segmentation and Load Segmentation…
+stay on offer while only the drawing is loaded, and the new map joins it) and the sidecar
 saves it with its label names; "Edit Drawing…" reopens it. "Copy Labels to Drawing…" adds labels of the generated (or loaded)
 map on screen to the drawing: a sheet lists them, ticked as they are visible; a copied label
 joins a drawn label of the same name (so copying it again adds to it), the rest become new

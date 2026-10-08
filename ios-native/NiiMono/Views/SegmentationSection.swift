@@ -20,7 +20,10 @@ struct SegmentationSection: View {
                     }
                 }
                 controls(for: map)
-            } else {
+            }
+            // Load and generate stay on offer until a generated or loaded map exists: a
+            // drawing on its own doesn't count, and a new map joins it rather than replacing it.
+            if !model.maps.contains(where: { !$0.isCustom }) {
                 Button("Load Segmentation…", systemImage: "square.3.layers.3d") { importing = true }
                     .disabled(model.isLoading || model.isGenerating)
                 if let p = model.progress {
