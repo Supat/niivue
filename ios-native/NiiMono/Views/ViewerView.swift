@@ -11,11 +11,30 @@ struct ViewerView: View {
     @State private var chromeHidden = false
     @State private var hideChromeTask: Task<Void, Never>?
     @State private var showInspector = UserDefaults.standard.bool(forKey: "inspector") // `-inspector YES` for checks
-    @State private var fullWidth: CGFloat = 0   // window width including the inspector column
-    @State private var canvasWidth: CGFloat = 0 // width left for the image
-    private var inspectorShift: CGFloat { max(0, fullWidth - canvasWidth) }
-    private var shiftsToolbar: Bool { inspectorShift > 1 && fullWidth >= 1150 }
+    @State private var fullWidth: CGFloat = 0 // window width including the inspector column
     private static let inspectorWidth: CGFloat = 300
+
+    // The view selector sits at the window's horizontal centre whatever else the bar holds.
+    // It can't be a .principal item (that replaces the document title menu), so it is a
+    // trailing item padded on its right by however much puts it at the centre, given where
+    // the button cluster will end: the bar's trailing inset, the cluster (≈ 52 pt a button)
+    // and a gap. The cluster keeps the bar's trailing end whether or not the inspector is
+    // open (the bar spans the column, so it sits over the column then). When that padding
+    // would go negative the cluster folds into a More menu (two buttons); if even that
+    // doesn't fit, the selector gives way to the right by what's missing.
+    private static let pickerWidth: CGFloat = 400 // roomier than the intrinsic size, which cramps the longer labels
+    private static let barInset: CGFloat = 10, clusterGap: CGFloat = 12
+    private static func clusterWidth(buttons: Int) -> CGFloat { 52 * CGFloat(buttons) }
+    /// Buttons in the full cluster (see `viewControls`, plus Inspector).
+    private var clusterButtons: Int {
+        5 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 2 : 0) + (model.plane.axis == nil ? 1 : 0)
+    }
+    /// The clear width right of the selector that centres it, for a cluster of `buttons`.
+    private func pickerPadding(buttons: Int) -> CGFloat {
+        let clusterStart = fullWidth - Self.barInset - Self.clusterWidth(buttons: buttons)
+        return clusterStart - Self.clusterGap - (fullWidth / 2 + Self.pickerWidth / 2)
+    }
+    private var collapsesCluster: Bool { fullWidth > 0 && pickerPadding(buttons: clusterButtons) < 0 }
 
     private func scheduleChromeHide() {
         hideChromeTask?.cancel()
@@ -36,7 +55,6 @@ struct ViewerView: View {
             // safe-area inset), so the image is centred in the space that's actually visible.
             .ignoresSafeArea(edges: .vertical)
             .background(.black)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { canvasWidth = $0 }
             .overlay(alignment: .top) {
                 // Open-time restore (sidecar settings, saved segmentation, companion images).
                 if let stage = model.openingStage {
@@ -94,63 +112,28 @@ struct ViewerView: View {
             .toolbar {
                 // Trailing, not .principal: principal would replace the document title menu.
                 ToolbarItem(placement: .topBarTrailing) {
-                    Picker("View", selection: $model.plane) {
-                        ForEach(Plane.allCases) { Text($0.rawValue).tag($0) }
+                    HStack(spacing: 0) {
+                        Picker("View", selection: $model.plane) {
+                            ForEach(Plane.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: Self.pickerWidth)
+                        .environment(\.colorScheme, .dark) // match the dark bar in light mode
+                        // Pads the selector out to the window's centre (see pickerPadding).
+                        Color.clear.frame(width: max(0, pickerPadding(buttons: collapsesCluster ? 2 : clusterButtons)))
+                            .allowsHitTesting(false)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 440) // roomier than the intrinsic size, which cramps the longer labels
-                    .environment(\.colorScheme, .dark) // match the dark bar in light mode
                 }
                 .sharedBackgroundVisibility(.hidden) // the segmented control is already glass
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if model.plane != .render {
-                        Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
-                               isOn: $model.mirrored)
-                    }
-                    // Station fields of view from the acquisition metadata (Inspector › Image).
-                    // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
-                    Toggle("Field of View", systemImage: "viewfinder",
-                           isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
-                        .disabled(model.fovBoxes.isEmpty)
-                    Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $model.showCrosshair)
-                    if model.plane != .render { BookmarkMenu(model: model) }
-                    if model.plane.axis == nil { // 3D and multiplanar
-                        Menu("View", systemImage: "cube") {
-                            ForEach(ViewPreset.allCases) { preset in
-                                Button(preset.rawValue) { model.applyPreset(preset) }
-                            }
-                        }
-                    }
-                    if model.plane.axis != nil {
-                        Toggle("Side by Side with Photo", systemImage: "rectangle.split.2x1",
-                               isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
-                            .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
+                    // Not enough room right of the centred selector for every button: the
+                    // cluster folds into a More menu beside the Inspector button.
+                    if collapsesCluster {
+                        Menu("More", systemImage: "ellipsis.circle") { viewControls }
                     } else {
-                        Toggle("Show Profile", systemImage: "person.crop.rectangle",
-                               isOn: Binding(get: { model.showsProfile }, set: { model.showProfile = $0 }))
-                            .disabled(model.profile.faceCutout == nil) // needs a Coronal Front photo with a face in it
+                        viewControls
                     }
-                    Button("Snapshot", systemImage: "camera") {
-                        SnapshotPanes.captureAndShare(documentName: fileURL?.deletingPathExtension().deletingPathExtension().lastPathComponent ?? "Snapshot")
-                    }
-                    if let fileURL { ShareLink(item: fileURL) }
                     Button("Inspector", systemImage: "info.circle") { showInspector.toggle() }
-                }
-                // The bar spans the inspector column, so trailing items would sit on top of
-                // it. An empty trailing item as wide as the column pushes them back over the
-                // image. The width is measured (window minus canvas), not inferred from
-                // showInspector, so the buttons can't end up shifted with no panel (or the
-                // reverse) if the system closes or restores the panel behind our back.
-                // Narrow windows (portrait, split view) skip the shift: the bar can't fit
-                // everything beside the column and would collapse into an overflow menu.
-                // ponytail: fixed 1150 pt threshold (fits an 11" iPad in landscape with a
-                // typical title); measure the bar's real content if long titles overflow.
-                if shiftsToolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Color.clear.frame(width: inspectorShift).allowsHitTesting(false)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
                 }
             }
             .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar)
@@ -158,6 +141,42 @@ struct ViewerView: View {
             .toolbarColorScheme(.dark, for: .navigationBar) // content is always black
             .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .statusBarHidden(chromeHidden)
+    }
+
+    /// The view controls of the toolbar cluster: in the bar, or in a More menu while the
+    /// inspector is open.
+    @ViewBuilder private var viewControls: some View {
+        if model.plane != .render {
+            Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
+                   isOn: $model.mirrored)
+        }
+        // Station fields of view from the acquisition metadata (Inspector › Image).
+        // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
+        Toggle("Field of View", systemImage: "viewfinder",
+               isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
+            .disabled(model.fovBoxes.isEmpty)
+        Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $model.showCrosshair)
+        if model.plane != .render { BookmarkMenu(model: model) }
+        if model.plane.axis == nil { // 3D and multiplanar
+            Menu("View", systemImage: "cube") {
+                ForEach(ViewPreset.allCases) { preset in
+                    Button(preset.rawValue) { model.applyPreset(preset) }
+                }
+            }
+        }
+        if model.plane.axis != nil {
+            Toggle("Side by Side with Photo", systemImage: "rectangle.split.2x1",
+                   isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
+                .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
+        } else {
+            Toggle("Show Profile", systemImage: "person.crop.rectangle",
+                   isOn: Binding(get: { model.showsProfile }, set: { model.showProfile = $0 }))
+                .disabled(model.profile.faceCutout == nil) // needs a Coronal Front photo with a face in it
+        }
+        Button("Snapshot", systemImage: "camera") {
+            SnapshotPanes.captureAndShare(documentName: fileURL?.deletingPathExtension().deletingPathExtension().lastPathComponent ?? "Snapshot")
+        }
+        if let fileURL { ShareLink(item: fileURL) }
     }
 }
 
