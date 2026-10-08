@@ -30,7 +30,9 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | Scrubber (15% of the screen height up from the bottom) | Jump to a slice |
 | Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector. The view selector follows the file name; the button cluster keeps the bar's trailing end, over the inspector column when that is open; when the bar can't hold every button (a narrow window), everything but Inspector folds into a More menu |
 | Slider track | A tap either side of the knob nudges the value one unit |
-| 3D: drag | Orbit |
+| 3D: drag | Turn the volume like a ball under the finger (an arcball: the point you grab follows the finger, about the screen axis across the drag; a drag across the view's shorter side is three quarters of a turn), so any orientation is reachable |
+| 3D: two-finger twist | Roll about the line of sight |
+| 3D: View menu › Level | Superior up again, keeping the line of sight (the side presets are upright already) |
 | 3D: two-finger drag, or secondary-button drag | Pan |
 | 3D: pinch, or scroll | Zoom towards the fingers / pointer |
 | 3D: double-tap | Reset to the fitted starting view |

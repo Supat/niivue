@@ -47,6 +47,7 @@ struct RenderView: UIViewRepresentable {
         let mousePan = UIPanGestureRecognizer()
         let pinch = UIPinchGestureRecognizer()
         let scroll = UIPanGestureRecognizer()
+        let rotate = UIRotationGestureRecognizer() // two-finger twist: roll
         /// The current pinch comes from a trackpad (transform events) rather than fingers.
         private var trackpadPinch = false
         /// A trackpad pinch reports far larger scale steps than fingers on glass for the same
@@ -70,7 +71,7 @@ struct RenderView: UIViewRepresentable {
         /// mouse was in use.
         private func track(_ g: UIGestureRecognizer) {
             guard let view = g.view as? MTKView, g.state != .changed else { return }
-            let moving = [orbit, mousePan, pinch, scroll].contains { $0.state == .began || $0.state == .changed }
+            let moving = [orbit, mousePan, pinch, scroll, rotate].contains { $0.state == .began || $0.state == .changed }
             let scale = moving ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
             guard view.contentScaleFactor != scale else { return }
             view.contentScaleFactor = scale
@@ -95,7 +96,18 @@ struct RenderView: UIViewRepresentable {
             track(g)
             let t = g.translation(in: view)
             g.setTranslation(.zero, in: view)
-            renderer.orbit(dx: Float(t.x), dy: Float(t.y))
+            // A drag across the view's shorter side turns the volume three quarters round.
+            let radiansPerPoint = 1.5 * Float.pi / Float(max(min(view.bounds.width, view.bounds.height), 1))
+            renderer.orbit(dx: Float(t.x), dy: Float(t.y), radiansPerPoint: radiansPerPoint)
+            cameraChanged(view)
+        }
+
+        /// Two-finger twist: roll about the line of sight.
+        @objc func rotated(_ g: UIRotationGestureRecognizer) {
+            guard let renderer, let view = g.view else { return }
+            track(g)
+            renderer.roll(by: Float(g.rotation))
+            g.rotation = 0
             cameraChanged(view)
         }
 
@@ -139,8 +151,9 @@ struct RenderView: UIViewRepresentable {
             return g === mousePan ? secondary : g === orbit ? !secondary : true
         }
 
-        // Pinch and two-finger pan run together (zoom while sliding); orbit stays exclusive,
-        // and so do pinch and scroll, so a trackpad pinch that also scrolls doesn't zoom twice.
+        // Pinch, twist and two-finger pan run together (zoom and roll while sliding); orbit
+        // stays exclusive, and so do pinch and scroll, so a trackpad pinch that also scrolls
+        // doesn't zoom twice.
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             let pair: Set<ObjectIdentifier> = [ObjectIdentifier(g), ObjectIdentifier(other)]
             return g !== orbit && other !== orbit && pair != [ObjectIdentifier(pinch), ObjectIdentifier(scroll)]
@@ -172,7 +185,8 @@ struct RenderView: UIViewRepresentable {
         c.scroll.allowedScrollTypesMask = .all
         c.scroll.allowedTouchTypes = [] // scroll events only, never touches
         c.pinch.addTarget(c, action: #selector(Coordinator.pinched))
-        for g in [double, single, c.orbit, pan, c.mousePan, c.scroll, c.pinch] {
+        c.rotate.addTarget(c, action: #selector(Coordinator.rotated))
+        for g in [double, single, c.orbit, pan, c.mousePan, c.scroll, c.pinch, c.rotate] {
             g.delegate = c
             v.addGestureRecognizer(g)
         }
@@ -228,7 +242,7 @@ struct RenderView: UIViewRepresentable {
         renderer.pointScale = view.contentScaleFactor
         let presetChanged = presetTick != c.presetTick
         if presetChanged, let preset {
-            renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch)
+            if preset == .level { renderer.level() } else { renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch) }
         }
         c.presetTick = presetTick
         let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipKeepLabels: clipKeepLabels, clipHighlight: clipHighlight,

@@ -164,6 +164,8 @@ struct ViewerView: View {
         if model.plane != .render {
             Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                    isOn: $model.mirrored)
+                Divider()
+                Button("Level", systemImage: "level") { model.applyPreset(.level) } // superior up again
         }
         // Station fields of view from the acquisition metadata (Inspector › Image).
         // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
@@ -174,7 +176,7 @@ struct ViewerView: View {
         if model.plane != .render { BookmarkMenu(model: model) }
         if model.plane.axis == nil { // 3D and multiplanar
             Menu("View", systemImage: "move.3d") {
-                ForEach(ViewPreset.allCases) { preset in
+                ForEach(ViewPreset.sides) { preset in
                     Button(preset.rawValue) { model.applyPreset(preset) }
                 }
             }

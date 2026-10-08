@@ -42,14 +42,18 @@ struct ClipSetting: Identifiable, Equatable {
     var tilt = SIMD2<Float>(0, 0)   // degrees, about the two axes after the plane's own (cyclic x→y→z)
 }
 
-/// Anatomical camera presets. Yaw/pitch place the camera on that side of the patient.
+/// Anatomical camera presets. Yaw/pitch place the camera on that side of the patient;
+/// `level` keeps the line of sight and only puts superior up again (after rolling).
 enum ViewPreset: String, CaseIterable, Identifiable {
     case anterior = "Anterior", posterior = "Posterior", left = "Left", right = "Right"
     case superior = "Superior", inferior = "Inferior"
+    case level = "Level"
     var id: Self { self }
+    static let sides: [ViewPreset] = allCases.filter { $0 != .level }
     var angles: (yaw: Float, pitch: Float) {
         let pole = Float.pi / 2 - 0.001 // just shy of straight down: keeps "up" defined
         switch self {
+        case .level: return (0, 0) // not a side: see RenderView
         case .anterior: return (.pi, 0)
         case .posterior: return (0, 0)
         case .left: return (-.pi / 2, 0)

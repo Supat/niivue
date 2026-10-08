@@ -99,12 +99,15 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// Fraction of the eye→pivot distance in front of which nothing is drawn (0 = off).
     var cameraClipFraction: Float = 0
 
-    // Orbit camera (z-up, matching the RAS volume), driven by RenderView gestures.
+    // Arcball camera, driven by RenderView gestures: `rotation` takes camera space (x right,
+    // y up, z towards the viewer) to the volume's RAS space, so any orientation is reachable
+    // and a drag turns the volume like a ball under the finger. The presets and `level()`
+    // give upright (superior-up) orientations from a yaw and a pitch.
     private static let startYaw: Float = .pi - 0.6 // in front of the face, slightly to one side
     private static let startPitch: Float = 0.3
+    private static let startRotation = orientation(yaw: startYaw, pitch: startPitch)
     private static let fovY: Float = .pi / 4
-    var yaw = startYaw
-    var pitch = startPitch
+    var rotation = startRotation
     var zoom: Float = 1 // 1 = volume fills the view at the starting orientation
     var target = simd_float3.zero // point the camera orbits and looks at
     var steps: Int32 = 384
@@ -407,8 +410,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     }
 
     private func makeUniforms(aspect: Float) -> Uniforms {
-        let eye = target + distance(aspect: aspect) * glideScale * Self.direction(yaw: yaw, pitch: pitch)
-        let view = lookAt(eye: eye, center: target, up: simd_float3(0, 0, 1))
+        let b = basis
+        let eye = target + distance(aspect: aspect) * glideScale * b.toward
+        let view = lookAt(eye: eye, center: target, up: b.up)
         var proj = perspective(fovy: Self.fovY, aspect: aspect, near: 0.05, far: 100)
         if glideShift != 0 { // slide the image sideways in NDC: x' = x + shift·w
             var slide = matrix_identity_float4x4
@@ -449,6 +453,22 @@ extension VolumeRenderer {
         simd_float3(cos(pitch) * sin(yaw), -cos(pitch) * cos(yaw), sin(pitch))
     }
 
+    /// The upright orientation with the camera on that side: superior up on screen.
+    fileprivate static func orientation(yaw: Float, pitch: Float) -> simd_quatf {
+        upright(toward: direction(yaw: yaw, pitch: pitch))
+    }
+
+    /// The orientation looking along `toward` with superior up on screen (right is level).
+    /// Looking straight up or down the body, where "up" is undefined, anterior goes to the
+    /// top of the screen.
+    fileprivate static func upright(toward: simd_float3) -> simd_quatf {
+        var right = cross(-toward, simd_float3(0, 0, 1))
+        if length(right) < 1e-4 { right = simd_float3(1, 0, 0) }
+        right = normalize(right)
+        let up = cross(right, -toward)
+        return simd_quatf(simd_float3x3(columns: (right, up, toward)))
+    }
+
     fileprivate func distance(aspect: Float) -> Float { fitDistance(aspect: aspect) / zoom }
 
     /// The scale at the orbit pivot (perspective: nearer is larger, farther smaller) for a
@@ -460,10 +480,15 @@ extension VolumeRenderer {
     }
 
     /// Screen-right, screen-up and towards-the-viewer unit vectors in volume (RAS) space.
-    var basis: (right: simd_float3, up: simd_float3, toward: simd_float3) {
-        let e = Self.direction(yaw: yaw, pitch: pitch)
-        let right = normalize(cross(-e, simd_float3(0, 0, 1)))
-        return (right, cross(right, -e), e)
+    var basis: (right: simd_float3, up: simd_float3, toward: simd_float3) { Self.basis(of: rotation) }
+
+    private static func basis(of rotation: simd_quatf) -> (right: simd_float3, up: simd_float3, toward: simd_float3) {
+        (rotation.act(simd_float3(1, 0, 0)), rotation.act(simd_float3(0, 1, 0)), rotation.act(simd_float3(0, 0, 1)))
+    }
+
+    /// Turns the volume by `q`, given in camera space: the camera turns the other way.
+    private func turn(by q: simd_quatf) {
+        rotation = simd_normalize(rotation * q.inverse)
     }
 
     /// World-space offset on the plane through `target` for a screen offset in NDC (-1...1).
@@ -472,9 +497,24 @@ extension VolumeRenderer {
         return (b.right * ndc.x * tanV * aspect + b.up * ndc.y * tanV) * distance
     }
 
-    func orbit(dx: Float, dy: Float) {
-        yaw += dx * 0.01
-        pitch = max(-1.5, min(1.5, pitch + dy * 0.01))
+    /// A drag of (`dx`, `dy`) points (y down the screen) turns the volume like a ball under
+    /// the finger: about the screen axis perpendicular to the drag, by `radiansPerPoint` per
+    /// point, so the grabbed point follows the finger.
+    func orbit(dx: Float, dy: Float, radiansPerPoint: Float) {
+        let length = (dx * dx + dy * dy).squareRoot()
+        guard length > 0 else { return }
+        turn(by: simd_quatf(angle: length * radiansPerPoint, axis: simd_float3(dy, dx, 0) / length))
+    }
+
+    /// Rolls the volume about the line of sight by `radians`, clockwise on screen when
+    /// positive (a two-finger twist).
+    func roll(by radians: Float) {
+        turn(by: simd_quatf(angle: -radians, axis: simd_float3(0, 0, 1)))
+    }
+
+    /// Puts superior up again, keeping the line of sight.
+    func level() {
+        rotation = Self.upright(toward: basis.toward)
     }
 
     /// Slide the volume with the fingers; `delta` is the drag in NDC.
@@ -493,8 +533,8 @@ extension VolumeRenderer {
 
     /// Standard view, re-fitted and re-centred. nil = the starting view.
     func setView(yaw: Float? = nil, pitch: Float? = nil) {
-        self.yaw = yaw ?? Self.startYaw
-        self.pitch = pitch ?? Self.startPitch
+        rotation = yaw == nil && pitch == nil ? Self.startRotation
+            : Self.orientation(yaw: yaw ?? Self.startYaw, pitch: pitch ?? Self.startPitch)
         zoom = 1
         target = .zero
     }
@@ -503,8 +543,7 @@ extension VolumeRenderer {
     /// the frustum. Evaluated at the starting orientation (not the live one) so the
     /// image fills the view on entry and after a resize, but doesn't pulse while orbiting.
     fileprivate func fitDistance(aspect: Float) -> Float {
-        let e = Self.direction(yaw: Self.startYaw, pitch: Self.startPitch)
-        let right = normalize(cross(-e, simd_float3(0, 0, 1))), up = cross(right, -e)
+        let (right, up, e) = Self.basis(of: Self.startRotation)
         let tanV = tan(Self.fovY / 2), tanH = tanV * max(aspect, 0.01)
         var d: Float = 0
         for i in 0..<8 {
