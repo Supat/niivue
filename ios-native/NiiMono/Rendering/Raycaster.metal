@@ -31,6 +31,7 @@ struct Uniforms {
     int      cutoutOn;      // 1 = a noise mask is bound at texture(4): voxels marked in it are empty
     int      clipKeepLabels;// 1 = clipping removes unlabelled tissue only; visible segments stay whole
     float    sampleStride;  // multiplies the stride along the ray (4 while the image glides: cheaper frames)
+    int      emptySkip;     // 1 = rays jump over 16³ blocks with nothing to draw (texture(5), (6))
 };
 
 struct VSOut {
@@ -62,7 +63,7 @@ static float2 intersectBox(float3 ro, float3 rd, float3 halfExtent) {
 // `tSurface` receives the ray distance of the first tissue sample (1e20 if none).
 static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
                     texture1d<float> cmap, texture3d<uint> labels, texture1d<float> lut,
-                    texture3d<uint> cutout,
+                    texture3d<uint> cutout, texture3d<float> blockMax, texture3d<uint> labelBlocks,
                     sampler samp, float3 ro, float3 rd, float2 hit, thread float& tSurface) {
     // Removed noise: voxels marked in the cutout mask are treated as empty.
     float3 cdims = float3(cutout.get_width(), cutout.get_height(), cutout.get_depth());
@@ -131,6 +132,27 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     // the GPU watchdog, which kills the frame and the ones queued behind it. Longer rays
     // take a longer stride; the compositing corrects its opacity for it.
     float stride = max(1.0, lenVox / 1024.0) * max(u.sampleStride, 1.0);
+    // Empty-space skipping. The volume is tiled into 16³ blocks; `blockMax` holds each
+    // block's brightest voxel and `labelBlocks` whether it has any label. A sample in a block
+    // with nothing to draw (no label, and nothing above the Black level — or, labels only,
+    // no label at all) jumps to where the ray leaves the block. Rays through the air around
+    // the body, which otherwise march the whole box at full cost (800–1000 samples of two to
+    // four texture reads each), are what made frames outlast the GPU watchdog.
+    const float BLOCK = 16.0;
+    float3 bdims = float3(blockMax.get_width(), blockMax.get_height(), blockMax.get_depth());
+    float3 dirVox = stepUVW * dims; // voxel-space direction per unit of s (unit length)
+    auto emptyJump = [&](float3 uvw) -> float {
+        if (u.emptySkip == 0) { return 0.0; }
+        float3 pos = uvw * dims;
+        uint3 b = uint3(clamp(floor(pos / BLOCK), float3(0.0), bdims - 1.0));
+        if (u.overlayOn != 0 && labelBlocks.read(b).r != 0) { return 0.0; }
+        if (u.overlayGhost != 2 && blockMax.read(b).r > u.dataMin) { return 0.0; }
+        float3 lo = float3(b) * BLOCK;
+        float3 bound = select(lo, lo + BLOCK, dirVox > 0.0);
+        float3 dist = select(float3(1e9), (bound - pos) / dirVox, abs(dirVox) > 1e-6);
+        float d = min(min(dist.x, dist.y), dist.z);
+        return max(d, 0.0) + 1.0; // at least a voxel of progress, whatever the rounding
+    };
 
     if (u.mode == 2) {
         // Solid surface: the first sample above the Black level, whatever its intensity, is
@@ -165,8 +187,14 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             if (!keep && s > skip0 && s < skip1) { s = skip1; faceN = cutNormal; sPrev = -1.0; if (s > lenVox) { break; } }
             float t = tIn + s * tStep;
             float3 uvw = uvw0 + stepUVW * s;
+            float jump = emptyJump(uvw);
+            if (jump > 0.0) { faceN = float3(0.0); sPrev = s + max(jump - 1.5, 0.0); s += jump; continue; }
             uint lab = 0;
             if (!solidAt(uvw, t, lab)) { faceN = float3(0.0); sPrev = s; continue; }
+            // Seeing through tissue: once the skin is recorded, unlabelled tissue is passed
+            // over here, before the refinement and the 18-sample gradient below — doing those
+            // for every interior sample made such frames twenty times dearer than any other.
+            if (ghosted && lab == 0) { continue; }
             // Refine between the last empty sample and this one (four bisections), so the
             // surface doesn't show whole-voxel steps.
             float sHit = s;
@@ -227,6 +255,8 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             // rounding could land just short of skip1 and repeat the jump forever.
             if (!keep && s > skip0 && s < skip1) { s = skip1; if (s > lenVox) { break; } }
             float3 uvw = uvw0 + stepUVW * s;
+            float jump = emptyJump(uvw);
+            if (jump > 0.0) { s += jump; continue; }
             if (cutAt(uvw)) { continue; }
             float v = vol.sample(samp, uvw, level(0)).r;
             uint lab = labelAt(uvw);
@@ -253,14 +283,15 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     }
 
     int steps = max(32, int(float(u.steps) / max(u.sampleStride, 1.0)));
-    float dt = (hit.y - tIn) / float(steps);
+    float sStep = max(lenVox / float(steps), 1e-3);        // in voxels along the ray
     float maxV = 0.0;
     uint maxLab = 0;
-    for (int i = 0; i < steps; ++i) {
-        float t = tIn + dt * float(i);
+    for (float s = 0.0; s <= lenVox; s += sStep) {
+        float t = tIn + s * tStep;
         if (!keep && t > cut0 && t < cut1) { continue; }
-        float3 pos = ro + rd * t;
-        float3 uvw = pos / (2.0 * u.boxHalf) + 0.5;       // [-half,half] -> [0,1]
+        float3 uvw = uvw0 + stepUVW * s;
+        float jump = emptyJump(uvw);
+        if (jump > 0.0) { s += jump; continue; }
         if (cutAt(uvw)) { continue; }
         float v = vol.sample(samp, uvw, level(0)).r;
         uint lab = labelAt(uvw);
@@ -298,6 +329,8 @@ fragment float4 frag(VSOut in [[stage_in]],
                      texture3d<uint> labels  [[texture(2)]],
                      texture1d<float> lut    [[texture(3)]],
                      texture3d<uint> cutout  [[texture(4)]],
+                     texture3d<float> blockMax [[texture(5)]],
+                     texture3d<uint> labelBlocks [[texture(6)]],
                      sampler samp            [[sampler(0)]]) {
     // Reconstruct a world-space ray through this pixel.
     float4 nearH = u.invViewProj * float4(in.ndc, 0.0, 1.0);
@@ -310,7 +343,7 @@ fragment float4 frag(VSOut in [[stage_in]],
     float2 box = intersectBox(ro, rd, u.boxHalf);
     if (box.x > box.y || box.y < 0.0) { return float4(0, 0, 0, 1); } // ray misses the volume
     float tSurface = 1e20;
-    float4 color = shade(in.position, u, vol, cmap, labels, lut, cutout, samp, ro, rd, box, tSurface);
+    float4 color = shade(in.position, u, vol, cmap, labels, lut, cutout, blockMax, labelBlocks, samp, ro, rd, box, tSurface);
 
     if (u.clipHighlight != 0) {
         // Plane highlight: wherever the ray crosses a clip plane inside the volume box,

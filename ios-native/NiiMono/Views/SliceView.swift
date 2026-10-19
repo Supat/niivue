@@ -61,8 +61,16 @@ struct SliceView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: ZoomView, context: Context) {
+        // A drawing's revision counts only when its change touched this slice (or might have:
+        // a revision this view didn't see could have), so the other panes of the editor don't
+        // recomposite at every stroke update.
+        var revision = overlay?.revision ?? 0
+        if let o = overlay, let box = o.dirtyBox, let seen = view.imageKey, seen.mapID == o.mapID, seen.revision + 1 == o.revision,
+           !(box.lo[axis] <= index && index < box.hi[axis]) {
+            revision = seen.revision
+        }
         let key = ImageKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
-                           mapID: overlay?.mapID, revision: overlay?.revision ?? 0, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
+                           mapID: overlay?.mapID, revision: revision, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
                            lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0)
         if view.imageKey != key {
             view.imageKey = key

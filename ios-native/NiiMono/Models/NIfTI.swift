@@ -20,7 +20,30 @@ struct NiftiVolume: @unchecked Sendable {
     var id = UUID()
     var dims: (Int, Int, Int)          // voxel counts x,y,z (RAS)
     var voxelSize: (Float, Float, Float) // mm per voxel
-    var data: [Float]                  // length = nx*ny*nz, scl_slope/inter applied
+    /// The intensities (length nx·ny·nz, scl_slope/inter applied), in a box shared by every
+    /// copy of the volume: `data` reads and writes like a plain array (a write replaces the
+    /// box, so copies stay separate), while `storage` lets an owner edit the floats in place
+    /// (the scan repair's live preview; a value array would be copied whole, 250 MB, at
+    /// every stroke because the views hold the same volume).
+    final class Storage: @unchecked Sendable {
+        var floats: [Float]
+        init(_ floats: [Float]) { self.floats = floats }
+    }
+    var storage: Storage
+    var data: [Float] {
+        get { storage.floats }
+        set { storage = Storage(newValue) }
+    }
+    /// A copy with its own box, for editing in place without touching the original.
+    func withOwnStorage() -> NiftiVolume { var v = self; v.storage = Storage(storage.floats); return v }
+
+    init(dims: (Int, Int, Int), voxelSize: (Float, Float, Float), data: [Float], dataMin: Float, dataMax: Float,
+         displayMin: Float, displayMax: Float, subject: SubjectInfo = SubjectInfo(), filePerm: [Int] = [0, 1, 2],
+         fileFlip: [Bool] = [false, false, false], embeddedJSON: Data? = nil, header: Data? = nil) {
+        self.dims = dims; self.voxelSize = voxelSize; storage = Storage(data)
+        self.dataMin = dataMin; self.dataMax = dataMax; self.displayMin = displayMin; self.displayMax = displayMax
+        self.subject = subject; self.filePerm = filePerm; self.fileFlip = fileFlip; self.embeddedJSON = embeddedJSON; self.header = header
+    }
     var dataMin: Float                 // full intensity range
     var dataMax: Float
     var displayMin: Float              // suggested window low (cal_min or 2nd percentile)

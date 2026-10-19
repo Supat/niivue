@@ -71,8 +71,31 @@ struct RenderView: UIViewRepresentable {
         /// mouse was in use.
         private func track(_ g: UIGestureRecognizer) {
             guard let view = g.view as? MTKView, g.state != .changed else { return }
+            updateScale(view)
+        }
+
+        /// Low Power Mode, or the iPad under serious thermal pressure, keeps the quarter-cost
+        /// rendering on all the time, not just during gestures.
+        private var powerObservers: [NSObjectProtocol] = []
+        func watchPower(_ view: MTKView) {
+            let nc = NotificationCenter.default
+            for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
+                powerObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak view] _ in
+                    if let view { self?.updateScale(view) }
+                })
+            }
+            updateScale(view)
+        }
+        deinit { powerObservers.forEach(NotificationCenter.default.removeObserver) }
+
+        private static var saving: Bool {
+            let p = ProcessInfo.processInfo
+            return p.isLowPowerModeEnabled || p.thermalState == .serious || p.thermalState == .critical
+        }
+
+        private func updateScale(_ view: MTKView) {
             let moving = [orbit, mousePan, pinch, scroll, rotate].contains { $0.state == .began || $0.state == .changed }
-            let scale = moving ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
+            let scale = moving || Self.saving ? 1 : (view.window?.screen.scale ?? view.traitCollection.displayScale)
             guard view.contentScaleFactor != scale else { return }
             view.contentScaleFactor = scale
             renderer?.pointScale = scale
@@ -167,6 +190,7 @@ struct RenderView: UIViewRepresentable {
         let v = host.mtk
         let c = context.coordinator
         c.renderer = VolumeRenderer(view: v, volume: volume)
+        c.watchPower(v)
         v.delegate = c.renderer
         v.enableSetNeedsDisplay = true // draw on demand, not at 60 Hz
         v.isPaused = true

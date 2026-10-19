@@ -208,7 +208,7 @@ struct SegmentationEditor: View {
                    // Hidden paint leaves the plain scan (the eye's labels-only mode needs labels).
                    // Noise mode: the scan with the noise painted so far already removed.
                    overlay: fixedLabel || drawing.hidePaint ? nil : drawing.overlay(opacity: model.segmentation.opacity, in3D: true),
-                   cutout: noiseMode ? drawing.overlay(opacity: 0) : model.noiseCutout,
+                   cutout: noiseMode ? drawing.overlay(opacity: 0, in3D: true) : model.noiseCutout,
                    volumeDirtyZ: drawing.preview != nil ? drawing.previewDirtyZ : model.volumeDirtyZ,
                    cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: nil, presetTick: 0, onTap: {})

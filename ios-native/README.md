@@ -149,6 +149,17 @@ the simulator's CPU-only Core ML path allocates ~19 GB and dies. Models are rege
 `tools/convert_organ_model.py <out> organs|muscles` (TotalSegmentator weights, Python 3.11
 with torch 2.7 + coremltools). The weights are under TotalSegmentator's non-commercial licence.
 
+**Power.** The 3D view draws only on request (the Metal view is paused) and only when
+something it draws changes; during a 3D gesture, in Low Power Mode, or under serious thermal
+pressure it renders at 1 pixel per point (a quarter of the raycasting), full resolution again
+once the gesture ends or the state clears. In the editors a stroke publishes its revision
+every 33 ms for the slice panes, but the 3D pane follows every 250 ms and at the stroke's end
+(a full raycast of the volume per frame), and a slice pane recomposites only when the change
+touched its slice (`SegmentationOverlay.dirtyBox`). The scan repair's live preview is edited
+in place in a shared `NiftiVolume.Storage` box (one copy at the first stroke, none after;
+as a value array every stroke copied the 250 MB volume). A frame that finds no drawable
+retries a few times only, not for as long as the app stays in the background.
+
 **Noise removal.** Inspector › Image › Noise Removal › "Remove Noise…" opens the
 segmentation editor with one fixed "Noise" label: paint over stray signal and artifacts with
 the same tools (brush, eraser, fill, smoothing, undo, Pencil). The slice panes show the paint;

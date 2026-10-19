@@ -34,6 +34,7 @@ struct Uniforms {
     var cutoutOn: Int32
     var clipKeepLabels: Int32
     var sampleStride: Float
+    var emptySkip: Int32
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -43,13 +44,93 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let sampler: MTLSamplerState
     private let volumeTex: MTLTexture
     private var volumeID: UUID
+    /// Empty-space skipping (see Raycaster.metal): per 16³ block, the brightest voxel
+    /// (normalized like the volume) and whether any label is in it. `-emptySkip NO` disables
+    /// it for checks.
+    static let block = 16
+    private let blockMaxTex: MTLTexture
+    private var labelBlocksTex: MTLTexture?
+    var emptySkip = UserDefaults.standard.object(forKey: "emptySkip") as? Bool ?? true
+
+    private static func blockCounts(_ dims: (Int, Int, Int)) -> (Int, Int, Int) {
+        ((dims.0 + block - 1) / block, (dims.1 + block - 1) / block, (dims.2 + block - 1) / block)
+    }
+
+    private static func makeBlockTexture(_ device: MTLDevice, dims: (Int, Int, Int), format: MTLPixelFormat) -> MTLTexture {
+        let (bx, by, bz) = blockCounts(dims)
+        let td = MTLTextureDescriptor()
+        td.textureType = .type3D; td.pixelFormat = format
+        td.width = bx; td.height = by; td.depth = bz; td.usage = .shaderRead
+        return device.makeTexture(descriptor: td)!
+    }
+
+    /// The block maxima for the blocks that contain z slices `range`, from the whole blocks
+    /// (a repaired slice changes its block's maximum, which needs the block's other slices).
+    /// Each row's windowed maxima come from one vDSP call; the rest is per block, not voxel.
+    private static func uploadBlockMax(_ volume: NiftiVolume, z range: Range<Int>, into tex: MTLTexture) {
+        let (nx, ny, nz) = volume.dims, (nbx, nby, _) = blockCounts(volume.dims)
+        var k = 65535 / max(volume.dataMax - volume.dataMin, .leastNonzeroMagnitude)
+        var bias = -volume.dataMin * k
+        var zero: Float = 0, top: Float = 65535
+        var window = [Float](repeating: 0, count: max(nx - block + 1, 1))
+        var plane = [Float](repeating: 0, count: nbx * nby), texels = [UInt16](repeating: 0, count: nbx * nby)
+        volume.data.withUnsafeBufferPointer { src in
+            for bz in (range.lowerBound / block)...((range.upperBound - 1) / block) {
+                for i in plane.indices { plane[i] = -.greatestFiniteMagnitude }
+                for z in (bz * block)..<min(nz, (bz + 1) * block) {
+                    for y in 0..<ny {
+                        let row = src.baseAddress! + (z * ny + y) * nx, by = y / block
+                        if nx >= block {
+                            vDSP_vswmax(row, 1, &window, 1, vDSP_Length(nx - block + 1), vDSP_Length(block))
+                        } else {
+                            vDSP_maxv(row, 1, &window[0], vDSP_Length(nx))
+                        }
+                        for bx in 0..<nbx {
+                            let v = window[min(bx * block, max(nx - block, 0))] // the last block's window reaches back: a conservative maximum
+                            if v > plane[by * nbx + bx] { plane[by * nbx + bx] = v }
+                        }
+                    }
+                }
+                vDSP_vsmsa(plane, 1, &k, &bias, &plane, 1, vDSP_Length(plane.count))
+                vDSP_vclip(plane, 1, &zero, &top, &plane, 1, vDSP_Length(plane.count))
+                vDSP_vfixru16(plane, 1, &texels, 1, vDSP_Length(plane.count))
+                tex.replace(region: MTLRegionMake3D(0, 0, bz, nbx, nby, 1), mipmapLevel: 0, slice: 0,
+                            withBytes: texels, bytesPerRow: nbx * 2, bytesPerImage: nbx * nby * 2)
+            }
+        }
+    }
+
+    /// Which blocks containing z slices `range` hold any label, from the whole blocks.
+    private func uploadLabelBlocks(_ labels: LabelGrid, z range: Range<Int>, into tex: MTLTexture) {
+        let (nx, ny, nz) = labels.dims, (nbx, nby, _) = Self.blockCounts(labels.dims)
+        let zeros = [UInt8](repeating: 0, count: Self.block)
+        var plane = [UInt8](repeating: 0, count: nbx * nby)
+        labels.data.withUnsafeBytes { raw in zeros.withUnsafeBytes { z0 in
+            for bz in (range.lowerBound / Self.block)...((range.upperBound - 1) / Self.block) {
+                for i in plane.indices { plane[i] = 0 }
+                for z in (bz * Self.block)..<min(nz, (bz + 1) * Self.block) {
+                    for y in 0..<ny {
+                        let row = raw.baseAddress! + (z * ny + y) * nx, by = y / Self.block
+                        for bx in 0..<nbx where plane[by * nbx + bx] == 0 {
+                            let x0 = bx * Self.block
+                            if memcmp(row + x0, z0.baseAddress!, min(Self.block, nx - x0)) != 0 { plane[by * nbx + bx] = 1 }
+                        }
+                    }
+                }
+                tex.replace(region: MTLRegionMake3D(0, 0, bz, nbx, nby, 1), mipmapLevel: 0, slice: 0,
+                            withBytes: plane, bytesPerRow: nbx, bytesPerImage: nbx * nby)
+            }
+        } }
+    }
 
     /// The scan's intensities changed in place (banding repair): upload the z slices `z`
     /// (nil = all) again. The scaling stays the scan's original data range.
     func updateVolume(_ volume: NiftiVolume, z: Range<Int>?) {
         guard volume.id != volumeID else { return }
         volumeID = volume.id
-        Self.uploadVolume(volume, z: (z ?? 0..<volume.dims.2).clamped(to: 0..<volume.dims.2), into: volumeTex)
+        let range = (z ?? 0..<volume.dims.2).clamped(to: 0..<volume.dims.2)
+        Self.uploadVolume(volume, z: range, into: volumeTex)
+        Self.uploadBlockMax(volume, z: range, into: blockMaxTex)
     }
 
     // Float → UInt16 with vDSP, one z-slice at a time: a plain Swift loop over a whole-body
@@ -151,6 +232,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         }
         volumeTex = tex
         volumeID = volume.id
+        blockMaxTex = Self.makeBlockTexture(device, dims: volume.dims, format: .r16Unorm)
+        Self.uploadBlockMax(volume, z: 0..<nz, into: blockMaxTex)
         Self.uploadVolume(volume, z: 0..<nz, into: tex)
 
         // Colormap: grayscale 256. ponytail: niivue's 73 JSON cmaps drop straight
@@ -264,7 +347,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     func setOverlay(_ seg: SegmentationOverlay?) {
         overlayOpacity = seg?.opacity ?? 0
         overlayGhost = seg.map { $0.hideScan ? 2 : $0.ghost ? 1 : 0 } ?? 0
-        guard let seg else { labelTex = nil; labelSource = nil; return }
+        guard let seg else { labelTex = nil; labelBlocksTex = nil; labelSource = nil; return }
         seg.lut.withUnsafeBytes { labelLUT.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 256 * 4) }
         let (nx, ny, nz) = seg.labels.dims
         if labelSource == seg.mapID, let tex = labelTex {
@@ -279,6 +362,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         td.textureType = .type3D; td.pixelFormat = .r8Uint
         td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
         guard let tex = device.makeTexture(descriptor: td) else { return }
+        labelBlocksTex = Self.makeBlockTexture(device, dims: seg.labels.dims, format: .r8Uint)
         upload(seg.labels, z: 0..<nz, into: tex)
         labelTex = tex
         labelSource = seg.mapID
@@ -293,6 +377,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                             withBytes: raw.baseAddress! + z * nx * ny, bytesPerRow: nx, bytesPerImage: nx * ny)
             }
         }
+        if let blocks = labelBlocksTex { uploadLabelBlocks(labels, z: range, into: blocks) }
     }
 
     /// Frames on the GPU (0 or 1) and whether one was asked for meanwhile. One frame at a
@@ -301,6 +386,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// kills the one it catches and discards the ones behind it. The next frame is drawn
     /// when the current one completes, so the orbit keeps up at the rate the GPU manages.
     private var inFlight = 0, redrawWanted = false
+    private var noDrawable = 0 // retries in a row with no drawable to draw into
 
     /// A frame for a view whose size just changed, presented in the same transaction as the
     /// new size: otherwise the layer shows the previous frame squeezed or stretched into the
@@ -318,11 +404,15 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         if inFlight > 0, !synchronous { redrawWanted = true; return }
         guard let rpd = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else {
-            // No drawable (its allocation failed under memory pressure): a stale frame would
-            // stay on screen, so ask for another go shortly.
-            retryDraw(view, after: 0.25)
+            // No drawable (its allocation failed under memory pressure, or the app is in the
+            // background): a stale frame would stay on screen, so ask for another go shortly —
+            // a few times only, or a backgrounded app would wake at 4 Hz for as long as it
+            // stays there. The next camera change or size change asks again anyway.
+            noDrawable += 1
+            if noDrawable <= 8 { retryDraw(view, after: 0.25) }
             return
         }
+        noDrawable = 0
         let size = view.drawableSize, strips = Self.strips(for: size)
         for strip in 0..<strips {
             guard let cmd = queue.makeCommandBuffer() else { break }
@@ -349,11 +439,29 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private func completed(_ buffer: MTLCommandBuffer, strip: Int, of strips: Int, view: MTKView?) {
         inFlight -= 1
         let seconds = buffer.gpuEndTime - buffer.gpuStartTime
-        if seconds > 0.5 {
-            MemoryLog.log.notice("3D render: strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) took \(seconds, format: .fixed(precision: 2), privacy: .public) s on the GPU")
+        // Slow strips, and every strip for a while after a failure: what the GPU budget looks
+        // like on the device (the watchdog's limit isn't published).
+        if seconds > 0.1 || diagnosticStrips > 0 {
+            diagnosticStrips = max(0, diagnosticStrips - 1)
+            MemoryLog.log.notice("3D render: strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) took \(seconds, format: .fixed(precision: 3), privacy: .public) s on the GPU (\(self.settingsSummary, privacy: .public))")
         }
-        if let error = buffer.error { recover(from: error, view: view) } else if strip == strips - 1 { gpuFailures = 0 }
+        if let error = buffer.error {
+            MemoryLog.log.error("3D render: the killed strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) ran \(seconds, format: .fixed(precision: 3), privacy: .public) s on the GPU before the watchdog")
+            diagnosticStrips = 40
+            recover(from: error, view: view)
+        } else if strip == strips - 1 { gpuFailures = 0 }
         if inFlight == 0, redrawWanted { redrawWanted = false; view?.setNeedsDisplay() }
+    }
+
+    /// Strips still to log after a failure (see `completed`).
+    private var diagnosticStrips = 0
+
+    /// The render settings in force, for the logs: which path a slow or killed frame took.
+    private var settingsSummary: String {
+        let active = clips.prefix(ClipSetting.maxCount).filter(\.enabled).count
+        return "mode \(mode == 0 ? "MIP" : mode == 1 ? "Volume" : "Surface"), clips \(active)\(clipCutaway ? " cutaway" : "")\(clipKeepLabels ? " keep-labels" : ""), "
+            + "overlay \(labelTex == nil ? "off" : "on, ghost \(overlayGhost)"), cutout \(cutout.texture == nil ? "off" : "on"), "
+            + String(format: "camera clip %.2f, zoom %.2f, stride %d, scale %.1f, skip %@", cameraClipFraction, zoom, glideCoarse ? 4 : 1, Double(pointScale), emptySkip ? "on" : "off")
     }
 
     /// Frames that failed in a row (a success resets it); after a few, the view waits for
@@ -367,7 +475,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     private func recover(from error: Error, view: MTKView?) {
         gpuFailures += 1
         let size = view?.drawableSize ?? .zero
-        MemoryLog.log.error("3D render: frame \(self.gpuFailures, privacy: .public) failed: \(error.localizedDescription, privacy: .public); drawable \(Int(size.width), privacy: .public)×\(Int(size.height), privacy: .public), free memory \(os_proc_available_memory() >> 20, privacy: .public) MB")
+        MemoryLog.log.error("3D render: frame \(self.gpuFailures, privacy: .public) failed: \(error.localizedDescription, privacy: .public); drawable \(Int(size.width), privacy: .public)×\(Int(size.height), privacy: .public), free memory \(os_proc_available_memory() >> 20, privacy: .public) MB; \(self.settingsSummary, privacy: .public)")
         guard gpuFailures <= 5 else { return }
         if let fresh = device.makeCommandQueue() { queue = fresh }
         retryDraw(view, after: 0.25 * Double(gpuFailures))
@@ -397,6 +505,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         enc.setFragmentTexture(labelTex ?? noLabels, index: 2)
         enc.setFragmentTexture(labelLUT, index: 3)
         enc.setFragmentTexture(cutout.texture ?? noLabels, index: 4)
+        enc.setFragmentTexture(blockMaxTex, index: 5)
+        enc.setFragmentTexture(labelBlocksTex ?? noLabels, index: 6)
         enc.setFragmentSamplerState(sampler, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
@@ -467,7 +577,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
                         fovCount: Int32(fov.count / 2), crosshairStep: 0,
                         cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipKeepLabels ? 1 : 0,
-                        sampleStride: glideCoarse ? 4 : 1)
+                        sampleStride: glideCoarse ? 4 : 1, emptySkip: emptySkip ? 1 : 0)
     }
 }
 

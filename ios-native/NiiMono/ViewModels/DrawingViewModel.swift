@@ -63,8 +63,16 @@ final class DrawingViewModel: Identifiable {
 
     // Revisions: strokes change `grid` at once but are published at most ~30 times a second.
     private(set) var revision = 0
-    private var dirtyZ: Range<Int>?
-    private var pendingZ: Range<Int>?
+    private var dirtyBox: VoxelBox?
+    /// The 3D pane's own revision: a full raycast of the volume per frame, so it follows a
+    /// stroke at a slow pace (every 250 ms) rather than every 33 ms, and at once when the
+    /// stroke ends (and on fills, undo, smoothing).
+    private(set) var revision3D = 0
+    private var flush3DTask: Task<Void, Never>?
+    private var dirtyZ3D: Range<Int>?
+    private var pendingBox3D: VoxelBox?
+    private var pendingAll3D = false
+    private var pendingBox: VoxelBox?
     private var pendingAll = false
     private var flushTask: Task<Void, Never>?
 
@@ -128,7 +136,8 @@ final class DrawingViewModel: Identifiable {
             lut[l.id] = SIMD4(UInt8(l.color[0] * 255), UInt8(l.color[1] * 255), UInt8(l.color[2] * 255), 255)
         }
         return SegmentationOverlay(mapID: mapID, labels: grid, lut: lut, opacity: opacity, ghost: in3D && showThrough,
-                                   hideScan: hideScan, revision: revision, dirtyZ: dirtyZ)
+                                   hideScan: hideScan, revision: in3D ? revision3D : revision,
+                                   dirtyZ: in3D ? dirtyZ3D : dirtyBox?.z, dirtyBox: in3D ? nil : dirtyBox)
     }
 
     // MARK: Labels
@@ -195,7 +204,9 @@ final class DrawingViewModel: Identifiable {
 
     private func touched(_ plane: SlicePlane, _ rows: ClosedRange<Int>) {
         edited = true
-        markDirty(plane.z(rows: rows))
+        var b = plane.box
+        b.lo[plane.row] = rows.lowerBound; b.hi[plane.row] = rows.upperBound + 1
+        markDirty(b)
     }
 
     /// Labels already smoothed remember the bricks whose voxels of theirs changed in `box`
@@ -231,14 +242,14 @@ final class DrawingViewModel: Identifiable {
                     for k in wide.lo[plane.axis]..<wide.hi[plane.axis] where k != plane.index { d[i + (k - plane.index) * stride] = after[bi] }
                 } } }
             }
-            markDirty(wide.z)
+            markDirty(wide)
             box = wide; before = snapshot
         }
         noteEdit(box, before: before)
         repairScan(box, before: before)
         pushUndo(box, before)
         lastCommit = .now // a finger-tap undo may still drop this stroke (see tapUndo)
-        flush()
+        flush(); flush3D()
     }
 
     private func pushUndo(_ box: VoxelBox, _ before: [UInt8]) {
@@ -270,8 +281,8 @@ final class DrawingViewModel: Identifiable {
         let current = LabelPainter.read(grid, box: step.box)
         LabelPainter.write(grid, box: step.box, step.values)
         repairScan(step.box, before: current)
-        markDirty(step.box.z)
-        flush()
+        markDirty(step.box)
+        flush(); flush3D()
     }
 
     private func swapSlice(from: inout [(box: VoxelBox, values: [UInt8])], to: inout [(box: VoxelBox, values: [UInt8])]) {
@@ -282,8 +293,8 @@ final class DrawingViewModel: Identifiable {
         edited = true
         noteEdit(step.box, before: current)
         repairScan(step.box, before: current)
-        markDirty(step.box.z)
-        flush()
+        markDirty(step.box)
+        flush(); flush3D()
     }
 
     // MARK: Smoothing
@@ -344,8 +355,8 @@ final class DrawingViewModel: Identifiable {
         LabelPainter.write(grid, box: result.box, result.values)
         repairScan(result.box, before: before)
         edited = true
-        markDirty(result.box.z)
-        flush()
+        markDirty(result.box)
+        flush(); flush3D()
     }
 
     // MARK: Live banding repair
@@ -378,9 +389,10 @@ final class DrawingViewModel: Identifiable {
         guard purpose == .repair,
               let changed = LabelPainter.changedBounds(before: before, after: LabelPainter.read(grid, box: box), box: box) else { return }
         let (nx, ny, nz) = volume.dims, plane = nx * ny
-        var v = preview ?? volume // the first stroke copies the scan once
+        if preview == nil { preview = volume.withOwnStorage() } // the first stroke copies the scan, once
+        let store = preview!.storage // edited in place: the views share this box
         var zlo = Int.max, zhi = -1, repaired = 0, restored = 0, wholeColumns = 0
-        v.data.withUnsafeMutableBufferPointer { d in grid.data.withUnsafeBufferPointer { m in volume.data.withUnsafeBufferPointer { o in
+        store.floats.withUnsafeMutableBufferPointer { d in grid.data.withUnsafeBufferPointer { m in volume.data.withUnsafeBufferPointer { o in
             for y in changed.lo.y..<changed.hi.y { for x in changed.lo.x..<changed.hi.x {
                 for z in 0..<nz {
                     let i = x + nx * (y + ny * z)
@@ -415,8 +427,8 @@ final class DrawingViewModel: Identifiable {
         // an existing blemish re-fill the part it joins.
         let margin = SIMD3(repeating: 8)
         let healBox = VoxelBox(lo: pointwiseMax(changed.lo &- margin, .zero), hi: pointwiseMin(changed.hi &+ margin, SIMD3(nx, ny, nz)))
-        let healed = ScanRepair.healed(data: v.data, mask: grid.data, dims: volume.dims, in: healBox)
-        v.data.withUnsafeMutableBufferPointer { d in
+        let healed = ScanRepair.healed(data: store.floats, mask: grid.data, dims: volume.dims, in: healBox)
+        store.floats.withUnsafeMutableBufferPointer { d in
             for (i, value) in zip(healed.indices, healed.values) where d[Int(i)] != value {
                 d[Int(i)] = value; repaired += 1
                 let z = Int(i) / plane; zlo = min(zlo, z); zhi = max(zhi, z)
@@ -432,9 +444,8 @@ final class DrawingViewModel: Identifiable {
             show(note: "Nothing changed: the painted voxels already match their surroundings.")
         }
         guard zhi >= 0 else { return }
-        v.id = UUID()
         previewDirtyZ = zlo..<(zhi + 1)
-        preview = v
+        preview!.id = UUID() // a new id: the panes re-read the (shared, edited) floats
     }
 
     /// Done in repair mode: the repaired scan, and for every voxel it changed its original
@@ -460,12 +471,15 @@ final class DrawingViewModel: Identifiable {
 
     // MARK: Publishing
 
-    /// `z` nil: everything changed.
-    private func markDirty(_ z: Range<Int>?) {
-        if let z, !pendingAll {
-            pendingZ = pendingZ.map { min($0.lowerBound, z.lowerBound)..<max($0.upperBound, z.upperBound) } ?? z
-        } else {
-            pendingAll = true
+    /// `box` nil: everything changed.
+    private func markDirty(_ box: VoxelBox?) {
+        if let box, !pendingAll { pendingBox = box.union(pendingBox) } else { pendingAll = true }
+        if let box, !pendingAll3D { pendingBox3D = box.union(pendingBox3D) } else { pendingAll3D = true }
+        if flush3DTask == nil {
+            flush3DTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                self?.flush3D()
+            }
         }
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
@@ -476,10 +490,18 @@ final class DrawingViewModel: Identifiable {
 
     private func flush() {
         flushTask?.cancel(); flushTask = nil
-        guard pendingAll || pendingZ != nil else { return }
-        dirtyZ = pendingAll ? nil : pendingZ
-        pendingZ = nil; pendingAll = false
+        guard pendingAll || pendingBox != nil else { return }
+        dirtyBox = pendingAll ? nil : pendingBox
+        pendingBox = nil; pendingAll = false
         revision += 1
+    }
+
+    private func flush3D() {
+        flush3DTask?.cancel(); flush3DTask = nil
+        guard pendingAll3D || pendingBox3D != nil else { return }
+        dirtyZ3D = pendingAll3D ? nil : pendingBox3D?.z
+        pendingBox3D = nil; pendingAll3D = false
+        revision3D += 1
     }
 
     // MARK: Result

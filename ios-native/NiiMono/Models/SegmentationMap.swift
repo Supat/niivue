@@ -54,6 +54,9 @@ struct SegmentationOverlay {
     /// since the previous revision (nil = unknown, upload everything).
     var revision = 0
     var dirtyZ: Range<Int>? = nil
+    /// The voxels changed since the previous revision (nil = unknown), so a slice view can
+    /// skip recompositing when its slice wasn't touched.
+    var dirtyBox: VoxelBox? = nil
 }
 
 /// Label voxels held by reference, so a drawing can change them in place while views hold
