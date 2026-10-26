@@ -91,6 +91,7 @@ struct ViewerView: View {
                 if !restored || model.segmentation.map == nil || !model.segmentation.canClassifyTissue {
                     await model.discoverSiblings()
                 }
+                model.opening = false
                 if UserDefaults.standard.bool(forKey: "segmentOrgans") { model.segmentation.generate() } // for checks
                 if UserDefaults.standard.bool(forKey: "openEditor") { model.startDrawing() } // for checks
                 if UserDefaults.standard.bool(forKey: "openRepair") { model.startScanRepair() } // for checks

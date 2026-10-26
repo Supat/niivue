@@ -81,9 +81,11 @@ import Observation
         visible = [Bool](repeating: true, count: (map?.labelRange.upperBound ?? 0))
     }
 
-    /// New generated or loaded maps replace the old ones; the drawing stays.
+    /// Generated or loaded maps join the others; only a map of the same name (a re-generation,
+    /// the same file loaded again) is replaced, so nothing already kept is lost.
     private func replaceMaps(with new: [SegmentationMap]) {
-        maps = new + maps.filter(\.isCustom)
+        let names = Set(new.map(\.name))
+        maps = new + maps.filter { !names.contains($0.name) }
         select(new.first?.id ?? maps.first?.id)
     }
 
@@ -113,6 +115,25 @@ import Observation
     func showCustom(_ new: SegmentationMap, labels: [CustomLabel]) {
         customLabels = labels
         maps.removeAll(where: \.isCustom)
+        maps.append(new)
+        select(new.id)
+    }
+
+    /// The fat map is being made (half a second released, far longer in a debug build).
+    var makingLiverFat = false
+
+    /// Show the liver fat-fraction map made from `map`'s liver (replacing an earlier one); the
+    /// other maps stay, and it is kept in the sidecar like any map.
+    func showLiverFat(from map: SegmentationMap, floorPercent: Double) async {
+        guard let water = waterImage, let fat = fatImage, !makingLiverFat else { return }
+        makingLiverFat = true
+        defer { makingLiverFat = false }
+        let volume = volume
+        guard let new = await Task.detached(priority: .userInitiated) { () -> SegmentationMap? in
+            FattyLiverEstimate.fatMap(water: water, fat: fat, map: map, floorPercent: floorPercent)
+                .map { SegmentationMap(labels: $0, name: LabelTable.liverFatMapName, volume: volume) }
+        }.value else { return }
+        maps.removeAll { $0.name == LabelTable.liverFatMapName }
         maps.append(new)
         select(new.id)
     }

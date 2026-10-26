@@ -51,8 +51,14 @@ struct InspectorView: View {
                 ImageSection(model: model.segmentation, fileURL: model.fileURL) // the Dixon role and companions
                 SegmentationSection(model: model.segmentation)
                 CustomSegmentationSection(model: model)
-                if let map = model.segmentation.map, map.name != LabelTable.customMapName { // no tissue densities for drawn labels
+                if let map = model.segmentation.map, ![LabelTable.customMapName, LabelTable.liverFatMapName].contains(map.name) { // no tissue densities for drawn labels or fat bins
                     BodyCompositionSection(model: model.bodyComposition, map: map)
+                }
+                // Measured on a map with a liver label, the shown one by default (the fat map itself has none).
+                if model.segmentation.canClassifyTissue {
+                    let maps = ([model.segmentation.map].compactMap { $0 } + model.segmentation.others)
+                        .filter { !FattyLiverEstimate.labels(in: $0.table, named: "liver").isEmpty }
+                    if !maps.isEmpty { FattyLiverSection(viewer: model, maps: maps) }
                 }
             case .profile:
                 ProfileSection(model: model.profile)
@@ -88,6 +94,20 @@ struct InspectorView: View {
                 }
             }
         }
+        // Covered until the sidecar has been applied: a form of defaults over a scan that has
+        // saved settings reads as lost settings.
+        .disabled(model.opening)
+        .overlay {
+            if model.opening {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text(model.openingStage ?? "Opening…").font(.footnote).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemGroupedBackground))
+            }
+        }
+        .animation(.default, value: model.opening)
         // Pages, like the tabs at the top of Preview's inspector. The panel keeps to the safe
         // area so the tabs sit below the navigation bar: the bar spans this column, and over
         // it the bar's buttons covered the tabs and took their touches.

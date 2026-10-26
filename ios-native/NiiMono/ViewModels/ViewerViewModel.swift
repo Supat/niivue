@@ -21,6 +21,9 @@ import Observation
     let sidecar: SidecarStore?
     /// What the open-time restore is doing right now (shown as a banner), nil when done.
     private(set) var openingStage: String?
+    /// True from open until the sidecar (or what lies beside the scan) has been applied; the
+    /// inspector stays covered meanwhile so half-restored settings are never on show.
+    var opening = true
     private(set) var sidecarSavedAt: Date?
     private(set) var sidecarMapsSaved = false
     /// Set when the sidecar named maps that couldn't be read back: nothing is saved (which
@@ -411,13 +414,24 @@ import Observation
         slices = (0..<3).map { volume.count(axis: $0) / 2 }
         lo = volume.displayMin
         hi = volume.displayMax
-        bodyComposition.fromFile = volume.subject.merging(fileURL.map(Self.jsonSubject) ?? SubjectInfo())
+        let json = fileURL.flatMap(Self.jsonText) ?? ""
+        bodyComposition.fromFile = volume.subject.merging(SubjectInfo(text: json))
+        acquisition = DixonAcquisition(text: json)
     }
 
-    /// Subject values from a BIDS JSON beside the scan (`<scan>.json`, as dcm2niix writes).
-    private static func jsonSubject(for fileURL: URL) -> SubjectInfo {
-        let json = fileURL.deletingLastPathComponent().appendingPathComponent(SegmentationPipeline.tags(of: fileURL)[0] + ".json")
-        return (try? String(contentsOf: json, encoding: .utf8)).map(SubjectInfo.init(text:)) ?? SubjectInfo()
+    /// TR and flip angle for the fatty-liver T1 correction (from the BIDS JSON, else the protocol's).
+    let acquisition: DixonAcquisition
+    /// The fatty-liver measurement, kept in the sidecar; made once and remade only on request.
+    var fattyLiver: FattyLiverEstimate?
+
+    /// The JSON beside the scan: BIDS `<scan>.json` (as dcm2niix writes) or the stitching
+    /// pipeline's `<tag>_metadata.json`, if any.
+    private static func jsonText(for fileURL: URL) -> String? {
+        let dir = fileURL.deletingLastPathComponent(), tags = SegmentationPipeline.tags(of: fileURL)
+        for name in [tags[0] + ".json"] + tags.map { $0 + "_metadata.json" } {
+            if let text = try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8) { return text }
+        }
+        return nil
     }
 
     // MARK: Sidecar
@@ -436,9 +450,12 @@ import Observation
                                 mask: segmentation.mask,
                                 shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
                                 kept2Name: segmentation.others.dropFirst().first?.name,
+                                kept3Name: segmentation.others.dropFirst(2).first?.name,
+                                mapNames: ([segmentation.map] + segmentation.others).compactMap { $0?.name },
                                 customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
             water: segmentation.waterCompanion, fat: segmentation.fatCompanion,
             inPhase: segmentation.phaseCompanion[.inPhase], opposed: segmentation.phaseCompanion[.opposed],
+            fattyLiver: fattyLiver,
             body: .init(weightKg: bodyComposition.weightKg, missing: bodyComposition.missing.map(\.rawValue).sorted(),
                         thighsMissingPercent: bodyComposition.thighsMissingPercent,
                         heightCm: bodyComposition.heightCm, ageYears: bodyComposition.ageYears,
@@ -462,6 +479,7 @@ import Observation
         cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
         bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
         removeNoise = s.viewer.removeNoise ?? true
+        fattyLiver = s.fattyLiver
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         segmentation.mask = s.segmentation.mask ?? false
@@ -512,8 +530,8 @@ import Observation
         }
         if s.segmentation.shownName != nil || missingNoise {
             openingStage = "Loading saved segmentation…"
-            let slots = zip(Self.mapSlots, [s.segmentation.shownName, s.segmentation.keptName, s.segmentation.kept2Name])
-                .compactMap { slot, name in name.map { (slot, $0) } }
+            let names = s.segmentation.mapNames ?? [s.segmentation.shownName, s.segmentation.keptName, s.segmentation.kept2Name, s.segmentation.kept3Name].compactMap { $0 }
+            let slots = names.enumerated().map { (Self.slot($0.offset), $0.element) }
             var (maps, missing) = await Task.detached(priority: .userInitiated) { () -> ([SegmentationMap], [String]) in
                 var maps: [SegmentationMap] = [], missing: [String] = []
                 for (slot, name) in slots {
@@ -575,8 +593,10 @@ import Observation
         }
     }
 
-    /// Sidecar files of the shown map and the others, in that order.
-    nonisolated private static let mapSlots = ["shown", "kept", "kept2"] // read from a detached task too
+    /// Sidecar file of the i-th map (the shown one first): shown / kept / kept2 / kept3 / kept4…
+    /// Every map is written, none dropped; slots past the last map are cleared up to `maxMaps`.
+    nonisolated private static func slot(_ i: Int) -> String { i == 0 ? "shown" : i == 1 ? "kept" : "kept\(i)" } // read from a detached task too
+    nonisolated private static let maxMaps = 32 // ponytail: the clearing loop's ceiling; a 33rd map is not saved
 
     /// Write the current maps (after a generation, load, switch or removal) in the background,
     /// one save after another (two at once could leave the slots mixed), plus a backup of the
@@ -594,8 +614,8 @@ import Observation
             guard self?.sidecarProblem == nil else { return }
             let ok = await Task.detached(priority: .utility) { () -> Bool in
                 do {
-                    for (i, slot) in Self.mapSlots.enumerated() {
-                        try sidecar.saveMap(i < ordered.count ? ordered[i] : nil, slot: slot, voxelSize: voxel)
+                    for i in 0..<Self.maxMaps {
+                        try sidecar.saveMap(i < ordered.count ? ordered[i] : nil, slot: Self.slot(i), voxelSize: voxel)
                     }
                     if let drawing {
                         try sidecar.saveDrawingBackup(CustomSegmentationFile.export(drawing, labels: labels, like: volume))

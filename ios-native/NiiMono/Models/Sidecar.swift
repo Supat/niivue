@@ -59,6 +59,10 @@ struct SidecarSettings: Codable, Equatable {
         /// picked from the name); the voxels live in shown.nii.gz / kept.nii.gz / kept2.nii.gz beside this file.
         var shownName: String?, keptName: String?
         var kept2Name: String? // a third map (the drawing beside both generated maps); absent in older sidecars
+        var kept3Name: String? // a fourth (the liver fat map beside those); absent in older sidecars
+        /// Every map, shown first, in `shown` / `kept` / `kept2` / `kept3` / `kept4`… .nii.gz; wins
+        /// over the four named fields above (kept for older builds). Absent in older sidecars.
+        var mapNames: [String]?
         var customLabels: [CustomLabel]? // the drawn map's label names; absent in older sidecars
     }
     var segmentation: Segmentation
@@ -69,6 +73,8 @@ struct SidecarSettings: Codable, Equatable {
     /// The Dixon in-phase and opposed-phase images, when added (for spotting cavities while
     /// drawing); absent in older sidecars.
     var inPhase: Companion?, opposed: Companion?
+    /// The fatty-liver measurement, once made; absent in older sidecars.
+    var fattyLiver: FattyLiverEstimate?
 
     struct Body: Codable, Equatable {
         var weightKg: Double, missing: [String], thighsMissingPercent: Double

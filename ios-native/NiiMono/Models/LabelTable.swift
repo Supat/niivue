@@ -75,8 +75,16 @@ struct LabelTable {
 
     static let generic = LabelTable(names: [:], colors: [:])
 
+    /// The liver fat-fraction map (FattyLiverEstimate.fatMap): one label per steatosis grade,
+    /// 1 = under 6 % … 4 = 22 % and over, in the grade's colour (blue, yellow, orange, red).
+    static let liverFatMapName = "Liver fat fraction"
+    static let liverFat = LabelTable(
+        names: Dictionary(uniqueKeysWithValues: SteatosisGrade.allCases.enumerated().map { ($0.offset + 1, "\($0.element.rawValue) (\($0.element.range))") }),
+        colors: Dictionary(uniqueKeysWithValues: SteatosisGrade.allCases.enumerated().map { ($0.offset + 1, $0.element.color) }))
+
     static func forFile(named name: String) -> LabelTable {
         let n = name.lowercased()
+        if n == liverFatMapName.lowercased() { return .liverFat }
         if n.contains("tissue") { return .tissues }
         if n.contains("structures") || n.contains("total_mr") || n.contains("totalseg") { return .totalMR }
         return .generic

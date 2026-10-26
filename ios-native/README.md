@@ -72,6 +72,26 @@ imaged mass against the expected share and extrapolates muscle and fat to the wh
 assuming the missing limbs share the imaged composition. A tap on the class list switches its
 masses between kg and percent of the subject's weight.
 
+**Fatty liver.** When a loaded map has a liver label and both Dixon images are here, the
+Segmentation page measures an apparent liver fat fraction (once; the result is kept in the
+sidecar and remade only with **Measure Again**). The section names the map it measures on
+(the shown map by default; a picker switches to any other loaded map with a liver, which
+remeasures) and the labels it takes as liver and spleen: the median F/(W+F) over the liver
+eroded by 2 voxels (clear of the capsule and edge vessels), the spleen as a zero reference,
+the in→opposed signal drop of each when the phase images are added, and a T1-corrected value
+(spoiled-gradient-echo weights for the protocol's TR 4.07 ms / 10°, or `RepetitionTime` /
+`FlipAngle` from the BIDS JSON beside the scan; T1 liver 842 ms, fat 382 ms at 3 T) graded at
+the PDFF bands 6 / 17 / 22 %. Two-point Dixon cannot give a validated PDFF (no T2*
+correction, single-peak fat, iron unassessed), so the grade is shown as an estimate with
+±7 pp uncertainty; it is not valid with iron overload or cirrhosis. **Show Fat Map** adds a
+"Liver fat fraction" segmentation map: each liver voxel's F/(W+F), averaged with its liver
+neighbours (3×3×3) and less the spleen's reading, labelled with its steatosis grade — four
+labels: no steatosis (< 6 %, blue), mild (6–17 %, yellow), moderate (17–22 %, orange), severe
+(≥ 22 %, red) — so it shows in every view and the 3D view with the usual opacity, show/hide
+(the label list is the legend) and mask controls, and is kept in the sidecar like any map. Maps are never
+dropped: the sidecar holds every loaded map (`shown`, `kept`, `kept2`, `kept3`, … listed in
+`mapNames`), and generating or loading a map replaces only a map of the same name.
+
 **Image role and companions.** The Image section says what the opened file is (Water / Fat /
 Other, inferred from a `_W` / `_F` suffix) and holds the companion Dixon image(s) the tissue
 classes need: the other one of the pair, found beside the scan or chosen by hand (both for
