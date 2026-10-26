@@ -11,6 +11,8 @@ struct SliceView: UIViewRepresentable {
     let volume: NiftiVolume
     let axis: Int
     let index: Int
+    /// Sample this plane instead of the `axis` / `index` slice (both unused then).
+    var oblique: ObliqueFrame? = nil
     let lo: Float
     let hi: Float
     let mirrored: Bool
@@ -37,7 +39,9 @@ struct SliceView: UIViewRepresentable {
     var onLocate: ((CGPoint) -> Void)? = nil
     /// If set, the Pencil draws (reported in the same fractions) instead of measuring.
     var onDraw: ((DrawPhase, CGPoint) -> Void)? = nil
-    /// With onDraw: a finger draws too (pan and zoom then need a trackpad).
+    /// Reports a finished Pencil ruler's ends (same fractions).
+    var onMeasured: ((CGPoint, CGPoint) -> Void)? = nil
+    /// With onDraw or onMeasured: a finger draws too (pan and zoom then need a trackpad).
     var drawsWithFinger = false
     /// Two- and three-finger taps (the drawing pane's undo and redo); nil = off.
     var onTwoFingerTap: (() -> Void)? = nil
@@ -58,6 +62,7 @@ struct SliceView: UIViewRepresentable {
         let volumeID: UUID, axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
         let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, lut: [SIMD4<UInt8>]
         let cutoutID: UUID?, cutoutRevision: Int
+        let oblique: ObliqueFrame?
     }
 
     func updateUIView(_ view: ZoomView, context: Context) {
@@ -65,24 +70,26 @@ struct SliceView: UIViewRepresentable {
         // a revision this view didn't see could have), so the other panes of the editor don't
         // recomposite at every stroke update.
         var revision = overlay?.revision ?? 0
-        if let o = overlay, let box = o.dirtyBox, let seen = view.imageKey, seen.mapID == o.mapID, seen.revision + 1 == o.revision,
+        if oblique == nil, let o = overlay, let box = o.dirtyBox, let seen = view.imageKey, seen.mapID == o.mapID, seen.revision + 1 == o.revision,
            !(box.lo[axis] <= index && index < box.hi[axis]) {
             revision = seen.revision
         }
         let key = ImageKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
                            mapID: overlay?.mapID, revision: revision, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
-                           lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0)
+                           lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0,
+                           oblique: oblique)
         if view.imageKey != key {
             view.imageKey = key
             if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         }
-        let e = volume.sliceExtent(axis: axis)
+        let e = oblique.map { (Float($0.width) * $0.pitch, Float($0.height) * $0.pitch) } ?? volume.sliceExtent(axis: axis)
         view.extent = CGSize(width: CGFloat(e.0), height: CGFloat(e.1))
         view.fitExtent = fitExtent
         view.onTap = onTap
         view.onScrub = onScrub
         view.onLocate = onLocate
         view.onDraw = onDraw
+        view.onMeasured = onMeasured
         view.onTwoFingerTap = onTwoFingerTap
         view.onThreeFingerTap = onThreeFingerTap
         view.drawsWithFinger = drawsWithFinger
@@ -115,22 +122,36 @@ struct SliceView: UIViewRepresentable {
     }
 
     private func makeImage() -> CGImage? {
+        if let oblique {
+            let o = volume.obliqueSlice(centre: oblique.centre, u: oblique.u, v: oblique.v, pitch: oblique.pitch,
+                                        width: oblique.width, height: oblique.height, lo: lo, hi: hi)
+            if let overlay {
+                var px = volume.obliqueRGBX(grey: o.pixels, voxel: o.voxel, overlay: overlay)
+                if let cutout { volume.cutOut(&px, bytesPerPixel: 4, voxel: o.voxel, mask: cutout.labels) }
+                return Self.image(px, width: o.width, height: o.height, rgbx: true)
+            }
+            var px = o.pixels
+            if let cutout { volume.cutOut(&px, bytesPerPixel: 1, voxel: o.voxel, mask: cutout.labels) }
+            return Self.image(px, width: o.width, height: o.height, rgbx: false)
+        }
         if let overlay {
             var s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
             if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 4, axis: axis, index: index, mask: cutout.labels) }
-            return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
-                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: s.width * 4,
-                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-            }
+            return Self.image(s.pixels, width: s.width, height: s.height, rgbx: true)
         } else {
             var s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
             if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 1, axis: axis, index: index, mask: cutout.labels) }
-            return CGDataProvider(data: Data(s.pixels) as CFData).flatMap {
-                CGImage(width: s.width, height: s.height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: s.width,
-                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                        provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-            }
+            return Self.image(s.pixels, width: s.width, height: s.height, rgbx: false)
+        }
+    }
+
+    /// 8-bit grey, or RGBX (4 bytes a pixel), pixels as a CGImage.
+    private static func image(_ pixels: [UInt8], width: Int, height: Int, rgbx: Bool) -> CGImage? {
+        CGDataProvider(data: Data(pixels) as CFData).flatMap {
+            CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: rgbx ? 32 : 8, bytesPerRow: width * (rgbx ? 4 : 1),
+                    space: rgbx ? CGColorSpaceCreateDeviceRGB() : CGColorSpaceCreateDeviceGray(),
+                    bitmapInfo: CGBitmapInfo(rawValue: (rgbx ? CGImageAlphaInfo.noneSkipLast : .none).rawValue),
+                    provider: $0, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         }
     }
 }
@@ -158,6 +179,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private let twoFingerTap = UITapGestureRecognizer()
     private let threeFingerTap = UITapGestureRecognizer()
     var onDraw: ((DrawPhase, CGPoint) -> Void)? { didSet { if onDraw != nil { measure = nil } } }
+    var onMeasured: ((CGPoint, CGPoint) -> Void)?
     var drawsWithFinger = false {
         didSet {
             let types: [UITouch.TouchType] = drawsWithFinger ? [.pencil, .direct] : [.pencil]
@@ -170,7 +192,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     private var reported: CGRect?
     var imageKey: SliceView.ImageKey? {
         // A measurement belongs to one slice as displayed.
-        didSet { if (oldValue?.axis, oldValue?.index, oldValue?.mirrored) != (imageKey?.axis, imageKey?.index, imageKey?.mirrored) { measure = nil } }
+        didSet { if (oldValue?.axis, oldValue?.index, oldValue?.mirrored, oldValue?.oblique) != (imageKey?.axis, imageKey?.index, imageKey?.mirrored, imageKey?.oblique) { measure = nil } }
     }
     /// Apple Pencil ruler: end points in image points at zoom 1 (imageView's own space),
     /// so it follows zoom and pan; `done` once the Pencil has lifted.
@@ -472,6 +494,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
             measure?.b = p; measure?.done = true
             // A Pencil tap (no drag) clears the ruler instead of leaving a dot.
             if let m = measure, hypot(m.b.x - m.a.x, m.b.y - m.a.y) * zoomScale < 4 { measure = nil }
+            if let m = measure, let onMeasured {
+                let s = imageView.bounds.size
+                if s.width > 0, s.height > 0 { onMeasured(CGPoint(x: m.a.x / s.width, y: m.a.y / s.height), CGPoint(x: m.b.x / s.width, y: m.b.y / s.height)) }
+            }
         default: measure = nil // cancelled
         }
     }

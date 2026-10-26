@@ -8,6 +8,7 @@
 //
 
 import Accelerate
+import simd
 import Compression
 import Foundation
 import zlib
@@ -84,6 +85,45 @@ struct NiftiVolume: @unchecked Sendable {
             }
         }
         return (w, h, px)
+    }
+
+    /// 8-bit windowed slice on any plane, row 0 at the top: pixel (c, r) samples the point
+    /// `centre + u·((c + 0.5) − w/2)·pitch + v·(h/2 − (r + 0.5))·pitch` (mm, the volume's corner
+    /// at the origin) between its eight neighbouring voxels. `voxel` is the nearest voxel of each
+    /// pixel (its index into `data`), −1 outside the volume, so labels can be laid over it.
+    /// ponytail: CPU trilinear, like the axis slices; sample the renderer's 3D texture if a
+    /// large volume scrubs too slowly.
+    func obliqueSlice(centre: SIMD3<Float>, u: SIMD3<Float>, v: SIMD3<Float>, pitch: Float, width w: Int, height h: Int,
+                      lo: Float, hi: Float) -> (width: Int, height: Int, pixels: [UInt8], voxel: [Int32]) {
+        let (nx, ny, nz) = dims
+        let size = SIMD3(voxelSize.0, voxelSize.1, voxelSize.2), last = SIMD3<Float>(Float(nx - 1), Float(ny - 1), Float(nz - 1))
+        let scale = 255 / max(hi - lo, .leastNonzeroMagnitude)
+        var px = [UInt8](repeating: 0, count: w * h), vox = [Int32](repeating: -1, count: w * h)
+        let du = u * pitch / size // one pixel along a row, in voxels
+        data.withUnsafeBufferPointer { d in px.withUnsafeMutableBufferPointer { px in vox.withUnsafeMutableBufferPointer { vox in
+            for r in 0..<h {
+                // Voxel coordinates: voxel i is centred at i, so (point / size − 0.5).
+                var q = (centre + u * ((0.5 - Float(w) / 2) * pitch) + v * ((Float(h) / 2 - Float(r) - 0.5) * pitch)) / size - 0.5
+                for c in 0..<w {
+                    defer { q += du }
+                    let n = q.rounded(.toNearestOrAwayFromZero)
+                    guard all(n .>= 0), all(n .<= last) else { continue }
+                    let o = r * w + c
+                    vox[o] = Int32(Int(n.x) + nx * (Int(n.y) + ny * Int(n.z)))
+                    let f = q.rounded(.down), t = q - f
+                    let i0 = simd_clamp(f, SIMD3<Float>(repeating: 0), last), i1 = simd_min(i0 + 1, last)
+                    let x0 = Int(i0.x), y0 = Int(i0.y) * nx, z0 = Int(i0.z) * nx * ny
+                    let x1 = Int(i1.x), y1 = Int(i1.y) * nx, z1 = Int(i1.z) * nx * ny
+                    let c00 = d[x0 + y0 + z0] + (d[x1 + y0 + z0] - d[x0 + y0 + z0]) * t.x
+                    let c10 = d[x0 + y1 + z0] + (d[x1 + y1 + z0] - d[x0 + y1 + z0]) * t.x
+                    let c01 = d[x0 + y0 + z1] + (d[x1 + y0 + z1] - d[x0 + y0 + z1]) * t.x
+                    let c11 = d[x0 + y1 + z1] + (d[x1 + y1 + z1] - d[x0 + y1 + z1]) * t.x
+                    let c0 = c00 + (c10 - c00) * t.y, c1 = c01 + (c11 - c01) * t.y
+                    px[o] = UInt8(max(0, min(255, (c0 + (c1 - c0) * t.z - lo) * scale)))
+                }
+            }
+        } } }
+        return (w, h, px, vox)
     }
 
     /// Physical size (mm) of a slice perpendicular to `axis`, for aspect-correct display.

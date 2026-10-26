@@ -28,13 +28,14 @@ struct ViewerView: View {
     private static let selectorLeft: CGFloat = 240 // after the back button and a typical name
     /// 92 pt a segment where there's room (space around "Coronal" and "Sagittal"); narrower
     /// in a narrow window so that the folded cluster still fits beside it.
-    private var pickerWidth: CGFloat { min(460, max(320, fullWidth - 560)) }
+    private var pickerWidth: CGFloat { min(520, max(360, fullWidth - 560)) }
     private static let barInset: CGFloat = 9 // the bar's margin after its last item
     private static let clusterGap: CGFloat = 16.5 // the bar's spacing between the two items (measured)
     private static func clusterWidth(buttons n: Int) -> CGFloat { 52 * CGFloat(n) + 1 }
     /// Buttons in the full cluster (see `viewControls`, plus Inspector).
     private var clusterButtons: Int {
-        5 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 2 : 0) + (model.plane.axis == nil ? 1 : 0)
+        5 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 2 : 0) + (model.plane.isSlice ? 0 : 1)
+            + (model.plane == .oblique ? -1 : 0) + (model.plane != .render && model.plane != .oblique ? 1 : 0)
     }
     /// The clear width right of the selector that keeps it at `selectorLeft`, for a cluster
     /// of `buttons`.
@@ -77,9 +78,12 @@ struct ViewerView: View {
             .overlay(alignment: .bottom) {
                 // The scrubber's bottom edge sits 15% of the screen height up from the bottom,
                 // in either orientation, clear of the thumb and the home indicator.
-                if !chromeHidden, let axis = model.plane.axis, volume.count(axis: axis) > 1 {
-                    SliceScrubber(model: model, axis: axis, count: volume.count(axis: axis))
+                if !chromeHidden, model.plane == .oblique {
+                    SliceScrubber(value: Binding(get: { model.obliqueIndex }, set: { model.obliqueIndex = $0 }), count: model.obliqueCount)
                         .padding(.bottom, max(0, canvasHeight * 0.15 - 16)) // less the scrubber's own margin
+                } else if !chromeHidden, let axis = model.plane.axis, volume.count(axis: axis) > 1 {
+                    SliceScrubber(model: model, axis: axis, count: volume.count(axis: axis))
+                        .padding(.bottom, max(0, canvasHeight * 0.15 - 16))
                 }
             }
             // Chrome auto-hides a few seconds after it appears or was last used, like a
@@ -160,7 +164,10 @@ struct ViewerView: View {
             .disabled(model.fovBoxes.isEmpty)
         Toggle("Crosshair", systemImage: "dot.crosshair", isOn: $model.showCrosshair)
         if model.plane != .render { BookmarkMenu(model: model) }
-        if model.plane.axis == nil { // 3D and multiplanar
+        if model.plane != .render && model.plane != .oblique {
+            Toggle("Oblique Plane Through a Line", systemImage: "pencil.line", isOn: $model.obliqueByLine)
+        }
+        if !model.plane.isSlice { // 3D and multiplanar
             Menu("View", systemImage: "move.3d") {
                 ForEach(ViewPreset.sides) { preset in
                     Button(preset.rawValue) { model.applyPreset(preset) }
@@ -173,7 +180,7 @@ struct ViewerView: View {
             Toggle("Side by Side with Photo", systemImage: "rectangle.split.2x1",
                    isOn: Binding(get: { model.showsSideBySide }, set: { model.sideBySide = $0 }))
                 .disabled(!model.canSideBySide) // landscape, and the view's photo is in the profile
-        } else {
+        } else if !model.plane.isSlice {
             Toggle("Show Profile", systemImage: "figure",
                    isOn: Binding(get: { model.showsProfile }, set: { model.showProfile = $0 }))
                 .disabled(model.profile.faceCutout == nil) // needs a Coronal Front photo with a face in it
@@ -210,6 +217,19 @@ private struct VolumeCanvas: View {
             .overlay(alignment: .bottomTrailing) {
                 if model.showCrosshair { lockButton(bottom: 0) }
             }
+        case .oblique:
+            SliceView(volume: model.volume, axis: 0, index: 0, oblique: model.obliqueFrame, lo: model.lo, hi: model.hi,
+                      mirrored: model.mirrored, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
+                      crosshair: model.showCrosshair ? model.crosshairInOblique : nil,
+                      onLocate: model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locateOblique(p) } : nil,
+                      scaleBarInset: labelInset, onTap: onTap) { model.obliqueIndex += $0 }
+                .overlay {
+                    // Untilted, the base plane's directions hold; tilted, no edge is one direction.
+                    if model.oblique.tilt == .zero { DirectionLabels(axis: Int(model.oblique.base.axis), mirrored: model.mirrored, bottomInset: labelInset) }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if model.showCrosshair { lockButton(bottom: labelInset + 32) }
+                }
         default:
             let axis = model.plane.axis!
             let pane = slice(axis)
@@ -316,6 +336,9 @@ private struct VolumeCanvas: View {
                              : model.showCrosshair ? model.crosshair(in: axis) : nil,
                          fov: model.fovRects(in: axis),
                          onLocate: (multi || !model.showsSideBySide) && model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locate(p, in: axis) } : nil,
+                         // Oblique plane through a line: the ruler's ends set it.
+                         onMeasured: model.obliqueByLine ? { a, b in onInteract(); model.setOblique(from: a, to: b, in: axis) } : nil,
+                         drawsWithFinger: model.obliqueByLine,
                          onViewport: model.showsSideBySide ? { model.sliceViewport = $0 } : nil,
                          scaleBarInset: multi ? 0 : labelInset,
                          onTap: onTap) { model.stepSlice(axis: axis, by: $0) }
@@ -353,16 +376,21 @@ private struct DirectionLabels: View {
 }
 
 struct SliceScrubber: View {
-    let model: ViewerViewModel
-    let axis: Int
+    let value: Binding<Int>
     let count: Int
+
+    init(value: Binding<Int>, count: Int) { self.value = value; self.count = count }
+    /// The slice along `axis`.
+    init(model: ViewerViewModel, axis: Int, count: Int) {
+        self.init(value: Binding(get: { model.slices[axis] }, set: { model.slices[axis] = $0 }), count: count)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
-            StepSlider(value: Binding(get: { Double(model.slices[axis]) }, set: { model.slices[axis] = Int($0.rounded()) }),
+            StepSlider(value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Int($0.rounded()) }),
                        in: 0...Double(count - 1), unit: 1)
                 .accessibilityLabel("Slice")
-            Text("\(model.slices[axis] + 1) of \(count)")
+            Text("\(value.wrappedValue + 1) of \(count)")
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(.secondary)
         }

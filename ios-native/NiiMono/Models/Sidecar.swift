@@ -49,6 +49,8 @@ struct SidecarSettings: Codable, Equatable {
         /// A banding repair mask is saved (repair.nii.gz).
         var repair: Bool?
         var clipKeepSegments: Bool? // absent in older sidecars
+        struct Oblique: Codable, Equatable { var plane: String, pos: Float, tilt: [Float] }
+        var oblique: Oblique? // the Oblique view's plane; absent in older sidecars
     }
     var viewer: Viewer
 

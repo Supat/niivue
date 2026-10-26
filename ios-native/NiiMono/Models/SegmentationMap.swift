@@ -136,6 +136,41 @@ extension NiftiVolume {
         } } }
     }
 
+    /// Removed noise on an oblique slice: pixels whose nearest `voxel` the `mask` marks go black.
+    func cutOut(_ px: inout [UInt8], bytesPerPixel bpp: Int, voxel: [Int32], mask: LabelGrid) {
+        mask.data.withUnsafeBufferPointer { m in px.withUnsafeMutableBufferPointer { p in
+            for (o, i) in voxel.enumerated() where i >= 0 && m[Int(i)] != 0 {
+                for b in 0..<min(bpp, 3) { p[o * bpp + b] = 0 }
+            }
+        } }
+    }
+
+    /// An oblique slice's `grey` pixels with the segmentation blended in, as `sliceRGBX`,
+    /// each pixel taking the label of its nearest `voxel` (−1 outside: left grey).
+    func obliqueRGBX(grey: [UInt8], voxel: [Int32], overlay: SegmentationOverlay) -> [UInt8] {
+        let a = Int(overlay.opacity * 256), ia = 256 - a
+        let lut = overlay.lut
+        var px = [UInt8](repeating: 255, count: grey.count * 4)
+        overlay.labels.data.withUnsafeBufferPointer { lab in
+            px.withUnsafeMutableBufferPointer { px in
+                for (p, i) in voxel.enumerated() {
+                    let g = Int(grey[p]), o = p * 4
+                    let color = i >= 0 ? lut[Int(lab[Int(i)])] : .zero
+                    if overlay.mask && color.w == 0 && i >= 0 {
+                        px[o] = 0; px[o + 1] = 0; px[o + 2] = 0
+                    } else if color.w > 0 {
+                        px[o] = UInt8((g * ia + Int(color.x) * a) >> 8)
+                        px[o + 1] = UInt8((g * ia + Int(color.y) * a) >> 8)
+                        px[o + 2] = UInt8((g * ia + Int(color.z) * a) >> 8)
+                    } else {
+                        px[o] = UInt8(g); px[o + 1] = UInt8(g); px[o + 2] = UInt8(g)
+                    }
+                }
+            }
+        }
+        return px
+    }
+
     /// Grey slice with the segmentation blended in (RGBX, 4 bytes/pixel): pixels whose label
     /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`).
     func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay) -> (width: Int, height: Int, pixels: [UInt8]) {

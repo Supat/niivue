@@ -23,6 +23,7 @@ struct InspectorView: View {
                     LabeledContent("White") { StepSlider(value: $model.hi, in: range, unit: unit) }
                     Button("Reset") { model.resetWindow() }
                 }
+                if model.plane != .render { ObliqueSection(model: model) }
                 NoiseSection(model: model)
                 BandingSection(model: model)
                 FOVSection(model: model)
@@ -193,12 +194,37 @@ private struct ClipPlaneSections: View {
         }
     }
 
-    private func tiltSlider(_ title: String, _ value: Binding<Float>) -> some View {
-        VStack(alignment: .leading) {
-            LabeledContent(title, value: "\(Int(value.wrappedValue.rounded()))°")
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { value.wrappedValue = 0 } // double-tap the readout to zero it
-            StepSlider(value: value, in: -90...90, unit: 1)
+}
+
+/// A tilt in degrees, ±90; a double-tap on the readout zeroes it.
+private func tiltSlider(_ title: String, _ value: Binding<Float>) -> some View {
+    VStack(alignment: .leading) {
+        LabeledContent(title, value: "\(Int(value.wrappedValue.rounded()))°")
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { value.wrappedValue = 0 }
+        StepSlider(value: value, in: -90...90, unit: 1)
+    }
+}
+
+/// The Oblique view's plane: an anatomical plane tilted and slid, or set through a line
+/// drawn on a slice.
+private struct ObliqueSection: View {
+    @Bindable var model: ViewerViewModel
+
+    var body: some View {
+        Section("Oblique Plane") {
+            Picker("Plane", selection: $model.oblique.base) {
+                ForEach(ClipSetting.Plane.allCases) { Text($0.rawValue).tag($0) }
+            }
+            // Tilt axes are the two after the plane's own axis, cyclically, as for the clip planes.
+            let names = ["L–R", "A–P", "S–I"], a = Int(model.oblique.base.axis)
+            tiltSlider("Tilt about \(names[(a + 1) % 3])", $model.oblique.tilt.x)
+            tiltSlider("Tilt about \(names[(a + 2) % 3])", $model.oblique.tilt.y)
+            LabeledContent("Depth") { StepSlider(value: $model.oblique.pos, in: 0...1, unit: 0.01) }
+            Toggle("Set Through a Line", isOn: $model.obliqueByLine)
+            Text("On: a ruler drawn on an axial, coronal or sagittal slice (Pencil, or a finger; pan and zoom then need a trackpad) puts the plane through that line, square to the slice, and opens the Oblique view.")
+                .font(.caption2).foregroundStyle(.secondary)
+            if model.plane != .oblique { Button("Show Oblique View") { model.plane = .oblique } }
         }
     }
 }

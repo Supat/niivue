@@ -6,6 +6,7 @@
 
 import Foundation
 import Observation
+import simd
 
 @Observable @MainActor final class ViewerViewModel {
     /// The scan as shown and analysed: the file's, with any banding repair applied (the file
@@ -445,7 +446,8 @@ import Observation
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks,
                           noise: noise != nil, removeNoise: removeNoise, repair: scanRepair != nil,
-                          clipKeepSegments: clipKeepSegments),
+                          clipKeepSegments: clipKeepSegments,
+                          oblique: .init(plane: oblique.base.rawValue, pos: oblique.pos, tilt: [oblique.tilt.x, oblique.tilt.y])),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
                                 mask: segmentation.mask,
                                 shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
@@ -478,6 +480,9 @@ import Observation
         cameraClip = s.viewer.cameraClip ?? false
         cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
         bookmarks = (s.viewer.bookmarks ?? []).filter { $0.slices.count == 3 }
+        if let o = s.viewer.oblique, let base = ClipSetting.Plane(rawValue: o.plane) {
+            oblique = ObliquePlane(base: base, tilt: SIMD2(o.tilt.first ?? 0, o.tilt.last ?? 0), pos: min(1, max(0, o.pos)))
+        }
         removeNoise = s.viewer.removeNoise ?? true
         fattyLiver = s.fattyLiver
         segmentation.opacity = s.segmentation.opacity
@@ -762,6 +767,52 @@ import Observation
     var sliceEnvelope: CGSize {
         let e = (0..<3).map(volume.sliceExtent)
         return CGSize(width: CGFloat(e.map(\.0).max()!), height: CGFloat(e.map(\.1).max()!))
+    }
+
+    // MARK: Oblique slice
+
+    /// The Oblique view's plane. `-obliqueTilt 30` presets a tilt for checks.
+    var oblique = ObliquePlane(base: .axial, tilt: SIMD2(UserDefaults.standard.float(forKey: "obliqueTilt"), 0))
+    /// A ruler drawn on a slice (Pencil, or a finger too) puts the oblique plane through it.
+    var obliqueByLine = false
+    var obliqueFrame: ObliqueFrame { oblique.frame(dims: volume.dims, voxelSize: volume.voxelSize) }
+    /// The plane's positions a pixel apart, for the scrubber.
+    var obliqueCount: Int { let f = obliqueFrame; return max(2, Int(f.depth / f.pitch)) }
+    var obliqueIndex: Int {
+        get { Int((oblique.pos * Float(obliqueCount - 1)).rounded()) }
+        set { oblique.pos = Float(max(0, min(obliqueCount - 1, newValue))) / Float(obliqueCount - 1) }
+    }
+    private var voxelMM: SIMD3<Float> { SIMD3(volume.voxelSize.0, volume.voxelSize.1, volume.voxelSize.2) }
+    private var extentMM: SIMD3<Float> { SIMD3(Float(dims[0]), Float(dims[1]), Float(dims[2])) * voxelMM }
+
+    /// The crosshair (the current slices' voxel) dropped onto the oblique plane, as fractions
+    /// of the displayed image (x right, y down).
+    var crosshairInOblique: CGPoint {
+        let f = obliqueFrame, p = crosshairFractions * extentMM - f.centre
+        let u = 0.5 + CGFloat(dot(p, f.u) / (f.pitch * Float(f.width)))
+        return CGPoint(x: mirrored ? 1 - u : u, y: 0.5 - CGFloat(dot(p, f.v) / (f.pitch * Float(f.height))))
+    }
+
+    /// Tap in the oblique pane at image fractions `p`: move the slices to that voxel.
+    func locateOblique(_ p: CGPoint) {
+        let f = obliqueFrame
+        let x = Float(mirrored ? 1 - p.x : p.x) - 0.5, y = 0.5 - Float(p.y)
+        let vox = (f.centre + f.u * (x * f.pitch * Float(f.width)) + f.v * (y * f.pitch * Float(f.height))) / voxelMM
+        slices = (0..<3).map { max(0, min(dims[$0] - 1, Int(vox[$0].rounded(.down)))) }
+    }
+
+    /// A line drawn on the current slice of `axis`, from `a` to `b` (image fractions): the
+    /// oblique plane through it, shown in the Oblique view.
+    func setOblique(from a: CGPoint, to b: CGPoint, in axis: Int) {
+        let (c, r) = sliceAxes(axis)
+        func mm(_ p: CGPoint) -> SIMD3<Float> {
+            var f = SIMD3<Float>(repeating: 0)
+            f[c] = Float(mirrored ? 1 - p.x : p.x); f[r] = 1 - Float(p.y); f[axis] = (Float(slices[axis]) + 0.5) / Float(dims[axis])
+            return f * extentMM
+        }
+        guard let plane = ObliquePlane.through(mm(a), mm(b), viewAxis: axis, dims: volume.dims, voxelSize: volume.voxelSize) else { return }
+        oblique = plane
+        self.plane = .oblique
     }
 
     // MARK: Clip planes

@@ -556,13 +556,10 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         // Clip plane normal: the chosen axis, tilted about the other two. Depth runs along
         // the normal across the box's full extent in that direction, so the slider always
         // sweeps the whole volume whatever the tilt. Flip = same plane, opposite side kept.
-        func unit(_ i: Int) -> simd_float3 { var v = simd_float3.zero; v[i % 3] = 1; return v }
         var planes = [simd_float4](repeating: .zero, count: ClipSetting.maxCount)
         let active = clips.prefix(ClipSetting.maxCount)
         for (i, clip) in active.enumerated() where clip.enabled { // disabled: zero normal, skipped by the shader
-            let a = Int(clip.plane.axis), tilt = clip.tilt * (.pi / 180)
-            var normal = simd_quatf(angle: tilt.y, axis: unit(a + 2)).act(
-                simd_quatf(angle: tilt.x, axis: unit(a + 1)).act(unit(a)))
+            var normal = clip.plane.orientation(tilt: clip.tilt).normal
             var offset = (clip.pos - 0.5) * 2 * dot(abs(normal), boxHalf)
             if clip.flip { normal = -normal; offset = -offset }
             planes[i] = simd_float4(normal, offset)

@@ -28,7 +28,7 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 | Tap | Hide or show the toolbar and scrubber (they no longer hide by themselves). In a slice view with the crosshair unlocked a tap moves the crosshair instead; locking it (the lock in the pane's corner) hides them too, and unlocking brings them back |
 | Vertical drag or trackpad scroll (unzoomed) | Step through slices |
 | Scrubber (15% of the screen height up from the bottom) | Jump to a slice |
-| Toolbar | 3D / Multi / Axial / Coronal / Sagittal, Mirror (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector. The view selector follows the file name; the button cluster keeps the bar's trailing end, over the inspector column when that is open; when the bar can't hold every button (a narrow window), everything but Inspector folds into a More menu |
+| Toolbar | 3D / Multi / Axial / Coronal / Sagittal / Oblique, Mirror (slices), Oblique Plane Through a Line (slices), view presets (3D), Snapshot (PNG of the canvas at screen resolution → share sheet, including Save Image to Photos), Share, Inspector. The view selector follows the file name; the button cluster keeps the bar's trailing end, over the inspector column when that is open; when the bar can't hold every button (a narrow window), everything but Inspector folds into a More menu |
 | Slider track | A tap either side of the knob nudges the value one unit |
 | 3D: drag | Turn the volume like a ball under the finger (an arcball: the point you grab follows the finger, about the screen axis across the drag; a drag across the view's shorter side is three quarters of a turn), so any orientation is reachable |
 | 3D: two-finger twist | Roll about the line of sight |
@@ -41,7 +41,18 @@ cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Doc
 
 Slice views show L/R, A/P, S/I edge labels; the 3D view shows a rotating orientation
 indicator. Multi shows coronal, sagittal, axial and 3D in a 2×2 grid at one shared
-scale and zoom, linked by a crosshair drawn in all four panes. The inspector holds window level (Black/White), the 3D rendering mode
+scale and zoom, linked by a crosshair drawn in all four panes. **Oblique** shows one slice
+on any plane: an anatomical plane tilted about the two other axes and slid through the volume
+(Inspector › Image › Oblique Plane, the same controls as a 3D clip plane; the scrubber slides
+it a pixel at a time), or set through a line: with *Oblique Plane Through a Line* on (toolbar,
+or the section's toggle) a ruler drawn on an axial, coronal or sagittal slice — Pencil, or a
+finger; pan and zoom then need a trackpad — puts the plane through that line, square to the
+slice, and opens the Oblique view (an axial line runs across the image with superior up, a
+coronal or sagittal line runs up it). The image is resampled in millimetres, a pixel the
+smallest voxel side, so zoom, the scale bar and the ruler read as in the other views; labels
+and the noise mask are laid over it, a tap moves the crosshair, and the crosshair of the other
+views is drawn where it falls on the plane. Untilted it carries the base plane's edge labels.
+The plane is kept in the sidecar. The inspector holds window level (Black/White), the 3D rendering mode
 (MIP; Volume — a port of NiiVue's default compositing shader; or Surface — everything above
 the Black level drawn as one opaque, lit surface whatever its intensity: an isosurface at the
 window's lower bound, the hit refined by bisection and shaded from a smoothed intensity
@@ -278,7 +289,7 @@ back from our own exports and naming other labels "Label n". Strokes change the 
 place (`LabelGrid`) and are published ~30 times a second: the slice panes recomposite and the
 3D render re-uploads only the z slices touched.
 
-Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal`, `-clip
+Launch arguments for simulator checks: `-plane 3D|Multi|Axial|Coronal|Sagittal|Oblique`, `-obliqueTilt <degrees>`, `-clip
 Axial,Sagittal,…` (comma-separated, up to six), `-clipTilt <degrees>`, `-clipCutaway YES`,
 `-clipHighlight YES`, `-inspector YES`, `-segGhost YES`, `-segmentOrgans YES`, `-openLast YES` (the launch screen opens
 the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YES` (opens the segmentation editor), `-openRepair YES` (the scan repair editor).
