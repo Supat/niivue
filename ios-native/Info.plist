@@ -18,13 +18,9 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Snapshots can be saved to your photo library.</string>
-	<key>UIFileSharingEnabled</key>
-	<true/>
 	<key>NSUbiquitousContainers</key>
 	<dict>
-		<key>iCloud.org.niivue.NiiMono</key>
+		<key>iCloud.org.supatsaetia.NiiMono</key>
 		<dict>
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<true/>
@@ -34,6 +30,8 @@
 			<string>Any</string>
 		</dict>
 	</dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>

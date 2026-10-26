@@ -15,7 +15,7 @@ Get a volume onto the device via Files/AirDrop (`T1w_DEMO.nii.gz` here is a samp
 On a simulator:
 
 ```sh
-C=$(xcrun simctl get_app_container booted org.niivue.NiiMono data)
+C=$(xcrun simctl get_app_container booted org.supatsaetia.NiiMono data)
 cp T1w_DEMO.nii.gz "$C/Documents/" && xcrun simctl openurl booted "file://$C/Documents/T1w_DEMO.nii.gz"
 ```
 
@@ -124,7 +124,8 @@ out of process on iPadOS 26, so its folder can't be steered from the app.
 **Files locations.** Scans kept in *On My iPad › NiiMono* or *iCloud Drive › NiiMono* (the
 app's own containers; the iCloud one comes from the CloudDocuments entitlement in
 `NiiMono.entitlements` + `NSUbiquitousContainers` in Info.plist) get their sidecar written
-right beside them; files picked from anywhere else are reachable only individually, so
+right beside them. Files lists the iCloud folder only once something is in it, so on launch
+`CloudContainer.seedIfEmpty` drops a short `Put scans here.txt` into an empty container; files picked from anywhere else are reachable only individually, so
 their sidecars go to the fallback location.
 
 **Masking.** "Mask to Visible Segments" (Segmentation section) turns the visible labels

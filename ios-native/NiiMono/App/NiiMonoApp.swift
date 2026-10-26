@@ -8,6 +8,11 @@ import UniformTypeIdentifiers
 
 @main
 struct NiiMonoApp: App {
+    init() {
+        // The iCloud Drive folder appears only once something is in it.
+        CloudContainer.seedIfEmpty()
+    }
+
     var body: some Scene {
         DocumentGroup(viewing: MRIDocument.self) { file in
             DocumentView(document: file.document, fileURL: file.fileURL)

@@ -7,7 +7,7 @@ import Foundation
 import os
 
 enum MemoryLog {
-    static let log = Logger(subsystem: "org.niivue.NiiMono", category: "memory")
+    static let log = Logger(subsystem: "org.supatsaetia.NiiMono", category: "memory")
 
     /// Resident footprint in bytes (task_vm_info.phys_footprint), or nil if unavailable.
     static var footprint: UInt64? {
