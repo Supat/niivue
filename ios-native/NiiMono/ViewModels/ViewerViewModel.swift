@@ -429,7 +429,7 @@ import simd
     /// pipeline's `<tag>_metadata.json`, if any.
     private static func jsonText(for fileURL: URL) -> String? {
         let dir = fileURL.deletingLastPathComponent(), tags = SegmentationPipeline.tags(of: fileURL)
-        for name in [tags[0] + ".json"] + tags.map { $0 + "_metadata.json" } {
+        for name in [tags[0] + ".json"] + tags.map({ $0 + "_metadata.json" }) {
             if let text = try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8) { return text }
         }
         return nil
@@ -442,7 +442,7 @@ import simd
         SidecarSettings(
             role: segmentation.role,
             viewer: .init(plane: plane.rawValue, slices: slices, lo: lo, hi: hi, mirrored: mirrored, renderMode: renderMode.rawValue,
-                          clips: clips.map { .init(plane: $0.plane.rawValue, pos: $0.pos, flip: $0.flip, tilt: [$0.tilt.x, $0.tilt.y], enabled: $0.enabled) },
+                          clips: clips.map(\.saved),
                           clipCutaway: clipCutaway, clipHighlight: clipHighlight,
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks,
                           noise: noise != nil, removeNoise: removeNoise, repair: scanRepair != nil,
@@ -471,9 +471,7 @@ import simd
         (lo, hi) = (s.viewer.lo, s.viewer.hi)
         mirrored = s.viewer.mirrored
         renderMode = RenderMode(rawValue: s.viewer.renderMode) ?? renderMode
-        clips = s.viewer.clips.prefix(ClipSetting.maxCount).compactMap { c in
-            ClipSetting.Plane(rawValue: c.plane).map { ClipSetting(plane: $0, pos: c.pos, flip: c.flip, enabled: c.enabled ?? true, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0)) }
-        }
+        clips = s.viewer.clips.prefix(ClipSetting.maxCount).compactMap(ClipSetting.init(saved:))
         clipCutaway = s.viewer.clipCutaway
         clipKeepSegments = s.viewer.clipKeepSegments ?? false
         clipHighlight = s.viewer.clipHighlight
@@ -825,4 +823,21 @@ import simd
     }
 
     func removeClip(id: UUID) { clips.removeAll { $0.id == id } }
+
+    /// Saved clip-plane sets, shared by every scan.
+    var clipPresets = ClipPreset.load() { didSet { ClipPreset.save(clipPresets) } }
+    /// "Clip Set 3": the next unused number, so removing one doesn't repeat a name.
+    var nextClipPresetName: String {
+        "Clip Set \((clipPresets.compactMap { Int($0.name.split(separator: " ").last ?? "") }.max() ?? 0) + 1)"
+    }
+    func saveClipPreset(named name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        clipPresets.append(ClipPreset(name: name.isEmpty ? nextClipPresetName : name, clips: clips.map(\.saved),
+                                      cutaway: clipCutaway, keepSegments: clipKeepSegments))
+    }
+    func recall(_ p: ClipPreset) {
+        clips = p.clips.prefix(ClipSetting.maxCount).compactMap(ClipSetting.init(saved:))
+        clipCutaway = p.cutaway
+        clipKeepSegments = p.keepSegments
+    }
 }

@@ -165,7 +165,7 @@ struct ViewerView: View {
         Toggle("Crosshair", systemImage: "dot.crosshair", isOn: $model.showCrosshair)
         if model.plane != .render { BookmarkMenu(model: model) }
         if model.plane != .render && model.plane != .oblique {
-            Toggle("Oblique Plane Through a Line", systemImage: "pencil.line", isOn: $model.obliqueByLine)
+            Toggle("Oblique Plane Through a Line", systemImage: "scissors", isOn: $model.obliqueByLine)
         }
         if !model.plane.isSlice { // 3D and multiplanar
             Menu("View", systemImage: "move.3d") {

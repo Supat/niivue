@@ -142,6 +142,8 @@ enum InspectorPage: String, CaseIterable, Identifiable {
 /// One section per clip plane, plus the add / highlight / cutaway controls.
 private struct ClipPlaneSections: View {
     @Bindable var model: ViewerViewModel
+    @State private var naming = false
+    @State private var presetName = ""
 
     var body: some View {
         // Bind each section by id, not by position. ForEach($model.clips) hands out
@@ -191,6 +193,28 @@ private struct ClipPlaneSections: View {
             if model.clips.count < ClipSetting.maxCount {
                 Button("Add Clip Plane", systemImage: "plus") { model.addClip() }
             }
+        }
+        // Saved sets: the planes with their cutaway and keep-segments choices, for any scan.
+        Section("Clip Plane Presets") {
+            if !model.clips.isEmpty {
+                Button("Save Current Planes…", systemImage: "square.and.arrow.down") { presetName = model.nextClipPresetName; naming = true }
+            }
+            ForEach(model.clipPresets) { p in
+                Button { model.recall(p) } label: {
+                    LabeledContent(p.name, value: "\(p.clips.count) plane\(p.clips.count == 1 ? "" : "s")")
+                }
+                .foregroundStyle(.primary)
+            }
+            .onDelete { model.clipPresets.remove(atOffsets: $0) }
+            if model.clips.isEmpty && model.clipPresets.isEmpty {
+                Text("Add a clip plane, then save the set here to recall it on this or any other scan. Swipe a preset to remove it.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .alert("Save Clip Planes", isPresented: $naming) {
+            TextField("Name", text: $presetName)
+            Button("Save") { model.saveClipPreset(named: presetName) }
+            Button("Cancel", role: .cancel) {}
         }
     }
 

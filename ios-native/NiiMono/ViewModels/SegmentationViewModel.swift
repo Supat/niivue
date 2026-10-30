@@ -129,10 +129,11 @@ import Observation
         makingLiverFat = true
         defer { makingLiverFat = false }
         let volume = volume
-        guard let new = await Task.detached(priority: .userInitiated) { () -> SegmentationMap? in
+        let made = Task.detached(priority: .userInitiated) { () -> SegmentationMap? in
             FattyLiverEstimate.fatMap(water: water, fat: fat, map: map, floorPercent: floorPercent)
                 .map { SegmentationMap(labels: $0, name: LabelTable.liverFatMapName, volume: volume) }
-        }.value else { return }
+        }
+        guard let new = await made.value else { return }
         maps.removeAll { $0.name == LabelTable.liverFatMapName }
         maps.append(new)
         select(new.id)

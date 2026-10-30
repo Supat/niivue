@@ -33,6 +33,32 @@ struct SliceBookmark: Codable, Equatable, Identifiable {
     var slices: [Int]
 }
 
+/// A saved set of 3D clip planes, with the cutaway and keep-segments choices. Kept in
+/// UserDefaults, not the sidecar: positions are fractions of the volume, so a set made on one
+/// scan serves every scan.
+struct ClipPreset: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var clips: [SidecarSettings.Viewer.Clip]
+    var cutaway: Bool, keepSegments: Bool
+
+    static let key = "clipPresets"
+    static func load() -> [ClipPreset] {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode([ClipPreset].self, from: $0) } ?? []
+    }
+    static func save(_ presets: [ClipPreset]) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(presets), forKey: key)
+    }
+}
+
+extension ClipSetting {
+    var saved: SidecarSettings.Viewer.Clip { .init(plane: plane.rawValue, pos: pos, flip: flip, tilt: [tilt.x, tilt.y], enabled: enabled) }
+    init?(saved c: SidecarSettings.Viewer.Clip) {
+        guard let plane = Plane(rawValue: c.plane) else { return nil }
+        self.init(plane: plane, pos: c.pos, flip: c.flip, enabled: c.enabled ?? true, tilt: SIMD2(c.tilt.first ?? 0, c.tilt.last ?? 0))
+    }
+}
+
 struct SidecarSettings: Codable, Equatable {
     static let currentVersion = 1
     var version = currentVersion

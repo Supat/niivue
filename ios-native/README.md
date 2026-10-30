@@ -59,7 +59,9 @@ window's lower bound, the hit refined by bisection and shaded from a smoothed in
 gradient — central differences 1, 2 and 3 voxels apart summed, since a one-voxel or box-filtered
 gradient rings the skin with contour lines — with clip-plane cut faces lit as their plane; labels keep their colour on it, and the
 segmentation's show-through modes see through the skin to the labels), up to six tiltable
-3D clip planes with cutaway and highlight options, and volume info.
+3D clip planes with cutaway and highlight options (a set of planes, with its cutaway and
+keep-segments choices, can be saved as a named preset and recalled on any scan — positions are
+fractions of the volume; swipe a preset to remove it), and volume info.
 
 **Clipping around segments.** Inspector › 3D › "Keep Visible Segments" makes the clip planes
 (and the cutaway) remove unlabelled tissue only: voxels of the visible segments are drawn whole
