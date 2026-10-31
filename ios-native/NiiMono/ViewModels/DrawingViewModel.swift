@@ -300,7 +300,7 @@ final class DrawingViewModel: Identifiable {
     // MARK: Smoothing
 
     enum Smoothing: Float, CaseIterable, Identifiable {
-        case light = 1, medium = 2, strong = 3.5 // σ in mm
+        case light = 0.5, medium = 1, strong = 2 // σ in mm (were 1 / 2 / 3.5: ate thin structures)
         var id: Self { self }
         var name: String { switch self { case .light: "Light"; case .medium: "Medium"; case .strong: "Strong" } }
     }

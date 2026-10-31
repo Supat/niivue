@@ -6,6 +6,7 @@
 
 import SwiftUI
 import UIKit
+import CoreImage
 
 struct SliceView: UIViewRepresentable {
     let volume: NiftiVolume
@@ -16,6 +17,8 @@ struct SliceView: UIViewRepresentable {
     let lo: Float
     let hi: Float
     let mirrored: Bool
+    /// Unsharp-mask the slice (at voxel resolution) so edges read crisper.
+    var sharp = false
     var overlay: SegmentationOverlay? = nil
     /// Removed noise: voxels marked here show black.
     var cutout: SegmentationOverlay? = nil
@@ -46,6 +49,9 @@ struct SliceView: UIViewRepresentable {
     /// Two- and three-finger taps (the drawing pane's undo and redo); nil = off.
     var onTwoFingerTap: (() -> Void)? = nil
     var onThreeFingerTap: (() -> Void)? = nil
+    /// A two-finger twist turns the whole pane (image, crosshair, ruler, strokes follow);
+    /// it snaps to quarter turns near one, and resets when `axis` changes.
+    var rotatable = false
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
     /// moves it, so another pane can follow.
     var onViewport: ((CGRect) -> Void)? = nil
@@ -54,7 +60,7 @@ struct SliceView: UIViewRepresentable {
     let onTap: () -> Void
     let onScrub: (Int) -> Void
 
-    func makeUIView(context: Context) -> ZoomView { ZoomView() }
+    func makeUIView(context: Context) -> RotatingHost { RotatingHost() }
 
     /// Everything the slice image depends on; the image is only rebuilt when this changes
     /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
@@ -63,9 +69,13 @@ struct SliceView: UIViewRepresentable {
         let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, lut: [SIMD4<UInt8>]
         let cutoutID: UUID?, cutoutRevision: Int
         let oblique: ObliqueFrame?
+        let sharp: Bool
     }
 
-    func updateUIView(_ view: ZoomView, context: Context) {
+    func updateUIView(_ host: RotatingHost, context: Context) {
+        let view = host.zoom
+        host.rotatable = rotatable
+        if host.axis != axis { host.axis = axis; host.setAngle(0) }
         // A drawing's revision counts only when its change touched this slice (or might have:
         // a revision this view didn't see could have), so the other panes of the editor don't
         // recomposite at every stroke update.
@@ -77,10 +87,10 @@ struct SliceView: UIViewRepresentable {
         let key = ImageKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
                            mapID: overlay?.mapID, revision: revision, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
                            lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0,
-                           oblique: oblique)
+                           oblique: oblique, sharp: sharp)
         if view.imageKey != key {
             view.imageKey = key
-            if let image = makeImage() { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
+            if let image = makeImage().map({ sharp ? Self.sharpened($0) : $0 }) { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         }
         let e = oblique.map { (Float($0.width) * $0.pitch, Float($0.height) * $0.pitch) } ?? volume.sliceExtent(axis: axis)
         view.extent = CGSize(width: CGFloat(e.0), height: CGFloat(e.1))
@@ -145,6 +155,20 @@ struct SliceView: UIViewRepresentable {
         }
     }
 
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// Unsharp mask in voxel pixels. ponytail: also sharpens overlay label edges (a faint
+    /// halo at full opacity); sharpen the grey before compositing if that ever bothers anyone.
+    static func sharpened(_ image: CGImage) -> CGImage {
+        let input = CIImage(cgImage: image)
+        guard let f = CIFilter(name: "CIUnsharpMask") else { return image }
+        f.setValue(input.clampedToExtent(), forKey: kCIInputImageKey) // no dark rim at the borders
+        f.setValue(1.5, forKey: kCIInputRadiusKey)
+        f.setValue(0.8, forKey: kCIInputIntensityKey)
+        guard let out = f.outputImage?.cropped(to: input.extent) else { return image }
+        return ciContext.createCGImage(out, from: input.extent) ?? image
+    }
+
     /// 8-bit grey, or RGBX (4 bytes a pixel), pixels as a CGImage.
     private static func image(_ pixels: [UInt8], width: Int, height: Int, rgbx: Bool) -> CGImage? {
         CGDataProvider(data: Data(pixels) as CFData).flatMap {
@@ -157,6 +181,80 @@ struct SliceView: UIViewRepresentable {
 }
 
 enum DrawPhase { case began, moved, ended }
+
+/// Holds a slice's ZoomView so a twist can turn it as a whole. UIKit converts touches
+/// through the transform, so drawing, the ruler, taps and pans all land where they look.
+/// The pane turns about its centre and the content scrolls to keep the point between the
+/// fingers still, so the pane never slides off. ponytail: unzoomed there is no room to
+/// scroll, so it turns about the centre; the scale bar and its label turn with the image.
+final class RotatingHost: UIView, UIGestureRecognizerDelegate {
+    let zoom = ZoomView()
+    var axis = -1
+    var rotatable = false { didSet { if rotatable != oldValue { twist.isEnabled = rotatable; if !rotatable { setAngle(0) } } } }
+    private let twist = UIRotationGestureRecognizer()
+    private var angle: CGFloat = 0
+
+    init() {
+        super.init(frame: .zero)
+        clipsToBounds = true
+        backgroundColor = .black
+        addSubview(zoom)
+        twist.addTarget(self, action: #selector(twisted))
+        twist.delegate = self
+        twist.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        twist.isEnabled = false
+        addGestureRecognizer(twist)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // bounds/center, not frame: frame is undefined under a transform. Keep the origin
+        // (the scroll offset).
+        if zoom.bounds.size != bounds.size { zoom.bounds.size = bounds.size }
+        zoom.center = CGPoint(x: bounds.midX, y: bounds.midY)
+    }
+
+    /// Turns by `delta` about `p` (host coordinates), as far as the scroll range allows.
+    private func turn(by delta: CGFloat, about p: CGPoint) {
+        setAngle(angle + delta)
+        // Turning about the centre instead of p leaves p off by t (host space)...
+        let d = CGPoint(x: p.x - bounds.midX, y: p.y - bounds.midY)
+        let (c, s) = (cos(delta), sin(delta))
+        let t = CGPoint(x: d.x - (c * d.x - s * d.y), y: d.y - (s * d.x + c * d.y))
+        // ...so the content moves by t, taken into the turned pane's own axes.
+        let (ca, sa) = (cos(angle), sin(angle))
+        let v = CGPoint(x: ca * t.x + sa * t.y, y: -sa * t.x + ca * t.y)
+        let maxX = max(0, zoom.contentSize.width - zoom.bounds.width), maxY = max(0, zoom.contentSize.height - zoom.bounds.height)
+        zoom.contentOffset = CGPoint(x: min(max(zoom.contentOffset.x - v.x, 0), maxX),
+                                     y: min(max(zoom.contentOffset.y - v.y, 0), maxY))
+    }
+
+    func setAngle(_ a: CGFloat) {
+        angle = a.truncatingRemainder(dividingBy: 2 * .pi)
+        zoom.transform = CGAffineTransform(rotationAngle: angle)
+    }
+
+    @objc private func twisted(_ g: UIRotationGestureRecognizer) {
+        switch g.state {
+        case .changed:
+            turn(by: g.rotation, about: g.location(in: self))
+            g.rotation = 0
+        case .ended, .cancelled:
+            let quarter = CGFloat.pi / 2
+            let snapped = (angle / quarter).rounded() * quarter
+            if abs(snapped - angle) < .pi / 22 { // within ~8°
+                let p = g.location(in: self)
+                UIView.animate(withDuration: 0.2) { self.turn(by: snapped - self.angle, about: p) }
+            }
+        default: break
+        }
+    }
+
+    // Twist alongside the scroll view's own pinch and pan.
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
 
 final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     override func didMoveToWindow() {

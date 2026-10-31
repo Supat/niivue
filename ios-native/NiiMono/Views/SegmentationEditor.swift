@@ -51,13 +51,11 @@ struct SegmentationEditor: View {
             Text(noiseMode ? "Remove Noise" : repairMode ? "Repair Scan" : "Draw Segmentation").font(.headline)
             Spacer()
             HStack(spacing: 4) {
-                // Black / white levels of the slices and the paint's opacity (the viewer's own, so
-                // they carry over).
-                Button("Adjust Levels and Paint Opacity", systemImage: "circle.lefthalf.filled") { adjusting = true }
+                // How the slices look: levels, paint opacity, sharpen, crosshair.
+                Button("Display", systemImage: "circle.lefthalf.filled") { adjusting = true }
                     .labelStyle(.iconOnly)
                     .popover(isPresented: $adjusting) { LevelsPopover(model: model, drawing: drawing) }
                 imagePicker
-                Toggle("Crosshair", systemImage: "plus.viewfinder", isOn: $drawing.crosshair) // all three panes
                 Toggle("Show Paint", systemImage: drawing.hidePaint ? "paintbrush.pointed" : "paintbrush.pointed.fill",
                        isOn: Binding(get: { !drawing.hidePaint }, set: { drawing.hidePaint = !$0 }))
                     .keyboardShortcut("h", modifiers: .command)
@@ -139,12 +137,13 @@ struct SegmentationEditor: View {
         let axis = drawing.mainAxis
         let shown = displayed
         return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
-                         mirrored: model.mirrored, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
+                         mirrored: model.mirrored, sharp: model.sharpSlices, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
                          crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
                          onDraw: { phase, p in drawing.handle(phase, p, index: model.slices[axis], mirrored: model.mirrored) },
                          drawsWithFinger: drawing.drawsWithFinger,
                          onTwoFingerTap: { drawing.tapUndo() },
                          onThreeFingerTap: { drawing.tapRedo() },
+                         rotatable: true,
                          scaleBarInset: 120,
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
@@ -178,7 +177,7 @@ struct SegmentationEditor: View {
         let axis = drawing.refAxis
         let shown = displayed
         return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
-                         mirrored: model.mirrored, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
+                         mirrored: model.mirrored, sharp: model.sharpSlices, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
                          crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
                          onLocate: { model.locate($0, in: axis) }, // moves the drawing slice
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
@@ -383,6 +382,10 @@ private struct LevelsPopover: View {
             // How strongly the paint covers the scan, in every pane (Inspector › Segmentation › Opacity).
             LabeledContent("Paint") { StepSlider(value: Binding(get: { model.segmentation.opacity }, set: { model.segmentation.opacity = $0 }), in: 0...1, unit: 0.05) }
             Text("\(Int(model.segmentation.opacity * 100))% opaque").font(.caption).foregroundStyle(.secondary)
+            Divider()
+            // Sharpen is the viewer's own setting, so it carries over (draw, noise and repair alike).
+            Toggle("Sharpen", isOn: $model.sharpSlices)
+            Toggle("Crosshair", isOn: $drawing.crosshair) // all three panes
         }
         .padding(20)
         .frame(width: 320)

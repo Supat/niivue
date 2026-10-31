@@ -34,7 +34,7 @@ struct ViewerView: View {
     private static func clusterWidth(buttons n: Int) -> CGFloat { 52 * CGFloat(n) + 1 }
     /// Buttons in the full cluster (see `viewControls`, plus Inspector).
     private var clusterButtons: Int {
-        5 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 2 : 0) + (model.plane.isSlice ? 0 : 1)
+        4 + (fileURL == nil ? 0 : 1) + (model.plane != .render ? 1 : 0) + (model.plane.isSlice ? 0 : 1)
             + (model.plane == .oblique ? -1 : 0) + (model.plane != .render && model.plane != .oblique ? 1 : 0)
     }
     /// The clear width right of the selector that keeps it at `selectorLeft`, for a cluster
@@ -153,16 +153,21 @@ struct ViewerView: View {
     /// The view controls of the toolbar cluster: in the bar, or in a More menu when the bar
     /// can't hold them all.
     @ViewBuilder private var viewControls: some View {
-        if model.plane != .render {
-            Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
-                   isOn: $model.mirrored)
+        // How the image looks, in one menu so the bar stays short (the editor's Display popover too).
+        Menu("Display", systemImage: "circle.lefthalf.filled") {
+            if model.plane != .render {
+                Toggle("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
+                       isOn: $model.mirrored)
+                Toggle("Sharpen", systemImage: "wand.and.sparkles", isOn: $model.sharpSlices)
+            }
+            // Station fields of view from the acquisition metadata (Inspector › Image).
+            // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
+            Toggle("Field of View", systemImage: "viewfinder",
+                   isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
+                .disabled(model.fovBoxes.isEmpty)
+            Toggle("Crosshair", systemImage: "dot.crosshair", isOn: $model.showCrosshair)
         }
-        // Station fields of view from the acquisition metadata (Inspector › Image).
-        // Shown off while there is nothing to draw (a disabled "on" toggle renders as a blank disc).
-        Toggle("Field of View", systemImage: "viewfinder",
-               isOn: Binding(get: { model.showFOV && !model.fovBoxes.isEmpty }, set: { model.showFOV = $0 }))
-            .disabled(model.fovBoxes.isEmpty)
-        Toggle("Crosshair", systemImage: "dot.crosshair", isOn: $model.showCrosshair)
+        .menuActionDismissBehavior(.disabled) // flip several without reopening
         if model.plane != .render { BookmarkMenu(model: model) }
         if model.plane != .render && model.plane != .oblique {
             Toggle("Oblique Plane Through a Line", systemImage: "scissors", isOn: $model.obliqueByLine)
@@ -219,7 +224,7 @@ private struct VolumeCanvas: View {
             }
         case .oblique:
             SliceView(volume: model.volume, axis: 0, index: 0, oblique: model.obliqueFrame, lo: model.lo, hi: model.hi,
-                      mirrored: model.mirrored, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
+                      mirrored: model.mirrored, sharp: model.sharpSlices, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
                       crosshair: model.showCrosshair ? model.crosshairInOblique : nil,
                       onLocate: model.showCrosshair && !model.crosshairLocked ? { p in onInteract(); model.locateOblique(p) } : nil,
                       scaleBarInset: labelInset, onTap: onTap) { model.obliqueIndex += $0 }
@@ -325,7 +330,7 @@ private struct VolumeCanvas: View {
     private func slice(_ axis: Int) -> some View {
         let multi = model.plane == .multi
         return SliceView(volume: model.volume, axis: axis, index: model.slices[axis], lo: model.lo, hi: model.hi,
-                         mirrored: model.mirrored, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
+                         mirrored: model.mirrored, sharp: model.sharpSlices, overlay: model.segmentation.overlay, cutout: model.noiseCutout,
                          fitExtent: multi ? model.sliceEnvelope : nil,
                          zoom: multi ? model.multiZoom : nil, zoomAnimated: model.multiZoomAnimated,
                          onZoom: multi ? { model.multiZoom = $0; model.multiZoomAnimated = $1 } : nil,

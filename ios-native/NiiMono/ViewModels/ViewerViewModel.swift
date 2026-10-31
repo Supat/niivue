@@ -368,6 +368,10 @@ import simd
     var mirrored = UserDefaults.standard.bool(forKey: "mirrored") {
         didSet { UserDefaults.standard.set(mirrored, forKey: "mirrored") }
     }
+    /// Slices are edge-sharpened (unsharp mask).
+    var sharpSlices = UserDefaults.standard.bool(forKey: "sharpSlices") {
+        didSet { UserDefaults.standard.set(sharpSlices, forKey: "sharpSlices") }
+    }
     var renderMode = RenderMode(rawValue: UserDefaults.standard.string(forKey: "renderMode") ?? "") ?? .volume {
         didSet { UserDefaults.standard.set(renderMode.rawValue, forKey: "renderMode") }
     }
