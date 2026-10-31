@@ -1,4 +1,4 @@
-//
+    //
 //  VolumeRenderer.swift — Metal renderer for a NiftiVolume: uploads the volume (and any
 //  segmentation) as 3D textures and draws a fullscreen triangle that ray-marches them in
 //  Raycaster.metal. Camera, clip planes, crosshair and overlay are plain properties set by

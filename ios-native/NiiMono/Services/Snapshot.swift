@@ -49,11 +49,12 @@ enum SnapshotPanes {
 
     /// The share sheet for a file. A plain file URL, so receivers get the exact bytes and the
     /// name. `anchor` is the iPad popover's point (negative x counts from the trailing edge).
-    @MainActor static func share(_ url: URL, from anchor: CGPoint = CGPoint(x: -24, y: 60)) {
+    @MainActor static func share(_ url: URL, from anchor: CGPoint = CGPoint(x: -24, y: 60)) { share([url], from: anchor) }
+    @MainActor static func share(_ urls: [URL], from anchor: CGPoint = CGPoint(x: -24, y: 60)) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }),
               let window = scene.keyWindow, var top = window.rootViewController else { return }
         while let presented = top.presentedViewController { top = presented }
-        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let sheet = UIActivityViewController(activityItems: urls, applicationActivities: nil)
         // iPad needs an anchor: the snapshot button sits near the top trailing corner.
         sheet.popoverPresentationController?.sourceView = window
         let x = anchor.x < 0 ? window.bounds.width + anchor.x : anchor.x

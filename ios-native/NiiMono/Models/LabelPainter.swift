@@ -166,6 +166,21 @@ enum LabelPainter {
         return v0...v1
     }
 
+    /// Sets the voxels of the rectangle with corners `a` and `b` (voxels, either order) to
+    /// `value`, never a `locked` one. Returns the rows touched.
+    @discardableResult
+    static func rect(_ grid: LabelGrid, plane: SlicePlane, from a: SIMD2<Float>, to b: SIMD2<Float>, value: UInt8,
+                     locked: [Bool]? = nil) -> ClosedRange<Int>? {
+        let locked = locked ?? Self.unlocked
+        let c0 = max(0, Int(min(a.x, b.x).rounded(.down))), c1 = min(plane.width - 1, Int(max(a.x, b.x).rounded(.down)))
+        let v0 = max(0, Int(min(a.y, b.y).rounded(.down))), v1 = min(plane.height - 1, Int(max(a.y, b.y).rounded(.down)))
+        guard c0 <= c1, v0 <= v1 else { return nil }
+        grid.data.withUnsafeMutableBufferPointer { d in
+            for v in v0...v1 { for c in c0...c1 { let i = plane.voxel(c, v); if !locked[Int(d[i])] { d[i] = value } } }
+        }
+        return v0...v1
+    }
+
     /// Stamps along the segment a → b, close enough that a fast stroke leaves no gaps.
     @discardableResult
     static func line(_ grid: LabelGrid, plane: SlicePlane, from a: SIMD2<Float>, to b: SIMD2<Float>, radius r: SIMD2<Float>, value: UInt8,

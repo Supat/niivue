@@ -50,7 +50,8 @@ struct InspectorView: View {
                 ClipPlaneSections(model: model)
             case .segmentation:
                 ImageSection(model: model.segmentation, fileURL: model.fileURL) // the Dixon role and companions
-                SegmentationSection(model: model.segmentation)
+                SegmentationSection(model: model.segmentation, export: { map in Task { await model.exportSegmentation(map) } },
+                                    exporting: model.exportingMap)
                 CustomSegmentationSection(model: model)
                 if let map = model.segmentation.map, ![LabelTable.customMapName, LabelTable.liverFatMapName].contains(map.name) { // no tissue densities for drawn labels or fat bins
                     BodyCompositionSection(model: model.bodyComposition, map: map)
@@ -62,6 +63,7 @@ struct InspectorView: View {
                     if !maps.isEmpty { FattyLiverSection(viewer: model, maps: maps) }
                 }
             case .profile:
+                SubjectSection(model: model.bodyComposition)
                 ProfileSection(model: model.profile)
             case .info:
                 if let sidecar = model.sidecar {

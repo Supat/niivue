@@ -25,9 +25,17 @@ enum SegmentationPipeline {
     /// A label file on the scan's grid.
     static func loadLabels(from url: URL, scoped: Bool, volume: NiftiVolume) throws -> SegmentationMap {
         let data = try read(url, scoped: scoped)
-        let labels = try NIfTI.parseLabels(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data)
+        let d = NIfTI.isGzip(data) ? try NIfTI.gunzip(data) : data
+        let labels = try NIfTI.parseLabels(d)
         guard labels.dims == volume.dims else { throw NiftiError.gridMismatch(labels.dims, volume.dims) }
-        return SegmentationMap(labels: labels, name: url.lastPathComponent, volume: volume)
+        // Names and colours this app's export put in the header win over the file name's
+        // table (whose densities are kept), so a renamed export still reads right.
+        var table: LabelTable?
+        if let named = CustomSegmentationFile.names(in: d) {
+            let custom = LabelTable.custom(named)
+            table = LabelTable(names: custom.names, colors: custom.colors, densities: LabelTable.forFile(named: url.lastPathComponent).densities)
+        }
+        return SegmentationMap(labels: labels, name: url.lastPathComponent, volume: volume, table: table)
     }
 
     /// A second image (the Dixon fat image) on the scan's grid.

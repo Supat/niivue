@@ -542,8 +542,14 @@ enum NIfTI {
     /// then overlay it on the scan; the app reads it back through `parseLabels`. Falls back to
     /// the RAS layout of `labelFile(_:voxelSize:)` when the scan's header wasn't kept.
     static func labelFile(_ labels: LabelVolume, like volume: NiftiVolume, json: Data?) -> Data {
-        guard let src = volume.header, src.count >= 348 else { return labelFile(labels, voxelSize: volume.voxelSize) }
         let od = [labels.dims.0, labels.dims.1, labels.dims.2]
+        guard let src = volume.header, src.count >= 348 else {
+            // No file header kept (a big-endian file): the plain RAS header, still carrying `json`.
+            guard let plain = try? gunzip(labelFile(labels, voxelSize: volume.voxelSize)), plain.count >= 348 else {
+                return labelFile(labels, voxelSize: volume.voxelSize)
+            }
+            return gzip(orientedHeader(plain.prefix(348), fileDims: od, datatype: 2, bitpix: 8, json: json) + Data(labels.data))
+        }
         var fd = [0, 0, 0]
         for w in 0..<3 { fd[volume.filePerm[w]] = od[w] }
         let fs = [1, fd[0], fd[0] * fd[1]]

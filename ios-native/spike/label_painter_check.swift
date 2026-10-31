@@ -1,7 +1,7 @@
 //
 //  label_painter_check.swift — self-check for the drawing tools (LabelPainter).
 //  Build & run: mkdir -p /tmp/lp && cp spike/label_painter_check.swift /tmp/lp/main.swift &&
-//    swiftc NiiMono/Models/{NIfTI,SegmentationMap,LabelTable,LabelPainter}.swift /tmp/lp/main.swift -o /tmp/lp/check && /tmp/lp/check
+//    swiftc NiiMono/Models/{NIfTI,SegmentationMap,LabelTable,LabelPainter,FattyLiver}.swift /tmp/lp/main.swift -o /tmp/lp/check && /tmp/lp/check
 //
 
 import Foundation
@@ -42,6 +42,14 @@ precondition(count(g, 1) == 11 * 11, "filled \(count(g, 1))")
 precondition(g.data[axial.voxel(2, 2)] == 0)
 // Filling with the seed's own value does nothing.
 precondition(LabelPainter.fill(g, plane: axial, at: 10, 10, value: 1) == nil)
+
+// Rectangle: corners in either order, clipped to the slice, the rows touched reported.
+g = grid()
+precondition(LabelPainter.rect(g, plane: axial, from: SIMD2(12.9, 8.1), to: SIMD2(3.2, 2.7), value: 1) == 2...8)
+precondition(count(g, 1) == 10 * 7, "rectangle filled \(count(g, 1))")
+precondition(g.data[axial.voxel(3, 2)] == 1 && g.data[axial.voxel(12, 8)] == 1 && g.data[axial.voxel(13, 8)] == 0 && g.data[axial.voxel(3, 9)] == 0)
+precondition(LabelPainter.rect(g, plane: coronal, from: SIMD2(-5, -5), to: SIMD2(100, 100), value: 2) == 0...9 && count(g, 2) == 20 * 10, "clipped to the slice")
+precondition(LabelPainter.rect(g, plane: axial, from: SIMD2(-3, 1), to: SIMD2(-1, 2), value: 3) == nil, "a rectangle off the slice")
 
 // Undo round trip: read → paint → write restores the slice exactly.
 g = grid(); let before = LabelPainter.read(g, box: coronal.box)
@@ -146,6 +154,8 @@ precondition((8...12).allSatisfy { g.data[axial.voxel($0, 10)] == 7 } && count(g
 LabelPainter.line(g, plane: axial, from: SIMD2(5, 10), to: SIMD2(15, 10), radius: SIMD2(2, 2), value: 0, locked: lk)
 precondition(count(g, 7) == 5, "eraser removed a locked label")
 precondition(LabelPainter.fill(g, plane: axial, at: 10, 10, value: 3, locked: lk) == nil, "filled a locked region")
+LabelPainter.rect(g, plane: axial, from: SIMD2(0, 0), to: SIMD2(19, 29), value: 4, locked: lk)
+precondition(count(g, 7) == 5, "rectangle overwrote a locked label")
 print("locks ok")
 
 // Noise removal for the models: marked labels cleared, marked intensities set to background.

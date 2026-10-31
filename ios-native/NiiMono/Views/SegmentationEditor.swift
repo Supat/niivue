@@ -303,7 +303,7 @@ struct SegmentationEditor: View {
                 ForEach(DrawingViewModel.Tool.allCases) { Image(systemName: $0.symbol).accessibilityLabel($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            .frame(width: 140)
+            .frame(width: 180)
             // Tap: medium. Hold for the other strengths.
             Menu {
                 ForEach(DrawingViewModel.Smoothing.allCases) { s in
@@ -324,7 +324,7 @@ struct SegmentationEditor: View {
                 StepSlider(value: $drawing.brushMM, in: 1...40, unit: 1).frame(width: 120)
                 Text("\(Int(drawing.brushMM)) mm").font(.footnote.monospacedDigit()).frame(width: 44, alignment: .leading)
             }
-            .disabled(drawing.tool == .fill)
+            .disabled(drawing.tool == .fill || drawing.tool == .rectangle)
             Toggle("Draw with Finger", systemImage: "hand.draw", isOn: $drawing.drawsWithFinger)
                 .toggleStyle(.button)
                 .labelStyle(.iconOnly)

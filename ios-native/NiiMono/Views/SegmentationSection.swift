@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 
 struct SegmentationSection: View {
     @Bindable var model: SegmentationViewModel
+    /// Writes the map out and offers it in the share sheet; `exporting` is the map being written.
+    var export: ((SegmentationMap) -> Void)? = nil
+    var exporting: UUID? = nil
     @State private var importing = false
     @State private var confirmRemove = false
 
@@ -73,6 +76,11 @@ struct SegmentationSection: View {
                     Text(map.table.name(label))
                 }
             }
+        }
+        if let export {
+            Button("Export Segmentation…", systemImage: "square.and.arrow.up") { export(map) }
+                .disabled(exporting != nil)
+            if exporting == map.id { ProgressView("Writing \(map.name)…") }
         }
         // Asks first: the map is dropped from the sidecar too, and a generated one took minutes.
         Button("Remove Segmentation", role: .destructive) { confirmRemove = true }

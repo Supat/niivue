@@ -294,17 +294,37 @@ import simd
         guard let map = segmentation.customMap else { return }
         customFileBusy = true
         defer { customFileBusy = false }
-        let volume = volume, labels = segmentation.customLabels
+        customFileStatus = await exportSegmentation(map) ? nil : "Couldn't write the export."
+    }
+
+    /// The map being written out, for the section's progress indicator.
+    private(set) var exportingMap: UUID?
+    /// Writes any loaded map (generated, loaded or drawn) as a label NIfTI on the scan's own
+    /// grid and orientation, its label names and colours in the header (read back on load),
+    /// with an ITK-SNAP label description file beside it for other tools, and offers both in
+    /// the share sheet: `<scan>_drawing.nii.gz` for the drawing, else the map's own file name.
+    @discardableResult
+    func exportSegmentation(_ map: SegmentationMap) async -> Bool {
+        guard exportingMap == nil else { return false }
+        exportingMap = map.id
+        defer { exportingMap = nil }
+        let volume = volume
+        let labels = map.isCustom ? segmentation.customLabels
+            : Array(map.labelRange).map { CustomLabel(id: $0, name: map.table.name($0), color: { c in [c.x, c.y, c.z] }(map.table.color($0))) }
         let base = fileURL.map { SegmentationPipeline.tags(of: $0)[0] } ?? "Segmentation"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
-            .appendingPathComponent("\(base)_drawing.nii.gz")
+        let name = map.isCustom ? "\(base)_drawing.nii.gz"
+            : map.name.hasSuffix(".nii") || map.name.hasSuffix(".nii.gz") ? map.name : "\(base)_\(map.name).nii.gz"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
+        let url = dir.appendingPathComponent(name)
+        let stem = name.hasSuffix(".nii.gz") ? String(name.dropLast(7)) : name.hasSuffix(".nii") ? String(name.dropLast(4)) : name
+        let labelsURL = dir.appendingPathComponent("\(stem)_labels.txt")
         let written = await Task.detached(priority: .userInitiated) { () -> Bool in
-            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             return (try? CustomSegmentationFile.export(map, labels: labels, like: volume).write(to: url, options: .atomic)) != nil
+                && (try? CustomSegmentationFile.labelDescription(labels).write(to: labelsURL, atomically: true, encoding: .utf8)) != nil
         }.value
-        guard written else { customFileStatus = "Couldn't write the export."; return }
-        customFileStatus = nil
-        SnapshotPanes.share(url)
+        if written { SnapshotPanes.share([url, labelsURL]) }
+        return written
     }
 
     /// Closes the editor, showing the drawing if anything was drawn.

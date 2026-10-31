@@ -19,8 +19,15 @@ enum MemoryLog {
         return kr == KERN_SUCCESS ? info.phys_footprint : nil
     }
 
-    /// `memory: <stage>  footprint 2.31 GB  (available 3.90 GB)` in the console.
+    /// When the last mark was made, so each mark also says how long its stage took.
+    nonisolated(unsafe) private static var last = Date()
+
+    /// `memory: <stage> (+12.3 s)  footprint 2.31 GB  (available 3.90 GB)` in the console; the
+    /// seconds are since the previous mark, so a run's log gives every stage's duration.
     static func mark(_ stage: String) {
+        let now = Date()
+        let stage = String(format: "%@ (+%.1f s)", stage, now.timeIntervalSince(last))
+        last = now
         let fp = footprint.map { String(format: "%.2f GB", Double($0) / 1e9) } ?? "?"
         #if os(iOS)
         let avail = String(format: "  (available %.2f GB)", Double(os_proc_available_memory()) / 1e9)

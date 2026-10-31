@@ -37,7 +37,26 @@ enum CustomSegmentationFile {
         return (map, labels)
     }
 
-    private static func names(in d: Data) -> [CustomLabel]? {
+    /// ITK-SNAP's label description file for `labels` (id, RGB, alpha, visibility, mesh
+    /// visibility, name): 3D Slicer and FSLeyes read it too, so an export's label meaning
+    /// travels to other tools.
+    static func labelDescription(_ labels: [CustomLabel]) -> String {
+        var lines = ["################################################",
+                     "# ITK-SnAP Label Description File",
+                     "# File format:",
+                     "# IDX   -R-  -G-  -B-  -A--  VIS MSH  LABEL",
+                     "################################################",
+                     "    0     0    0    0        0  0  0    \"Clear Label\""]
+        for l in labels.sorted(by: { $0.id < $1.id }) {
+            let c = l.color.count == 3 ? l.color.map { Int(($0 * 255).rounded()) } : [255, 255, 255]
+            let name = l.name.replacingOccurrences(of: "\"", with: "'")
+            lines.append(String(format: "%5d   %3d  %3d  %3d        1  1  1    \"%@\"", l.id, c[0], c[1], c[2], name))
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The label names and colours this app's export put in the header extension, if any.
+    static func names(in d: Data) -> [CustomLabel]? {
         guard d.count >= 352 else { return nil }
         let voxOffset = d.withUnsafeBytes { Int(Float(bitPattern: UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 108, as: UInt32.self)))) }
         guard let json = NIfTI.embeddedJSON(in: d, voxOffset: voxOffset) else { return nil }

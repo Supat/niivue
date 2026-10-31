@@ -83,7 +83,9 @@ and mass (typical tissue densities) and, given the subject's weight and which bo
 lie outside the scan (Dempster/Winter mass fractions; thighs as a percentage), checks the
 imaged mass against the expected share and extrapolates muscle and fat to the whole body,
 assuming the missing limbs share the imaged composition. A tap on the class list switches its
-masses between kg and percent of the subject's weight.
+masses between kg and percent of the subject's weight. The subject's ID, weight, height and
+age are shown there read-only; they are entered on the Profile page (Subject section), where
+values recorded in the scan file are shown as read and the rest can be typed.
 
 **Fatty liver.** When a loaded map has a liver label and both Dixon images are here, the
 Segmentation page measures an apparent liver fat fraction (once; the result is kept in the
@@ -259,7 +261,8 @@ to move the drawing slice; the plane menu and ⇄ swap the two panes) above the 
 labels (the eye button hides the scan so the labels stand alone). The image picker in the top bar switches both slice panes between the scan and any
 loaded companion (water, fat, in-phase, opposed-phase), each with its own levels; the 3D pane
 stays on the scan. Apple Pencil paints with
-the brush, erases, or flood-fills a closed outline on the slice in view; fingers pan, zoom
+the brush, erases, flood-fills a closed outline, or drags a rectangle (corner to corner, drawn
+afresh as the Pencil moves) on the slice in view; fingers pan, zoom
 and scrub, unless "Draw with Finger" is on. The brush size is in millimetres, so it holds
 across zoom and anisotropic voxels. Labels are picked, named, coloured and reordered (drag handles; the inspector lists a
 drawing's labels in that order) in the label list that opens from the label chip; a label locked there (padlock) can't be drawn over,
@@ -286,7 +289,12 @@ then opens on the result. "Export…" shares the drawing as
 `<scan>_drawing.nii.gz`: a uint8 label NIfTI on the scan's own grid and orientation (its voxels
 back in the file's index order under a copy of the scan's header, so ITK-SNAP, 3D Slicer or
 FSLeyes overlay it on the original scan), with the label names and colours as JSON in a header
-extension. "Import…" takes any label map on the scan's grid as the drawing, reading the names
+extension, and beside it `<name>_labels.txt`, an ITK-SNAP label description file (id, colour,
+name) that ITK-SNAP, 3D Slicer and FSLeyes read, so the labels' meaning travels to other
+tools; both go to the share sheet. Every other loaded map (generated or loaded) exports the
+same way from the Segmentation section's "Export Segmentation…", under its own file name.
+Loading a file that carries the header names uses them (over the file name's table, whose
+densities are kept), so a renamed export still reads right. "Import…" takes any label map on the scan's grid as the drawing, reading the names
 back from our own exports and naming other labels "Label n". Strokes change the label grid in
 place (`LabelGrid`) and are published ~30 times a second: the slice panes recomposite and the
 3D render re-uploads only the z slices touched.
@@ -301,7 +309,7 @@ the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YE
 | Folder | Contents |
 |---|---|
 | `NiiMono/App` | `NiiMonoApp` (DocumentGroup) and `MRIDocument`. |
-| `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` + `LabelGrid` and the slice compositing; `LabelPainter` (brush, line, fill on a slice); `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
+| `NiiMono/Models` | `NIfTI` reader/writer + `NiftiVolume`/`LabelVolume`; `Sidecar` settings + `ImageRole`; `LabelTable` (tissue classes, total_mr names, densities); `SegmentationMap` + `SegmentationOverlay` + `LabelGrid` and the slice compositing; `LabelPainter` (brush, line, fill, rectangle on a slice); `BodyCompositionEstimate`; viewer value types (`Plane`, `RenderMode`, `ClipSetting`, `ViewPreset`). |
 | `NiiMono/ViewModels` | `ViewerViewModel` (plane, slices, window, clip planes, crosshair), `SegmentationViewModel` (shown/kept maps, visibility, loading, generation), `BodyCompositionViewModel` (subject inputs), `DrawingViewModel` (segmentation editor: labels, tools, undo). |
 | `NiiMono/Views` | `DocumentView`, `ViewerView` (canvas, toolbar, chrome), `InspectorView`, `SegmentationSection`, `SegmentationEditor`, `BodyCompositionSection`, `SliceView` (UIScrollView), `RenderView` (MTKView host, gestures), `StepSlider`. |
 | `NiiMono/Services` | `SidecarStore`; `CustomSegmentationFile` (drawing import/export); `CleanupMaskFile` (noise mask and scan repair import/export); `ProfileAlignment` (scan and photo landmarks, photo placement); `SegmentationPipeline` (file loading, model runs, sibling discovery), `OrganSegmenter` (nnU-Net inference), `TissueClassifier`, `Snapshot`, `Accumulate.metal` (GPU accumulation, argmax, morphology). |
@@ -310,7 +318,7 @@ the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YE
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
 | `spike/label_export_check.swift` | Round trip of the drawing export on real scans (permuted and flipped orientations): same labels back, scan affine kept, JSON extension intact. |
-| `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, undo round trip (build line in its header). |
+| `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, rectangle, undo round trip (build line in its header). |
 | `spike/mask_file_check.swift` | Round trip of the noise mask and scan repair exports on real scans: same voxels back, repair paint kept and other values dropped, a mask of the other kind refused, an empty one refused. |
 | `tools/convert_organ_model.py` | Regenerates the Core ML models from the TotalSegmentator checkpoints. |
 

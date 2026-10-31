@@ -1,20 +1,17 @@
 //
-//  BodyCompositionSection.swift — per-class volume and mass, and whole-body estimates
-//  from the subject's weight once the segments outside the scan are declared.
+//  BodyCompositionSection.swift — the subject's ID, weight, height and age (edited on the
+//  Profile page), and per-class volume and mass with whole-body estimates from the weight
+//  once the segments outside the scan are declared.
 //
 
 import SwiftUI
 
-struct BodyCompositionSection: View {
+/// The subject as recorded with the scan (read-only) or typed here; on the Profile page.
+struct SubjectSection: View {
     @Bindable var model: BodyCompositionViewModel
-    let map: SegmentationMap
-    /// The class list shows masses in kg, or as a percentage of the subject's weight; a tap
-    /// anywhere on the list switches.
-    @AppStorage("bodyCompositionPercent") private var percent = false
 
     var body: some View {
-        let e = model.estimate(for: map)
-        Section("Body Composition") {
+        Section("Subject") {
             if let id = model.fromFile.id {
                 LabeledContent("Subject ID", value: "\(id) (from file)")
             } else {
@@ -27,6 +24,45 @@ struct BodyCompositionSection: View {
             subjectField("Weight", unit: "kg", fromFile: model.fromFile.weightKg, typed: $model.weightKg)
             subjectField("Height", unit: "cm", fromFile: model.fromFile.heightCm, typed: $model.heightCm)
             subjectField("Age", unit: "years", fromFile: model.fromFile.ageYears, typed: $model.ageYears)
+            Text("Values recorded in the scan file (or a BIDS JSON beside it) are shown as read and can't be changed here. The ID is kept with this scan; weight, height and age are remembered for the next scan too. The body composition estimate uses the weight.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    /// A value recorded with the scan is shown read-only; otherwise the field is editable.
+    @ViewBuilder private func subjectField(_ title: String, unit: String, fromFile: Double?, typed: Binding<Double>) -> some View {
+        if let fromFile {
+            LabeledContent(title, value: "\(fromFile.formatted(.number.precision(.fractionLength(0...1)))) \(unit) (from file)")
+        } else {
+            LabeledContent(title) {
+                HStack(spacing: 4) {
+                    // 0 means "not set": shown as an empty field rather than a zero.
+                    TextField(unit, value: Binding<Double?>(get: { typed.wrappedValue > 0 ? typed.wrappedValue : nil },
+                                                           set: { typed.wrappedValue = $0 ?? 0 }),
+                              format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 70)
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+struct BodyCompositionSection: View {
+    @Bindable var model: BodyCompositionViewModel
+    let map: SegmentationMap
+    /// The class list shows masses in kg, or as a percentage of the subject's weight; a tap
+    /// anywhere on the list switches.
+    @AppStorage("bodyCompositionPercent") private var percent = false
+
+    var body: some View {
+        let e = model.estimate(for: map)
+        Section("Body Composition") {
+            // The subject, as set on the Profile page.
+            LabeledContent("Subject ID", value: model.fromFile.id ?? (model.subjectID.isEmpty ? "–" : model.subjectID))
+            subjectValue("Weight", unit: "kg", model.fromFile.weightKg ?? model.weightKg)
+            subjectValue("Height", unit: "cm", model.fromFile.heightCm ?? model.heightCm)
+            subjectValue("Age", unit: "years", model.fromFile.ageYears ?? model.ageYears)
             DisclosureGroup("Outside the scan") {
                 ForEach(BodySegment.allCases.filter { $0 != .thighs }) { s in
                     Toggle(s.rawValue, isOn: Binding(get: { model.missing.contains(s) }, set: { model.setMissing(s, $0) }))
@@ -78,21 +114,8 @@ struct BodyCompositionSection: View {
         return model.weightKg > 0 ? String(format: "%.1f%%", kg / model.weightKg * 100) : "–"
     }
 
-    /// A value recorded with the scan is shown read-only; otherwise the field is editable.
-    @ViewBuilder private func subjectField(_ title: String, unit: String, fromFile: Double?, typed: Binding<Double>) -> some View {
-        if let fromFile {
-            LabeledContent(title, value: "\(fromFile.formatted(.number.precision(.fractionLength(0...1)))) \(unit) (from file)")
-        } else {
-            LabeledContent(title) {
-                HStack(spacing: 4) {
-                    // 0 means "not set": shown as an empty field rather than a zero.
-                    TextField(unit, value: Binding<Double?>(get: { typed.wrappedValue > 0 ? typed.wrappedValue : nil },
-                                                           set: { typed.wrappedValue = $0 ?? 0 }),
-                              format: .number.precision(.fractionLength(0...1)))
-                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 70)
-                    Text(unit).foregroundStyle(.secondary)
-                }
-            }
-        }
+    /// The subject value in use (0 = not set), read-only here.
+    private func subjectValue(_ title: String, unit: String, _ value: Double) -> some View {
+        LabeledContent(title, value: value > 0 ? "\(value.formatted(.number.precision(.fractionLength(0...1)))) \(unit)" : "–")
     }
 }

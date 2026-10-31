@@ -9,13 +9,14 @@ import Observation
 @Observable @MainActor
 final class DrawingViewModel: Identifiable {
     enum Tool: String, CaseIterable, Identifiable {
-        case brush = "Brush", eraser = "Eraser", fill = "Fill"
+        case brush = "Brush", eraser = "Eraser", fill = "Fill", rectangle = "Rectangle"
         var id: Self { self }
         var symbol: String {
             switch self {
             case .brush: return "paintbrush.pointed"
             case .eraser: return "eraser"
             case .fill: return "drop"
+            case .rectangle: return "rectangle.dashed"
             }
         }
     }
@@ -77,6 +78,8 @@ final class DrawingViewModel: Identifiable {
     private var flushTask: Task<Void, Never>?
 
     private var stroke: (plane: SlicePlane, last: SIMD2<Float>, before: [UInt8])?
+    /// Rectangle tool: the rows of the rectangle drawn so far (redrawn from `before` at each move).
+    private var rectRows: ClosedRange<Int>?
     private var undoStack: [(box: VoxelBox, values: [UInt8])] = []
     private var lastCommit = Date.distantPast
     private var redoStack: [(box: VoxelBox, values: [UInt8])] = []
@@ -181,19 +184,38 @@ final class DrawingViewModel: Identifiable {
                 guard let rows = LabelPainter.fill(grid, plane: plane, at: Int(pt.x.rounded(.down)), Int(pt.y.rounded(.down)), value: value, locked: locked) else { return }
                 commit(plane: plane, before: before, rows: rows)
             } else {
-                stroke = (plane, pt, before)
-                if let rows = LabelPainter.stamp(grid, plane: plane, at: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
+                stroke = (plane, pt, before) // rectangle: `last` stays the corner it started at
+                rectRows = nil
+                if tool != .rectangle, let rows = LabelPainter.stamp(grid, plane: plane, at: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
             }
         case .moved:
             guard let s = stroke, s.plane == plane else { return }
+            if tool == .rectangle { drawRect(s, to: pt, value: value, locked: locked); return }
             if let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
             stroke?.last = pt
         case .ended:
             guard let s = stroke else { return }
             stroke = nil
-            if s.plane == plane, let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value, locked: locked) { touched(plane, rows) }
+            if s.plane == plane {
+                if tool == .rectangle {
+                    drawRect(s, to: pt, value: value, locked: locked)
+                } else if let rows = LabelPainter.line(grid, plane: plane, from: s.last, to: pt, radius: radius(plane), value: value, locked: locked) {
+                    touched(plane, rows)
+                }
+            }
             commit(plane: s.plane, before: s.before, rows: nil)
         }
+    }
+
+    /// The rectangle from the stroke's first corner to `pt`, drawn afresh on the slice as it
+    /// was before the stroke (so the rectangle follows the Pencil, never growing a trail).
+    private func drawRect(_ s: (plane: SlicePlane, last: SIMD2<Float>, before: [UInt8]), to pt: SIMD2<Float>, value: UInt8, locked: [Bool]?) {
+        LabelPainter.write(grid, box: s.plane.box, s.before)
+        let rows = LabelPainter.rect(grid, plane: s.plane, from: s.last, to: pt, value: value, locked: locked)
+        if let all = [rectRows, rows].compactMap({ $0 }).reduce(nil, { a, r in a.map { min($0.lowerBound, r.lowerBound)...max($0.upperBound, r.upperBound) } ?? r }) {
+            touched(s.plane, all)
+        }
+        rectRows = rows
     }
 
     /// Brush radius in voxels along the plane's columns and rows (voxels may be anisotropic).

@@ -237,6 +237,7 @@ enum TissueClassifier {
         for (cls, set) in groups { for l in set { classOf[l] = UInt8(cls) } }
         var tissue = [UInt8](repeating: 0, count: nx * ny * nz)
         for i in 0..<tissue.count { tissue[i] = classOf[Int(L[i])] }
+        progress(0.6)
 
         // Fat: fat-dominant body voxels not already an organ. Visceral fat lies inside the
         // per-slice convex hull of the trunk wall (muscle within the eroded body, plus every
@@ -244,11 +245,13 @@ enum TissueClassifier {
         let fat = body & Mask(nx: nx, ny: ny, nz: nz) { F[$0] > W[$0] && tissue[$0] == 0 }
         let wall = (musc & morph.erode(body, 4)) | Mask(nx: nx, ny: ny, nz: nz) { tissue[$0] != 0 }
         let trunkLabels = ids("liver", "spleen", "stomach", "bowel", "colon", "kidney", "bladder", "heart", "lung", "prostate")
+        let isTrunkLabel = (0...50).map(trunkLabels.contains) // a table: a Set lookup per voxel was slow
         let plane = nx * ny
         var interior = Mask(nx: nx, ny: ny, nz: nz)
         for z in 0..<nz {
+            if z % 16 == 0 { progress(0.6 + 0.28 * Double(z) / Double(nz)) } // the long stage: a hull per trunk slice
             var isTrunk = false
-            for i in 0..<plane where trunkLabels.contains(Int(L[z * plane + i])) { isTrunk = true; break }
+            for i in 0..<plane where isTrunkLabel[Int(L[z * plane + i])] { isTrunk = true; break }
             guard isTrunk else { continue }
             let big = largestComponent2D(body, z: z)
             var pts = [SIMD2<Int>]()
@@ -256,6 +259,7 @@ enum TissueClassifier {
             guard pts.count >= 200 else { continue }
             fillConvexHull(of: pts, into: &interior.v, z: z, nx: nx, ny: ny)
         }
+        progress(0.88)
         // Drop hull jumps thinner than ~20 mm along S–I (station seams).
         interior = interior.openedAlongZ(length: 15)
         progress(0.9)
