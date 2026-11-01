@@ -37,19 +37,45 @@ struct Uniforms {
     var emptySkip: Int32
 }
 
+/// A 3D texture and its 16³ block summary (see VolumeRenderer.block), held by reference so
+/// renderers can share them: whoever writes into a shared pair copies it first (`owned`).
+final class TexturePair {
+    let tex: MTLTexture, blocks: MTLTexture
+    init(_ tex: MTLTexture, _ blocks: MTLTexture) { self.tex = tex; self.blocks = blocks }
+}
+
+/// What the last renderers built, so a view that brings the 3D render back (a plane switch,
+/// the editor closing) skips the pipeline compile, the volume conversion and the label
+/// upload: about two seconds on a whole-body scan. A renderer leaves its textures here when
+/// it goes; the next one for the same scan or map takes them.
+/// ponytail: one scan and one map, main thread only. Holds that scan's texture (r16: 2 bytes
+/// a voxel) while no 3D view shows; DocumentView clears it on close and on a memory warning.
+enum RenderCache {
+    nonisolated(unsafe) static var pipeline: MTLRenderPipelineState?
+    nonisolated(unsafe) static var volume: (id: UUID, pair: TexturePair)?
+    nonisolated(unsafe) static var labels: (id: UUID, revision: Int, pair: TexturePair)?
+    /// Where the last 3D view was looking, so the next one picks up there.
+    nonisolated(unsafe) static var camera: (rotation: simd_quatf, zoom: Float, target: simd_float3)?
+    /// The textures and camera go (live renderers keep their own); the pipeline stays.
+    static func clear() { volume = nil; labels = nil; camera = nil }
+}
+
 final class VolumeRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private var queue: MTLCommandQueue // replaced after a GPU error (see recover)
     private let pipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
-    private let volumeTex: MTLTexture
+    private var vol: TexturePair
+    private var volumeTex: MTLTexture { vol.tex }
     private var volumeID: UUID
     /// Empty-space skipping (see Raycaster.metal): per 16³ block, the brightest voxel
     /// (normalized like the volume) and whether any label is in it. `-emptySkip NO` disables
     /// it for checks.
     static let block = 16
-    private let blockMaxTex: MTLTexture
-    private var labelBlocksTex: MTLTexture?
+    private var blockMaxTex: MTLTexture { vol.blocks }
+    private var labelPair: TexturePair?
+    private var labelTex: MTLTexture? { labelPair?.tex }  // r8Uint labels, same grid as the volume
+    private var labelBlocksTex: MTLTexture? { labelPair?.blocks }
     var emptySkip = UserDefaults.standard.object(forKey: "emptySkip") as? Bool ?? true
 
     private static func blockCounts(_ dims: (Int, Int, Int)) -> (Int, Int, Int) {
@@ -128,6 +154,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     func updateVolume(_ volume: NiftiVolume, z: Range<Int>?) {
         guard volume.id != volumeID else { return }
         volumeID = volume.id
+        own(&vol) // another view (or the cache) may hold the scan as it was
         let range = (z ?? 0..<volume.dims.2).clamped(to: 0..<volume.dims.2)
         Self.uploadVolume(volume, z: range, into: volumeTex)
         Self.uploadBlockMax(volume, z: range, into: blockMaxTex)
@@ -153,7 +180,6 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     }
     private let cmapTex: MTLTexture
     private let labelLUT: MTLTexture   // 256 × RGBA, alpha 0 = hidden label
-    private var labelTex: MTLTexture?  // r8Uint labels, same grid as the volume
     private let noLabels: MTLTexture   // 1×1×1 r8Uint stand-in: the slot must hold a uint texture
     private var labelSource: UUID?
     private var labelRevision = 0
@@ -205,12 +231,17 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         view.device = device
         view.colorPixelFormat = .bgra8Unorm
 
-        // Pipeline
-        let desc = MTLRenderPipelineDescriptor()
-        desc.vertexFunction = library.makeFunction(name: "vtx")
-        desc.fragmentFunction = library.makeFunction(name: "frag")
-        desc.colorAttachments[0].pixelFormat = view.colorPixelFormat
-        pipeline = try! device.makeRenderPipelineState(descriptor: desc)
+        // Pipeline: compiled once per run.
+        if let p = RenderCache.pipeline, p.device === device {
+            pipeline = p
+        } else {
+            let desc = MTLRenderPipelineDescriptor()
+            desc.vertexFunction = library.makeFunction(name: "vtx")
+            desc.fragmentFunction = library.makeFunction(name: "frag")
+            desc.colorAttachments[0].pixelFormat = view.colorPixelFormat
+            pipeline = try! device.makeRenderPipelineState(descriptor: desc)
+            RenderCache.pipeline = pipeline
+        }
 
         // Sampler: linear, clamp (so rays leaving the box read black edges).
         let sd = MTLSamplerDescriptor()
@@ -221,20 +252,25 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         // 3D volume texture, normalized to r16Unorm: linearly filterable on every GPU
         // (r32Float filtering is optional) and half the memory.
         let (nx, ny, nz) = volume.dims
-        let td = MTLTextureDescriptor()
-        td.textureType = .type3D
-        td.pixelFormat = .r16Unorm
-        td.width = nx; td.height = ny; td.depth = nz
-        td.usage = .shaderRead
-        // Apple GPUs cap 3D textures at 2048 per axis; makeTexture returns nil beyond that.
-        guard let tex = device.makeTexture(descriptor: td) else {
-            fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
+        if let c = RenderCache.volume, c.id == volume.id, c.pair.tex.device === device {
+            vol = c.pair
+        } else {
+            let td = MTLTextureDescriptor()
+            td.textureType = .type3D
+            td.pixelFormat = .r16Unorm
+            td.width = nx; td.height = ny; td.depth = nz
+            td.usage = .shaderRead
+            // Apple GPUs cap 3D textures at 2048 per axis; makeTexture returns nil beyond that.
+            guard let tex = device.makeTexture(descriptor: td) else {
+                fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
+            }
+            let blocks = Self.makeBlockTexture(device, dims: volume.dims, format: .r16Unorm)
+            Self.uploadBlockMax(volume, z: 0..<nz, into: blocks)
+            Self.uploadVolume(volume, z: 0..<nz, into: tex)
+            vol = TexturePair(tex, blocks)
+            RenderCache.volume = (volume.id, vol)
         }
-        volumeTex = tex
         volumeID = volume.id
-        blockMaxTex = Self.makeBlockTexture(device, dims: volume.dims, format: .r16Unorm)
-        Self.uploadBlockMax(volume, z: 0..<nz, into: blockMaxTex)
-        Self.uploadVolume(volume, z: 0..<nz, into: tex)
 
         // Colormap: grayscale 256. ponytail: niivue's 73 JSON cmaps drop straight
         // in here — load R/G/B arrays into this 1D texture, nothing else changes.
@@ -258,6 +294,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         boxHalf = 0.5 * phys / max(phys.x, max(phys.y, phys.z))
         mmPerUnit = max(phys.x, max(phys.y, phys.z))
         super.init()
+        if let c = RenderCache.camera { rotation = c.rotation; zoom = c.zoom; target = c.target }
     }
 
     // Re-centring glide when the view's width changes (inspector opening/closing). The
@@ -347,26 +384,60 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     func setOverlay(_ seg: SegmentationOverlay?) {
         overlayOpacity = seg?.opacity ?? 0
         overlayGhost = seg.map { $0.hideScan ? 2 : $0.ghost ? 1 : 0 } ?? 0
-        guard let seg else { labelTex = nil; labelBlocksTex = nil; labelSource = nil; return }
+        guard let seg else { labelPair = nil; labelSource = nil; return }
         seg.lut.withUnsafeBytes { labelLUT.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 256 * 4) }
         let (nx, ny, nz) = seg.labels.dims
-        if labelSource == seg.mapID, let tex = labelTex {
+        if labelSource == seg.mapID, labelPair != nil {
             guard labelRevision != seg.revision else { return }
+            own(&labelPair!) // another view (or the cache) may hold the map as it was
+            let tex = labelPair!.tex
             // A drawing changed some slices in place: upload just those, if none were missed.
             let z = seg.revision == labelRevision + 1 ? seg.dirtyZ ?? 0..<nz : 0..<nz
             upload(seg.labels, z: z.clamped(to: 0..<nz), into: tex)
             labelRevision = seg.revision
             return
         }
-        let td = MTLTextureDescriptor()
-        td.textureType = .type3D; td.pixelFormat = .r8Uint
-        td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
-        guard let tex = device.makeTexture(descriptor: td) else { return }
-        labelBlocksTex = Self.makeBlockTexture(device, dims: seg.labels.dims, format: .r8Uint)
-        upload(seg.labels, z: 0..<nz, into: tex)
-        labelTex = tex
+        if let c = RenderCache.labels, c.id == seg.mapID, c.revision == seg.revision, c.pair.tex.device === device {
+            labelPair = c.pair
+        } else {
+            let td = MTLTextureDescriptor()
+            td.textureType = .type3D; td.pixelFormat = .r8Uint
+            td.width = nx; td.height = ny; td.depth = nz; td.usage = .shaderRead
+            guard let tex = device.makeTexture(descriptor: td) else { return }
+            let pair = TexturePair(tex, Self.makeBlockTexture(device, dims: seg.labels.dims, format: .r8Uint))
+            labelPair = pair
+            upload(seg.labels, z: 0..<nz, into: tex)
+            RenderCache.labels = (seg.mapID, seg.revision, pair)
+        }
         labelSource = seg.mapID
         labelRevision = seg.revision
+    }
+
+    /// Makes `pair` this renderer's alone before it is written: a GPU copy if anything else
+    /// holds it. Once copied it stays unshared, so later writes go straight in.
+    private func own(_ pair: inout TexturePair) {
+        guard !isKnownUniquelyReferenced(&pair) else { return }
+        func blank(like t: MTLTexture) -> MTLTexture? {
+            let d = MTLTextureDescriptor()
+            d.textureType = t.textureType; d.pixelFormat = t.pixelFormat
+            d.width = t.width; d.height = t.height; d.depth = t.depth; d.usage = t.usage
+            return device.makeTexture(descriptor: d)
+        }
+        guard let tex = blank(like: pair.tex), let blocks = blank(like: pair.blocks),
+              let cmd = queue.makeCommandBuffer(), let blit = cmd.makeBlitCommandEncoder() else { return }
+        blit.copy(from: pair.tex, to: tex)
+        blit.copy(from: pair.blocks, to: blocks)
+        blit.endEncoding()
+        cmd.commit()
+        cmd.waitUntilCompleted() // the CPU writes into the copy next
+        pair = TexturePair(tex, blocks)
+    }
+
+    // The next renderer for this scan or map takes these instead of rebuilding them.
+    deinit {
+        RenderCache.camera = (rotation, zoom, target)
+        RenderCache.volume = (volumeID, vol)
+        if let labelSource, let labelPair { RenderCache.labels = (labelSource, labelRevision, labelPair) }
     }
 
     private func upload(_ labels: LabelGrid, z range: Range<Int>, into tex: MTLTexture) {

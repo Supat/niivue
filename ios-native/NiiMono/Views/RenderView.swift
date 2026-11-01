@@ -57,7 +57,10 @@ struct RenderView: UIViewRepresentable {
 
         /// Redraw the volume and the orientation indicator after any camera change.
         func cameraChanged(_ view: UIView?) {
-            if let renderer { gizmo.basis = renderer.basis }
+            if let renderer {
+                gizmo.basis = renderer.basis
+                RenderCache.camera = (renderer.rotation, renderer.zoom, renderer.target) // for the next 3D view
+            }
             view?.setNeedsDisplay()
         }
 

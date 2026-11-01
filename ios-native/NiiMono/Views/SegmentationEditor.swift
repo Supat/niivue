@@ -36,7 +36,21 @@ struct SegmentationEditor: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .background(.black)
-        .background { UndoKeys(drawing: drawing, active: !showingLabels && !adjusting) }
+        .background { UndoKeys(drawing: drawing, active: !showingLabels && !adjusting && !finishing) }
+        .overlay {
+            if finishing {
+                ZStack {
+                    Color.black.opacity(0.4).ignoresSafeArea() // also blocks touches while it saves
+                    VStack(spacing: 12) {
+                        ProgressView().controlSize(.large)
+                        Text(repairMode ? "Applying Repair…" : noiseMode ? "Removing Noise…" : "Saving Drawing…").font(.headline)
+                    }
+                    .padding(28)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 20))
+                }
+                .transition(.opacity)
+            }
+        }
     }
 
     /// A plain bar, not a navigation bar: inside the document's window a NavigationStack
@@ -73,7 +87,14 @@ struct SegmentationEditor: View {
             .labelStyle(.iconOnly)
             Button("Done") {
                 finishing = true
-                Task { await model.finishDrawing() }
+                Task {
+                    // Let the Saving overlay reach the screen first: applying a repair or noise
+                    // mask then runs on the main thread (its spinner keeps turning meanwhile).
+                    // ponytail: main stays blocked for that pass; move repairResult / NoiseMask
+                    // off the main actor if the overlay's own frame ever stalls.
+                    try? await Task.sleep(for: .milliseconds(100))
+                    await model.finishDrawing()
+                }
             }
             .buttonStyle(.glassProminent)
             .disabled(finishing)

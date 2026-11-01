@@ -353,6 +353,11 @@ import simd
         }
         if let map = await d.result() {
             segmentation.showCustom(map, labels: d.labels)
+            // A new map: the viewer's 3D pane uploads it whole. Give the viewer that update
+            // while the editor's Saving overlay still shows, not after it has gone.
+            // ponytail: assumes the covered viewer still updates; if the freeze moves to after
+            // the close, upload the labels off the main thread instead.
+            try? await Task.sleep(for: .milliseconds(100))
         } else if d.labelsChanged, segmentation.customMap != nil {
             segmentation.updateCustomLabels(d.labels) // renamed or recoloured only: no recount
         }

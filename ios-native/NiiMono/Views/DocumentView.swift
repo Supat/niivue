@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct DocumentView: View {
     let document: MRIDocument
@@ -31,6 +32,9 @@ struct DocumentView: View {
             }
         }
         .environment(\.colorScheme, result == nil ? .dark : colorScheme)
+        // The 3D textures kept for the next 3D view (see RenderCache) belong to this scan.
+        .onDisappear { RenderCache.clear() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in RenderCache.clear() }
         .task {
             guard result == nil, let data = document.data else { return }
             let decoded = await Task.detached(priority: .userInitiated) {
