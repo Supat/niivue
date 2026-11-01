@@ -90,7 +90,7 @@ struct SliceView: UIViewRepresentable {
                            oblique: oblique, sharp: sharp)
         if view.imageKey != key {
             view.imageKey = key
-            if let image = makeImage().map({ sharp ? Self.sharpened($0) : $0 }) { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
+            if let image = makeImage(view) { view.imageView.image = UIImage(cgImage: image, scale: 1, orientation: mirrored ? .upMirrored : .up) }
         }
         let e = oblique.map { (Float($0.width) * $0.pitch, Float($0.height) * $0.pitch) } ?? volume.sliceExtent(axis: axis)
         view.extent = CGSize(width: CGFloat(e.0), height: CGFloat(e.1))
@@ -131,10 +131,34 @@ struct SliceView: UIViewRepresentable {
         }
     }
 
-    private func makeImage() -> CGImage? {
+    /// What the grey slice depends on: a paint stroke changes none of it, so strokes only
+    /// re-blend the paint over the cached grey.
+    struct GreyKey: Equatable {
+        let volumeID: UUID, axis: Int, index: Int, lo: Float, hi: Float, oblique: ObliqueFrame?, sharp: Bool
+    }
+    typealias Grey = (width: Int, height: Int, pixels: [UInt8], voxel: [Int32])
+
+    private func grey(_ view: ZoomView) -> Grey {
+        let key = GreyKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, oblique: oblique, sharp: sharp)
+        if let c = view.greyCache, c.key == key { return c.grey }
+        var g: Grey
         if let oblique {
             let o = volume.obliqueSlice(centre: oblique.centre, u: oblique.u, v: oblique.v, pitch: oblique.pitch,
                                         width: oblique.width, height: oblique.height, lo: lo, hi: hi)
+            g = (o.width, o.height, o.pixels, o.voxel)
+        } else {
+            let s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            g = (s.width, s.height, s.pixels, [])
+        }
+        if sharp { g.pixels = Self.sharpened(g.pixels, width: g.width, height: g.height) }
+        view.greyCache = (key, g)
+        return g
+    }
+
+    private func makeImage(_ view: ZoomView) -> CGImage? {
+        let g = grey(view)
+        if oblique != nil {
+            let o = g
             if let overlay {
                 var px = volume.obliqueRGBX(grey: o.pixels, voxel: o.voxel, overlay: overlay)
                 if let cutout { volume.cutOut(&px, bytesPerPixel: 4, voxel: o.voxel, mask: cutout.labels) }
@@ -145,28 +169,33 @@ struct SliceView: UIViewRepresentable {
             return Self.image(px, width: o.width, height: o.height, rgbx: false)
         }
         if let overlay {
-            var s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay)
+            var s = volume.sliceRGBX(axis: axis, index: index, lo: lo, hi: hi, overlay: overlay, grey: g.pixels)
             if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 4, axis: axis, index: index, mask: cutout.labels) }
             return Self.image(s.pixels, width: s.width, height: s.height, rgbx: true)
         } else {
-            var s = volume.slice(axis: axis, index: index, lo: lo, hi: hi)
+            var s = g
             if let cutout { volume.cutOut(&s.pixels, width: s.width, height: s.height, bytesPerPixel: 1, axis: axis, index: index, mask: cutout.labels) }
             return Self.image(s.pixels, width: s.width, height: s.height, rgbx: false)
         }
     }
 
-    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+    /// No colour management: the unsharp mask works on the windowed grey values as they are.
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false, .workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
 
-    /// Unsharp mask in voxel pixels. ponytail: also sharpens overlay label edges (a faint
-    /// halo at full opacity); sharpen the grey before compositing if that ever bothers anyone.
-    static func sharpened(_ image: CGImage) -> CGImage {
-        let input = CIImage(cgImage: image)
-        guard let f = CIFilter(name: "CIUnsharpMask") else { return image }
+    /// Unsharp mask of the windowed grey (voxel pixels), before the paint goes on, so label
+    /// edges get no halo and a stroke never re-runs it (the result is cached with the grey).
+    static func sharpened(_ grey: [UInt8], width w: Int, height h: Int) -> [UInt8] {
+        guard w > 0, h > 0, let f = CIFilter(name: "CIUnsharpMask") else { return grey }
+        let input = CIImage(bitmapData: Data(grey), bytesPerRow: w, size: CGSize(width: w, height: h), format: .L8, colorSpace: nil)
         f.setValue(input.clampedToExtent(), forKey: kCIInputImageKey) // no dark rim at the borders
         f.setValue(1.5, forKey: kCIInputRadiusKey)
         f.setValue(0.8, forKey: kCIInputIntensityKey)
-        guard let out = f.outputImage?.cropped(to: input.extent) else { return image }
-        return ciContext.createCGImage(out, from: input.extent) ?? image
+        guard let out = f.outputImage else { return grey }
+        var px = [UInt8](repeating: 0, count: w * h)
+        px.withUnsafeMutableBytes { b in
+            ciContext.render(out, toBitmap: b.baseAddress!, rowBytes: w, bounds: input.extent, format: .L8, colorSpace: nil)
+        }
+        return px
     }
 
     /// 8-bit grey, or RGBX (4 bytes a pixel), pixels as a CGImage.
@@ -269,6 +298,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
     }
 
     let imageView = UIImageView()
+    /// The windowed (and sharpened) grey slice, kept across paint strokes (see SliceView.grey).
+    var greyCache: (key: SliceView.GreyKey, grey: SliceView.Grey)?
     var onTap: () -> Void = {}
     var onScrub: (Int) -> Void = { _ in }
     var onLocate: ((CGPoint) -> Void)?

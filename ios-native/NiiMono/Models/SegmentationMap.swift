@@ -173,8 +173,16 @@ extension NiftiVolume {
 
     /// Grey slice with the segmentation blended in (RGBX, 4 bytes/pixel): pixels whose label
     /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`).
-    func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay) -> (width: Int, height: Int, pixels: [UInt8]) {
-        let s = slice(axis: axis, index: index, lo: lo, hi: hi)
+    /// `grey`: that slice's windowed pixels if already made (the editor caches them per stroke).
+    func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay,
+                   grey: [UInt8]? = nil) -> (width: Int, height: Int, pixels: [UInt8]) {
+        let s: (width: Int, height: Int, pixels: [UInt8])
+        if let grey {
+            let (w, h) = axis == 0 ? (dims.1, dims.2) : axis == 1 ? (dims.0, dims.2) : (dims.0, dims.1)
+            s = (w, h, grey)
+        } else {
+            s = slice(axis: axis, index: index, lo: lo, hi: hi)
+        }
         let (nx, ny, _) = dims, (w, h) = (s.width, s.height)
         let k = max(0, min(count(axis: axis) - 1, index))
         let a = Int(overlay.opacity * 256), ia = 256 - a

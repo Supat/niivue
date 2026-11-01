@@ -20,7 +20,7 @@ struct Uniforms {
     int      clipCutaway; // 0 = keep what is on the kept side of every plane;
                           // 1 = remove only the corner on the removed side of every plane
     int      clipHighlight; // 1 = draw each plane as a tinted sheet with an outline
-    int      crosshairOn;   // 1 = draw axis lines through `crosshair`
+    int      crosshairOn;   // 1 = draw the slice planes and axis lines through `crosshair`
     float3   crosshair;     // crosshair point in box space
     int      overlayOn;     // 1 = a label volume is bound at texture(2), its LUT at texture(3)
     float    overlayOpacity;
@@ -388,10 +388,24 @@ fragment float4 frag(VSOut in [[stage_in]],
     }
     if (u.crosshairOn != 0) {
         // Crosshair: three axis-aligned lines through the point, clipped to the box, drawn
-        // on top like the plane highlight: red where the line is in front of the tissue
-        // surface, green where it runs behind it (inside the body). Thickness grows with
+        // on top like the plane highlight: cyan inside tissue, white outside it, dimmer
+        // where it runs behind the visible surface. Thickness grows with
         // distance so it stays about one pixel wide on screen.
-        const float3 red = float3(1.0, 0.25, 0.2), green = float3(0.3, 0.9, 0.4);
+        // The three slice planes through the point as faint sheets, outlined where they meet
+        // the box faces, fainter behind the tissue surface; the lines below are where they cross.
+        // 3D Slicer's colours: sagittal (x) yellow, coronal (y) green, axial (z) red.
+        const float3 planeColors[3] = { float3(1.0, 0.85, 0.2), float3(0.3, 0.9, 0.4), float3(1.0, 0.25, 0.2) };
+        for (int a = 0; a < 3; ++a) {
+            if (abs(rd[a]) < 1e-6) { continue; }               // ray along the plane
+            float t = (u.crosshair[a] - ro[a]) / rd[a];
+            if (t <= max(box.x, 0.0) || t >= box.y) { continue; }
+            float3 toFace = u.boxHalf - abs(ro + rd * t);
+            toFace[a] = 1e9;                                  // the plane's own axis is not an edge
+            float edge = min(toFace.x, min(toFace.y, toFace.z)), thick = 0.0015 * t;
+            float sheet = t > tSurface ? 0.05 : 0.12;
+            float rim = (t > tSurface ? 0.35 : 0.8) * (1.0 - smoothstep(0.5 * thick, thick, edge));
+            color.rgb = mix(color.rgb, planeColors[a], max(sheet, rim));
+        }
         float3 w = u.crosshair - ro;
         for (int a = 0; a < 3; ++a) {
             float3 e = float3(a == 0, a == 1, a == 2);
@@ -409,7 +423,11 @@ fragment float4 frag(VSOut in [[stage_in]],
                 float k = round(s / u.crosshairStep);
                 if (k != 0.0 && abs(s - k * u.crosshairStep) < 1.2 * thick) { reach = 6.0 * thick; strength = 0.8; }
             }
-            float3 tint = t > tSurface ? green : red;
+            // Cyan where the line runs through tissue (above the Black level, as the render
+            // counts it), white in the air around it; dimmer behind the visible surface.
+            if (dist >= reach) { continue; } // off the line: skip the volume sample
+            bool inside = vol.sample(samp, q / (2.0 * u.boxHalf) + 0.5, level(0)).r > u.dataMin;
+            float3 tint = (inside ? float3(0.3, 0.85, 1.0) : float3(1.0)) * (t > tSurface ? 0.6 : 1.0);
             color.rgb = mix(color.rgb, tint, strength * (1.0 - smoothstep(0.5 * reach, reach, dist)));
         }
     }
