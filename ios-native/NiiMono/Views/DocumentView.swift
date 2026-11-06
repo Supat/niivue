@@ -40,8 +40,19 @@ struct DocumentView: View {
             let decoded = await Task.detached(priority: .userInitiated) {
                 Result { try NIfTI.parse(NIfTI.isGzip(data) ? NIfTI.gunzip(data) : data) }
             }.value
-            result = decoded.map { ViewerViewModel(volume: $0, fileURL: fileURL) }
+            let opened = decoded.map { ViewerViewModel(volume: $0, fileURL: fileURL) }
             document.data = nil // decoded: the file's bytes are no longer needed
+            guard case .success(let model) = opened else { result = opened; return }
+            // The 3D textures, built off the main thread (see RenderCache.prewarm). Opening
+            // into a 3D view: "Opening…" stays up until they're ready, rather than the viewer
+            // freezing while its 3D pane builds them. Opening into a slice: built behind it.
+            if model.plane.isSlice {
+                result = opened
+                await RenderCache.prewarm(model.volume)
+            } else {
+                await RenderCache.prewarm(model.volume)
+                result = opened
+            }
         }
     }
 }

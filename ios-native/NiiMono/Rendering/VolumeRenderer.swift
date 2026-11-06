@@ -58,6 +58,24 @@ enum RenderCache {
     nonisolated(unsafe) static var camera: (rotation: simd_quatf, zoom: Float, target: simd_float3)?
     /// The textures and camera go (live renderers keep their own); the pipeline stays.
     static func clear() { volume = nil; labels = nil; camera = nil }
+
+    /// Builds the pipeline and `volume`'s textures off the main thread as the document
+    /// opens, so even the first 3D view finds them ready. A view that gets there first
+    /// builds its own; this one then leaves the cache alone.
+    /// ponytail: holds the texture even if no 3D view is ever opened (the price of
+    /// an instant first one).
+    static func prewarm(_ volume: NiftiVolume) async {
+        let built = await Task.detached(priority: .utility) { () -> (MTLRenderPipelineState?, TexturePair)? in
+            guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+            let pipeline = device.makeDefaultLibrary().flatMap { try? VolumeRenderer.makePipeline(device, library: $0) }
+            return (pipeline, VolumeRenderer.makeVolume(volume, device: device))
+        }.value
+        await MainActor.run {
+            guard let (p, pair) = built else { return }
+            if pipeline == nil { pipeline = p }
+            if self.volume?.id != volume.id { self.volume = (volume.id, pair) }
+        }
+    }
 }
 
 final class VolumeRenderer: NSObject, MTKViewDelegate {
@@ -80,6 +98,33 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
 
     private static func blockCounts(_ dims: (Int, Int, Int)) -> (Int, Int, Int) {
         ((dims.0 + block - 1) / block, (dims.1 + block - 1) / block, (dims.2 + block - 1) / block)
+    }
+
+    /// All 3D views draw into .bgra8Unorm (see init).
+    static func makePipeline(_ device: MTLDevice, library: MTLLibrary) throws -> MTLRenderPipelineState {
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = library.makeFunction(name: "vtx")
+        desc.fragmentFunction = library.makeFunction(name: "frag")
+        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        return try device.makeRenderPipelineState(descriptor: desc)
+    }
+
+    /// The scan as an r16Unorm 3D texture with its block maxima. Any thread.
+    static func makeVolume(_ volume: NiftiVolume, device: MTLDevice) -> TexturePair {
+        let (nx, ny, nz) = volume.dims
+        let td = MTLTextureDescriptor()
+        td.textureType = .type3D
+        td.pixelFormat = .r16Unorm
+        td.width = nx; td.height = ny; td.depth = nz
+        td.usage = .shaderRead
+        // Apple GPUs cap 3D textures at 2048 per axis; makeTexture returns nil beyond that.
+        guard let tex = device.makeTexture(descriptor: td) else {
+            fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
+        }
+        let blocks = makeBlockTexture(device, dims: volume.dims, format: .r16Unorm)
+        uploadBlockMax(volume, z: 0..<nz, into: blocks)
+        uploadVolume(volume, z: 0..<nz, into: tex)
+        return TexturePair(tex, blocks)
     }
 
     private static func makeBlockTexture(_ device: MTLDevice, dims: (Int, Int, Int), format: MTLPixelFormat) -> MTLTexture {
@@ -231,15 +276,11 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         view.device = device
         view.colorPixelFormat = .bgra8Unorm
 
-        // Pipeline: compiled once per run.
+        // Pipeline: compiled once per run (see RenderCache.prewarm).
         if let p = RenderCache.pipeline, p.device === device {
             pipeline = p
         } else {
-            let desc = MTLRenderPipelineDescriptor()
-            desc.vertexFunction = library.makeFunction(name: "vtx")
-            desc.fragmentFunction = library.makeFunction(name: "frag")
-            desc.colorAttachments[0].pixelFormat = view.colorPixelFormat
-            pipeline = try! device.makeRenderPipelineState(descriptor: desc)
+            pipeline = try! Self.makePipeline(device, library: library)
             RenderCache.pipeline = pipeline
         }
 
@@ -255,19 +296,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         if let c = RenderCache.volume, c.id == volume.id, c.pair.tex.device === device {
             vol = c.pair
         } else {
-            let td = MTLTextureDescriptor()
-            td.textureType = .type3D
-            td.pixelFormat = .r16Unorm
-            td.width = nx; td.height = ny; td.depth = nz
-            td.usage = .shaderRead
-            // Apple GPUs cap 3D textures at 2048 per axis; makeTexture returns nil beyond that.
-            guard let tex = device.makeTexture(descriptor: td) else {
-                fatalError("volume \(nx)×\(ny)×\(nz) exceeds the GPU's 3D texture limit") // ponytail: downsample instead when such scans show up
-            }
-            let blocks = Self.makeBlockTexture(device, dims: volume.dims, format: .r16Unorm)
-            Self.uploadBlockMax(volume, z: 0..<nz, into: blocks)
-            Self.uploadVolume(volume, z: 0..<nz, into: tex)
-            vol = TexturePair(tex, blocks)
+            vol = Self.makeVolume(volume, device: device)
             RenderCache.volume = (volume.id, vol)
         }
         volumeID = volume.id
