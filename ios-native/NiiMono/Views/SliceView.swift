@@ -52,6 +52,8 @@ struct SliceView: UIViewRepresentable {
     /// A two-finger twist turns the whole pane (image, crosshair, ruler, strokes follow);
     /// it snaps to quarter turns near one, and resets when `axis` changes.
     var rotatable = false
+    /// A vertical drag on the unzoomed view steps through slices (off: it just pans).
+    var scrubs = true
     /// Reports the image's frame in the view's own coordinates whenever layout, zoom or pan
     /// moves it, so another pane can follow.
     var onViewport: ((CGRect) -> Void)? = nil
@@ -97,6 +99,7 @@ struct SliceView: UIViewRepresentable {
         view.fitExtent = fitExtent
         view.onTap = onTap
         view.onScrub = onScrub
+        view.scrubs = scrubs
         view.onLocate = onLocate
         view.onDraw = onDraw
         view.onMeasured = onMeasured
@@ -349,6 +352,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate, SnapshotPane {
 
     private var fitted: (bounds: CGSize, extent: CGSize, fitExtent: CGSize?) = (.zero, .zero, nil)
     private let scrub = UIPanGestureRecognizer()
+    var scrubs = true { didSet { scrub.isEnabled = scrubs } }
     private static let pointsPerSlice: CGFloat = 5
 
     override init(frame: CGRect) {

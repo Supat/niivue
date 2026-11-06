@@ -165,6 +165,7 @@ struct SegmentationEditor: View {
                          onTwoFingerTap: { drawing.tapUndo() },
                          onThreeFingerTap: { drawing.tapRedo() },
                          rotatable: true,
+                         scrubs: false, // slices change by the scrubber only
                          scaleBarInset: 120,
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
@@ -200,15 +201,12 @@ struct SegmentationEditor: View {
         return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
                          mirrored: model.mirrored, sharp: model.sharpSlices, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
                          crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
-                         onLocate: { model.locate($0, in: axis) }, // moves the drawing slice
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 4) {
-                    Menu("Reference Plane", systemImage: "square.on.square") {
-                        ForEach([2, 1, 0].filter { $0 != drawing.mainAxis }, id: \.self) { a in
-                            Button(Self.planeName(a)) { drawing.refAxis = a }
-                        }
+                    Button("Switch Reference Plane", systemImage: "square.on.square") {
+                        drawing.refAxis = 3 - drawing.mainAxis - drawing.refAxis // the third plane
                     }
                     Button("Swap Views", systemImage: "arrow.left.arrow.right") {
                         (drawing.mainAxis, drawing.refAxis) = (drawing.refAxis, drawing.mainAxis)
