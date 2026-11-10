@@ -55,11 +55,13 @@ struct SegmentationSection: View {
     @ViewBuilder private func controls(for map: SegmentationMap) -> some View {
         LabeledContent("File", value: map.name).lineLimit(1).truncationMode(.middle)
         LabeledContent("Opacity") { StepSlider(value: $model.opacity, in: 0...1, unit: 0.05) }
-            .disabled(model.mask) // masked: no colour at all
+            .disabled(model.mask || model.exclude) // masked or cut out: no colour at all
         Toggle("Show Through Tissue (3D)", isOn: $model.ghost)
-            .disabled(model.mask)
+            .disabled(model.mask || model.exclude)
         // Visible labels as a mask: hide a label to cut it out too.
         Toggle("Mask to Visible Segments", isOn: $model.mask)
+        // The inverse: the scan with the visible labels cut out.
+        Toggle("Hide Visible Segments", isOn: $model.exclude)
         HStack {
             Button("Show All") { model.setAllVisible(true) }
             Spacer()

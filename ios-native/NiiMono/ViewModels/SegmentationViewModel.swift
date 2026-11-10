@@ -25,7 +25,13 @@ import Observation
     var ghost = UserDefaults.standard.bool(forKey: "segGhost") // `-segGhost YES` for checks
     /// The visible labels act as a mask: only the scan inside them is shown, uncoloured, in
     /// every view.
-    var mask = UserDefaults.standard.bool(forKey: "segMask") // `-segMask YES` for checks
+    var mask = UserDefaults.standard.bool(forKey: "segMask") { // `-segMask YES` for checks
+        didSet { if mask { exclude = false } }
+    }
+    /// The inverse: the visible labels are cut out of the scan, in every view.
+    var exclude = UserDefaults.standard.bool(forKey: "segExclude") { // `-segExclude YES` for checks
+        didSet { if exclude { mask = false } }
+    }
 
     var isLoading = false
     var error: String?
@@ -71,8 +77,8 @@ import Observation
             lut[l] = SIMD4(UInt8(c.x), UInt8(c.y), UInt8(c.z), 255)
         }
         // Masked: the scan alone inside the labels, no colour.
-        return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: mask ? 0 : opacity, ghost: ghost,
-                                   hideScan: mask, mask: mask)
+        return SegmentationOverlay(mapID: map.id, labels: LabelGrid(map.labels), lut: lut, opacity: mask || exclude ? 0 : opacity,
+                                   ghost: ghost && !exclude, hideScan: mask, mask: mask, exclude: exclude)
     }
 
     /// Put a map on screen, all its labels visible.

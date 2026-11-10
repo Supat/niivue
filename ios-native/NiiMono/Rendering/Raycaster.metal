@@ -24,14 +24,17 @@ struct Uniforms {
     float3   crosshair;     // crosshair point in box space
     int      overlayOn;     // 1 = a label volume is bound at texture(2), its LUT at texture(3)
     float    overlayOpacity;
-    int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through, 2 = labels alone
+    int      overlayGhost;  // 1 = fade unlabelled tissue so labelled structures show through, 2 = labels alone,
+                            // 3 = shown labels cut out (empty)
     float    cameraClip;    // rays start this far from the eye (0 = at the eye / box entry)
     int      fovCount;      // station FOV boxes at buffer(1): [lo, hi] pairs in box space
     float    crosshairStep; // box-space spacing of the crosshair's scale ticks (0 = none)
     int      cutoutOn;      // 1 = a noise mask is bound at texture(4): voxels marked in it are empty
-    int      clipKeepLabels;// 1 = clipping removes unlabelled tissue only; visible segments stay whole
+    int      clipKeepLabels;// 1 = clipping removes unlabelled tissue only; visible segments stay whole;
+                            // 2 = it removes only the labels in clipLabels, the rest stays whole
     float    sampleStride;  // multiplies the stride along the ray (4 while the image glides: cheaper frames)
     int      emptySkip;     // 1 = rays jump over 16³ blocks with nothing to draw (texture(5), (6))
+    uint     clipLabels[8]; // clipKeepLabels 2: bit l set = label l is clipped (256 bits)
 };
 
 struct VSOut {
@@ -65,25 +68,28 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
                     texture1d<float> cmap, texture3d<uint> labels, texture1d<float> lut,
                     texture3d<uint> cutout, texture3d<float> blockMax, texture3d<uint> labelBlocks,
                     sampler samp, float3 ro, float3 rd, float2 hit, thread float& tSurface) {
-    // Removed noise: voxels marked in the cutout mask are treated as empty.
-    float3 cdims = float3(cutout.get_width(), cutout.get_height(), cutout.get_depth());
-    auto cutAt = [&](float3 uvw) -> bool {
-        return u.cutoutOn != 0 && cutout.read(uint3(clamp(uvw, 0.0, 0.9999) * cdims)).r != 0;
-    };
     // Label (0 = none/hidden) and its colour at a texture coordinate.
     float3 ldims = float3(labels.get_width(), labels.get_height(), labels.get_depth());
+    bool excluding = u.overlayGhost == 3 && u.overlayOn != 0;
     auto labelAt = [&](float3 uvw) -> uint {
-        if (u.overlayOn == 0) { return 0; }
+        if (u.overlayOn == 0 || excluding) { return 0; } // cut out: no colour either
         uint l = labels.read(uint3(clamp(uvw, 0.0, 0.9999) * ldims)).r;
         return lut.read(l).a > 0.0 ? l : 0;
+    };
+    // Removed noise: voxels marked in the cutout mask are treated as empty; so are the shown
+    // labels' voxels when they are cut out.
+    float3 cdims = float3(cutout.get_width(), cutout.get_height(), cutout.get_depth());
+    auto cutAt = [&](float3 uvw) -> bool {
+        if (excluding && lut.read(labels.read(uint3(clamp(uvw, 0.0, 0.9999) * ldims)).r).a > 0.0) { return true; }
+        return u.cutoutOn != 0 && cutout.read(uint3(clamp(uvw, 0.0, 0.9999) * cdims)).r != 0;
     };
     // Clip planes. Normal mode trims the ray's [near, far] range to each plane's kept
     // half-space. Cutaway instead finds the stretch of the ray inside every plane's
     // removed half-space — (cut0, cut1), one interval since that region is convex — and
     // the marches below skip it.
     bool cutaway = u.clipCutaway != 0;
-    // Keep visible segments: march the whole box and drop only unlabelled samples in the
-    // removed region, so segments show whole inside the clipped-away part.
+    // Keep visible segments / clip chosen segments: march the whole box and drop only the
+    // samples clipping applies to (unlabelled, or of a chosen label) in the removed region.
     bool keep = u.clipKeepLabels != 0 && u.overlayOn != 0;
     float2 full = hit;
     bool rayRemoved = false; // keep: a plane parallel to the ray removes all of it
@@ -111,6 +117,11 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
     if (keep) { hit = full; }
     auto clippedAt = [&](float t) -> bool {
         return rayRemoved || t < kept.x || t > kept.y || (t > cut0 && t < cut1);
+    };
+    // Whether a sample of label `lab` at ray distance t is clipped away (keep modes only).
+    auto removedAt = [&](float t, uint lab) -> bool {
+        bool applies = u.clipKeepLabels == 2 ? (u.clipLabels[lab >> 5] >> (lab & 31)) & 1 : lab == 0;
+        return applies && clippedAt(t);
     };
     if (hit.x > hit.y || hit.y < 0.0) { return float4(0, 0, 0, 1); } // miss
     // Camera clip: nothing nearer than cameraClip is drawn, so zooming into the volume
@@ -170,8 +181,9 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         auto solidAt = [&](float3 uvw, float t, thread uint& lab) -> bool {
             if (cutAt(uvw)) { return false; }
             lab = labelAt(uvw);
+            if (keep && removedAt(t, lab)) { lab = 0; return false; }
             if (lab != 0) { return true; }
-            if (labelsOnly || (keep && clippedAt(t))) { return false; }
+            if (labelsOnly) { return false; }
             return vol.sample(samp, uvw, level(0)).r > u.dataMin;
         };
         auto lit = [&](float3 base, float3 nrm) -> float3 {
@@ -260,7 +272,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
             if (cutAt(uvw)) { continue; }
             float v = vol.sample(samp, uvw, level(0)).r;
             uint lab = labelAt(uvw);
-            if (keep && lab == 0 && clippedAt(tIn + s * tStep)) { continue; }
+            if (keep && removedAt(tIn + s * tStep, lab)) { continue; }
             if (v <= u.dataMin && lab == 0) { continue; }
             float txl = clamp((v - u.dataMin) / window, 2.0 / 256.0, 1.0);
             float a = txl * (128.0 / 255.0);
@@ -270,7 +282,7 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
                 // bone) enough opacity to show at all.
                 rgb = mix(rgb, lut.read(lab).rgb, u.overlayOpacity);
                 a = max(a, 0.4 * u.overlayOpacity);
-            } else if (u.overlayGhost != 0 && u.overlayOn != 0) {
+            } else if ((u.overlayGhost == 1 || u.overlayGhost == 2) && u.overlayOn != 0) {
                 a *= u.overlayGhost == 2 ? 0.0 : 0.08;
             }
             if (stride > 1.0) { a = 1.0 - pow(1.0 - a, stride); } // the opacity of `stride` voxels
@@ -295,8 +307,8 @@ static float4 shade(float4 fragPos, constant Uniforms& u, texture3d<float> vol,
         if (cutAt(uvw)) { continue; }
         float v = vol.sample(samp, uvw, level(0)).r;
         uint lab = labelAt(uvw);
-        if (keep && lab == 0 && clippedAt(t)) { continue; }
-        if (u.overlayGhost != 0 && u.overlayOn != 0 && lab == 0) { continue; } // labelled tissue only
+        if (keep && removedAt(t, lab)) { continue; }
+        if ((u.overlayGhost == 1 || u.overlayGhost == 2) && u.overlayOn != 0 && lab == 0) { continue; } // labelled tissue only
         if (v > u.dataMin) { tSurface = min(tSurface, t); }
         if (v > maxV) { maxV = v; maxLab = lab; }          // MIP, remembering the label there
     }

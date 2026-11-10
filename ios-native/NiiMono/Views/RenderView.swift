@@ -15,6 +15,7 @@ struct RenderView: UIViewRepresentable {
     let clipCutaway: Bool
     /// Clipping removes unlabelled tissue only; visible segments stay whole.
     var clipKeepLabels = false
+    var clipOnlyLabels: Set<Int>? = nil
     let clipHighlight: Bool
     /// Crosshair as fractions of the volume along x, y, z (0...1), or nil.
     var crosshair: SIMD3<Float>? = nil
@@ -253,6 +254,7 @@ struct RenderView: UIViewRepresentable {
         renderer.clips = clips
         renderer.clipCutaway = clipCutaway
         renderer.clipKeepLabels = clipKeepLabels
+        renderer.clipOnlyLabels = clipOnlyLabels
         renderer.clipHighlight = clipHighlight
         renderer.crosshair = crosshair.map { ($0 - 0.5) * 2 * renderer.boxHalf }
         // Voxel edges → box space, cut to the volume (the render stops at its faces).
@@ -272,7 +274,7 @@ struct RenderView: UIViewRepresentable {
             if preset == .level { renderer.level() } else { renderer.setView(yaw: preset.angles.yaw, pitch: preset.angles.pitch) }
         }
         c.presetTick = presetTick
-        let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipKeepLabels: clipKeepLabels, clipHighlight: clipHighlight,
+        let inputs = Inputs(lo: lo, hi: hi, mode: mode, clips: clips, clipCutaway: clipCutaway, clipKeepLabels: clipKeepLabels, clipOnlyLabels: clipOnlyLabels, clipHighlight: clipHighlight,
                             crosshair: crosshair, overlay: overlay.map(Inputs.Overlay.init), cutout: cutout.map(Inputs.Overlay.init),
                             fov: fov, cameraClip: cameraClip)
         guard presetChanged || volumeChanged || inputs != c.drawnInputs else { return }
@@ -283,12 +285,12 @@ struct RenderView: UIViewRepresentable {
     /// Everything this view passes the renderer that changes the picture (the camera is
     /// redrawn by the gestures themselves).
     struct Inputs: Equatable {
-        var lo: Float, hi: Float, mode: RenderMode, clips: [ClipSetting], clipCutaway: Bool, clipKeepLabels: Bool, clipHighlight: Bool
+        var lo: Float, hi: Float, mode: RenderMode, clips: [ClipSetting], clipCutaway: Bool, clipKeepLabels: Bool, clipOnlyLabels: Set<Int>?, clipHighlight: Bool
         var crosshair: SIMD3<Float>?, overlay: Overlay?, cutout: Overlay?, fov: [FOVBox], cameraClip: Float
         struct Overlay: Equatable {
-            var mapID: UUID, revision: Int, lut: [SIMD4<UInt8>], opacity: Float, ghost: Bool, hideScan: Bool
+            var mapID: UUID, revision: Int, lut: [SIMD4<UInt8>], opacity: Float, ghost: Bool, hideScan: Bool, exclude: Bool
             init(_ o: SegmentationOverlay) {
-                (mapID, revision, lut, opacity, ghost, hideScan) = (o.mapID, o.revision, o.lut, o.opacity, o.ghost, o.hideScan)
+                (mapID, revision, lut, opacity, ghost, hideScan, exclude) = (o.mapID, o.revision, o.lut, o.opacity, o.ghost, o.hideScan, o.exclude)
             }
         }
     }

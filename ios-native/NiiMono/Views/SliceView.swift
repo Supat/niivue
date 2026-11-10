@@ -68,7 +68,7 @@ struct SliceView: UIViewRepresentable {
     /// (a crosshair move or a zoom in another pane must not cost a full recomposite).
     struct ImageKey: Equatable {
         let volumeID: UUID, axis: Int, index: Int, lo: Float, hi: Float, mirrored: Bool
-        let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, lut: [SIMD4<UInt8>]
+        let mapID: UUID?, revision: Int, opacity: Float, mask: Bool, exclude: Bool, lut: [SIMD4<UInt8>]
         let cutoutID: UUID?, cutoutRevision: Int
         let oblique: ObliqueFrame?
         let sharp: Bool
@@ -87,7 +87,7 @@ struct SliceView: UIViewRepresentable {
             revision = seen.revision
         }
         let key = ImageKey(volumeID: volume.id, axis: axis, index: index, lo: lo, hi: hi, mirrored: mirrored,
-                           mapID: overlay?.mapID, revision: revision, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false,
+                           mapID: overlay?.mapID, revision: revision, opacity: overlay?.opacity ?? 0, mask: overlay?.mask ?? false, exclude: overlay?.exclude ?? false,
                            lut: overlay?.lut ?? [], cutoutID: cutout?.mapID, cutoutRevision: cutout?.revision ?? 0,
                            oblique: oblique, sharp: sharp)
         if view.imageKey != key {

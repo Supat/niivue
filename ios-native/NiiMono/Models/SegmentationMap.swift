@@ -50,6 +50,7 @@ struct SegmentationOverlay {
     let ghost: Bool         // 3D: fade unlabelled tissue so labelled structures show through
     var hideScan = false    // 3D: draw the labels alone
     var mask = false        // slices: black outside the shown labels (3D: with hideScan)
+    var exclude = false     // the inverse: the shown labels are cut out (black on slices, empty in 3D)
     /// Bumped when a drawing changes the voxels in place; `dirtyZ` is the z slices changed
     /// since the previous revision (nil = unknown, upload everything).
     var revision = 0
@@ -156,7 +157,7 @@ extension NiftiVolume {
                 for (p, i) in voxel.enumerated() {
                     let g = Int(grey[p]), o = p * 4
                     let color = i >= 0 ? lut[Int(lab[Int(i)])] : .zero
-                    if overlay.mask && color.w == 0 && i >= 0 {
+                    if i >= 0 && (overlay.mask ? color.w == 0 : overlay.exclude && color.w > 0) {
                         px[o] = 0; px[o + 1] = 0; px[o + 2] = 0
                     } else if color.w > 0 {
                         px[o] = UInt8((g * ia + Int(color.x) * a) >> 8)
@@ -172,7 +173,8 @@ extension NiftiVolume {
     }
 
     /// Grey slice with the segmentation blended in (RGBX, 4 bytes/pixel): pixels whose label
-    /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`).
+    /// is shown get `opacity` of the label colour, the rest stay grey (black with `mask`; with
+    /// `exclude` the shown labels are black instead).
     /// `grey`: that slice's windowed pixels if already made (the editor caches them per stroke).
     func sliceRGBX(axis: Int, index: Int, lo: Float, hi: Float, overlay: SegmentationOverlay,
                    grey: [UInt8]? = nil) -> (width: Int, height: Int, pixels: [UInt8]) {
@@ -196,7 +198,7 @@ extension NiftiVolume {
                         let i = axis == 0 ? k + nx * (c + ny * v) : axis == 1 ? c + nx * (k + ny * v) : c + nx * (v + ny * k)
                         let g = Int(s.pixels[r * w + c]), o = (r * w + c) * 4
                         let color = lut[Int(lab[i])]
-                        if overlay.mask && color.w == 0 {
+                        if overlay.mask ? color.w == 0 : overlay.exclude && color.w > 0 {
                             px[o] = 0; px[o + 1] = 0; px[o + 2] = 0
                         } else if color.w > 0 {
                             px[o] = UInt8((g * ia + Int(color.x) * a) >> 8)

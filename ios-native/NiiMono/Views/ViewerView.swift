@@ -290,7 +290,7 @@ private struct VolumeCanvas: View {
 
     private var render: some View {
         RenderView(volume: model.volume, lo: model.lo, hi: model.hi, mode: model.renderMode,
-                   clips: model.clips, clipCutaway: model.clipCutaway, clipKeepLabels: model.clipKeepSegments, clipHighlight: model.clipHighlight,
+                   clips: model.clips, clipCutaway: model.clipCutaway, clipKeepLabels: model.clipKeepSegments, clipOnlyLabels: model.clipOnlySegments, clipHighlight: model.clipHighlight,
                    crosshair: model.showCrosshair ? model.crosshairFractions : nil,
                    overlay: model.segmentation.overlay, cutout: model.noiseCutout, volumeDirtyZ: model.volumeDirtyZ, fov: model.visibleFOVBoxes, cameraClip: model.cameraClip ? model.cameraClipDepth : 0,
                    preset: model.preset, presetTick: model.presetTick, onTap: onTap)

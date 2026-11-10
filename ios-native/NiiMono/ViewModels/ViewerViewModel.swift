@@ -407,7 +407,14 @@ import simd
     /// Remove only the corner between the planes instead of everything beyond each one.
     var clipCutaway = UserDefaults.standard.bool(forKey: "clipCutaway") // `-clipCutaway YES` for checks
     /// Clip planes remove unlabelled tissue only: visible segments stay whole.
-    var clipKeepSegments = UserDefaults.standard.bool(forKey: "clipKeepSegments") // `-clipKeepSegments YES` for checks
+    var clipKeepSegments = UserDefaults.standard.bool(forKey: "clipKeepSegments") { // `-clipKeepSegments YES` for checks
+        didSet { if clipKeepSegments { clipOnlySegments = nil } }
+    }
+    /// Clip planes cut only these labels of the shown map; the scan and other labels stay
+    /// whole. nil = off (exclusive with clipKeepSegments).
+    var clipOnlySegments: Set<Int>? {
+        didSet { if clipOnlySegments != nil { clipKeepSegments = false } }
+    }
     /// Draw each clip plane as a tinted, outlined sheet so its position is visible.
     var clipHighlight = UserDefaults.standard.bool(forKey: "clipHighlight") // `-clipHighlight YES` for checks
     /// Camera clip: discard everything nearer than this fraction of the way from the eye to
@@ -476,9 +483,10 @@ import simd
                           cameraClip: cameraClip, cameraClipDepth: cameraClipDepth, bookmarks: bookmarks,
                           noise: noise != nil, removeNoise: removeNoise, repair: scanRepair != nil,
                           clipKeepSegments: clipKeepSegments,
+                          clipOnlySegments: clipOnlySegments.map { $0.sorted() },
                           oblique: .init(plane: oblique.base.rawValue, pos: oblique.pos, tilt: [oblique.tilt.x, oblique.tilt.y])),
             segmentation: .init(visible: segmentation.visible, opacity: segmentation.opacity, ghost: segmentation.ghost,
-                                mask: segmentation.mask,
+                                mask: segmentation.mask, exclude: segmentation.exclude,
                                 shownName: segmentation.map?.name, keptName: segmentation.others.first?.name,
                                 kept2Name: segmentation.others.dropFirst().first?.name,
                                 kept3Name: segmentation.others.dropFirst(2).first?.name,
@@ -504,6 +512,7 @@ import simd
         clips = s.viewer.clips.prefix(ClipSetting.maxCount).compactMap(ClipSetting.init(saved:))
         clipCutaway = s.viewer.clipCutaway
         clipKeepSegments = s.viewer.clipKeepSegments ?? false
+        clipOnlySegments = s.viewer.clipOnlySegments.map(Set.init)
         clipHighlight = s.viewer.clipHighlight
         cameraClip = s.viewer.cameraClip ?? false
         cameraClipDepth = s.viewer.cameraClipDepth ?? 0.5
@@ -516,6 +525,7 @@ import simd
         segmentation.opacity = s.segmentation.opacity
         segmentation.ghost = s.segmentation.ghost
         segmentation.mask = s.segmentation.mask ?? false
+        segmentation.exclude = s.segmentation.exclude ?? false
         segmentation.customLabels = s.segmentation.customLabels ?? []
         bodyComposition.weightKg = s.body.weightKg
         bodyComposition.heightCm = s.body.heightCm ?? bodyComposition.heightCm
@@ -891,5 +901,6 @@ import simd
         clips = p.clips.prefix(ClipSetting.maxCount).compactMap(ClipSetting.init(saved:))
         clipCutaway = p.cutaway
         clipKeepSegments = p.keepSegments
+        clipOnlySegments = nil // ponytail: presets don't carry label choices (label ids differ between maps)
     }
 }

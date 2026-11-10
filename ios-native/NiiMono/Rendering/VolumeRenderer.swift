@@ -35,6 +35,7 @@ struct Uniforms {
     var clipKeepLabels: Int32
     var sampleStride: Float
     var emptySkip: Int32
+    var clipLabels: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
 }
 
 /// A 3D texture and its 16³ block summary (see VolumeRenderer.block), held by reference so
@@ -245,6 +246,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     var clips: [ClipSetting] = [] // at most ClipSetting.maxCount are used
     var clipCutaway = false
     var clipKeepLabels = false // clipping spares voxels of visible segments
+    var clipOnlyLabels: Set<Int>? // clipping cuts only these labels; the scan and other labels stay whole
     var clipHighlight = false
     var crosshair: simd_float3? // box-space point, or nil for none
     /// Station FOV boxes as [lo, hi] pairs in box space (see RenderView), drawn as wireframes.
@@ -412,7 +414,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// Attach (or detach) a segmentation; the label volume is uploaded once per map.
     func setOverlay(_ seg: SegmentationOverlay?) {
         overlayOpacity = seg?.opacity ?? 0
-        overlayGhost = seg.map { $0.hideScan ? 2 : $0.ghost ? 1 : 0 } ?? 0
+        overlayGhost = seg.map { $0.exclude ? 3 : $0.hideScan ? 2 : $0.ghost ? 1 : 0 } ?? 0
         guard let seg else { labelPair = nil; labelSource = nil; return }
         seg.lut.withUnsafeBytes { labelLUT.replace(region: MTLRegionMake1D(0, 256), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 256 * 4) }
         let (nx, ny, nz) = seg.labels.dims
@@ -559,7 +561,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
     /// The render settings in force, for the logs: which path a slow or killed frame took.
     private var settingsSummary: String {
         let active = clips.prefix(ClipSetting.maxCount).filter(\.enabled).count
-        return "mode \(mode == 0 ? "MIP" : mode == 1 ? "Volume" : "Surface"), clips \(active)\(clipCutaway ? " cutaway" : "")\(clipKeepLabels ? " keep-labels" : ""), "
+        return "mode \(mode == 0 ? "MIP" : mode == 1 ? "Volume" : "Surface"), clips \(active)\(clipCutaway ? " cutaway" : "")\(clipKeepLabels ? " keep-labels" : "")\(clipOnlyLabels.map { " only-labels \($0.count)" } ?? ""), "
             + "overlay \(labelTex == nil ? "off" : "on, ghost \(overlayGhost)"), cutout \(cutout.texture == nil ? "off" : "on"), "
             + String(format: "camera clip %.2f, zoom %.2f, stride %d, scale %.1f, skip %@", cameraClipFraction, zoom, glideCoarse ? 4 : 1, Double(pointScale), emptySkip ? "on" : "off")
     }
@@ -664,6 +666,8 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             if clip.flip { normal = -normal; offset = -offset }
             planes[i] = simd_float4(normal, offset)
         }
+        var bits = [UInt32](repeating: 0, count: 8)
+        for l in clipOnlyLabels ?? [] where (0..<256).contains(l) { bits[l >> 5] |= 1 << UInt32(l & 31) }
         return Uniforms(invViewProj: invVP, camPos: eye, boxHalf: boxHalf,
                         clips: (planes[0], planes[1], planes[2], planes[3], planes[4], planes[5]),
                         dataMin: windowLo, dataMax: windowHi, steps: steps, mode: mode,
@@ -673,8 +677,9 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
                         overlayOn: labelTex == nil ? 0 : 1, overlayOpacity: overlayOpacity, overlayGhost: overlayGhost,
                         cameraClip: cameraClipFraction * distance(aspect: aspect),
                         fovCount: Int32(fov.count / 2), crosshairStep: 0,
-                        cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipKeepLabels ? 1 : 0,
-                        sampleStride: glideCoarse ? 4 : 1, emptySkip: emptySkip ? 1 : 0)
+                        cutoutOn: cutout.texture == nil ? 0 : 1, clipKeepLabels: clipOnlyLabels != nil ? 2 : clipKeepLabels ? 1 : 0,
+                        sampleStride: glideCoarse ? 4 : 1, emptySkip: emptySkip ? 1 : 0,
+                        clipLabels: (bits[0], bits[1], bits[2], bits[3], bits[4], bits[5], bits[6], bits[7]))
     }
 }
 

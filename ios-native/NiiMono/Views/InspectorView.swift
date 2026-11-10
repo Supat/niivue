@@ -188,9 +188,31 @@ private struct ClipPlaneSections: View {
                 Toggle("Cutaway", isOn: $model.clipCutaway)
             }
             if !model.clips.isEmpty {
-                // Needs a segmentation; its hidden labels are clipped like the rest.
-                Toggle("Keep Visible Segments", isOn: $model.clipKeepSegments)
-                    .disabled(model.segmentation.map == nil)
+                // What the planes cut: everything; everything but the visible segments (hidden
+                // labels are clipped like the rest); or only chosen segments of the shown map.
+                Picker("Clip", selection: Binding(
+                    get: { model.clipOnlySegments != nil ? 2 : model.clipKeepSegments ? 1 : 0 },
+                    set: { mode in
+                        model.clipKeepSegments = mode == 1
+                        model.clipOnlySegments = mode == 2 ? (model.clipOnlySegments ?? []) : nil
+                    })) {
+                    Text("Everything").tag(0)
+                    Text("All but Visible Segments").tag(1)
+                    Text("Chosen Segments Only").tag(2)
+                }
+                .disabled(model.segmentation.map == nil)
+                if let chosen = model.clipOnlySegments, let map = model.segmentation.map {
+                    Menu {
+                        ForEach(Array(map.labelRange).filter { map.counts[$0] > 0 }, id: \.self) { l in
+                            Toggle(map.table.name(l), isOn: Binding(
+                                get: { chosen.contains(l) },
+                                set: { on in model.clipOnlySegments = on ? chosen.union([l]) : chosen.subtracting([l]) }))
+                        }
+                    } label: {
+                        LabeledContent("Segments to Clip", value: chosen.isEmpty ? "None" : "\(chosen.count)")
+                    }
+                    .menuActionDismissBehavior(.disabled)
+                }
             }
             if model.clips.count < ClipSetting.maxCount {
                 Button("Add Clip Plane", systemImage: "plus") { model.addClip() }
