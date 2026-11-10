@@ -392,13 +392,19 @@ struct SliceScrubber: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            Button("Previous Slice", systemImage: "chevron.left") { value.wrappedValue = max(value.wrappedValue - 1, 0) }
+                .disabled(value.wrappedValue <= 0)
             StepSlider(value: Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Int($0.rounded()) }),
                        in: 0...Double(count - 1), unit: 1)
                 .accessibilityLabel("Slice")
+            Button("Next Slice", systemImage: "chevron.right") { value.wrappedValue = min(value.wrappedValue + 1, count - 1) }
+                .disabled(value.wrappedValue >= count - 1)
             Text("\(value.wrappedValue + 1) of \(count)")
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .labelStyle(.iconOnly)
+        .buttonRepeatBehavior(.enabled) // hold to keep stepping
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .frame(maxWidth: 480)

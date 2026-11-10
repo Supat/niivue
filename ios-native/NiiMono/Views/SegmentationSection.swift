@@ -24,27 +24,26 @@ struct SegmentationSection: View {
                 }
                 controls(for: map)
             }
-            // Load and generate stay on offer until a generated or loaded map exists: a
-            // drawing on its own doesn't count, and a new map joins it rather than replacing it.
-            if !model.maps.contains(where: { !$0.isCustom }) {
-                Button("Load Segmentation…", systemImage: "square.3.layers.3d") { importing = true }
-                    .disabled(model.isLoading || model.isGenerating)
-                if let p = model.progress {
-                    ProgressView(value: p) { Text("Segmenting \(model.stage)… \(Int(p * 100))%") }
-                    Button("Cancel", role: .cancel) { model.cancelGenerating() }
-                } else {
-                    // TotalSegmentator total_mr models (non-commercial licence), run on device.
-                    Button("Generate Segmentation", systemImage: "brain") { model.generate() }
-                        .disabled(model.isLoading)
-                    Text(model.canClassifyTissue
-                         ? "Organs, bones and muscle groups from the TotalSegmentator models, then the 14 tissue classes from the Dixon images."
-                         : "Organs, bones and muscle groups only: the tissue classes need both Dixon images (see Image above).")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                if model.isLoading { ProgressView("Loading segmentation…") }
-                if let error = model.error {
-                    Text(error).font(.footnote).foregroundStyle(.red)
-                }
+            // Always on offer: a new map joins the others (one of the same name, a re-generation
+            // or the same file again, replaces it).
+            Button("Load Segmentation…", systemImage: "square.3.layers.3d") { importing = true }
+                .disabled(model.isLoading || model.isGenerating)
+            if let p = model.progress {
+                ProgressView(value: p) { Text("Segmenting \(model.stage)… \(Int(p * 100))%") }
+                Button("Cancel", role: .cancel) { model.cancelGenerating() }
+            } else {
+                // TotalSegmentator total_mr models (non-commercial licence), run on device.
+                let generated = model.maps.contains { $0.name == "structures (total_mr)" }
+                Button(generated ? "Generate Again" : "Generate Segmentation", systemImage: "brain") { model.generate() }
+                    .disabled(model.isLoading)
+                Text(model.canClassifyTissue
+                     ? "Organs, bones and muscle groups from the TotalSegmentator models, then the 14 tissue classes from the Dixon images."
+                     : "Organs, bones and muscle groups only: the tissue classes need both Dixon images (see Image above).")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if model.isLoading { ProgressView("Loading segmentation…") }
+            if let error = model.error {
+                Text(error).font(.footnote).foregroundStyle(.red)
             }
         }
         // ponytail: .gzip admits any .gz and .data any file; a bad pick fails with the reader's error.

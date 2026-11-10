@@ -92,6 +92,9 @@ struct SidecarSettings: Codable, Equatable {
         /// over the four named fields above (kept for older builds). Absent in older sidecars.
         var mapNames: [String]?
         var customLabels: [CustomLabel]? // the drawn map's label names; absent in older sidecars
+        /// A loaded map's own label names (from its header), by map name: the slot files don't
+        /// carry them. Absent in older sidecars.
+        var mapLabels: [String: [CustomLabel]]?
     }
     var segmentation: Segmentation
 

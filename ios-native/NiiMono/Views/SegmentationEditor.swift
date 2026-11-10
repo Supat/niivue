@@ -157,7 +157,9 @@ struct SegmentationEditor: View {
     private var main: some View {
         let axis = drawing.mainAxis
         let shown = displayed
-        return SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
+        // The scrubber and tools sit below the image, not over it.
+        return VStack(spacing: 0) {
+        SliceView(volume: shown.volume, axis: axis, index: model.slices[axis], lo: shown.lo, hi: shown.hi,
                          mirrored: model.mirrored, sharp: model.sharpSlices, overlay: slicePaint, cutout: noiseMode ? nil : model.noiseCutout,
                          crosshair: drawing.crosshair ? model.crosshair(in: axis) : nil,
                          onDraw: { phase, p in drawing.handle(phase, p, index: model.slices[axis], mirrored: model.mirrored) },
@@ -166,7 +168,6 @@ struct SegmentationEditor: View {
                          onThreeFingerTap: { drawing.tapRedo() },
                          rotatable: true,
                          scrubs: false, // slices change by the scrubber only
-                         scaleBarInset: 120,
                          onTap: {}) { model.stepSlice(axis: axis, by: $0) }
             .overlay(alignment: .topLeading) { paneTitle(axis) }
             .overlay(alignment: .top) {
@@ -184,15 +185,16 @@ struct SegmentationEditor: View {
                 }
             }
             .animation(.default, value: drawing.note)
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 8) {
-                    if model.volume.count(axis: axis) > 1 {
-                        SliceScrubber(model: model, axis: axis, count: model.volume.count(axis: axis))
-                    }
-                    tools
+            VStack(spacing: 8) {
+                if model.volume.count(axis: axis) > 1 {
+                    SliceScrubber(model: model, axis: axis, count: model.volume.count(axis: axis))
                 }
-                .padding(.bottom, 16)
+                tools
             }
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity)
+            .background(.black)
+        }
     }
 
     private var reference: some View {

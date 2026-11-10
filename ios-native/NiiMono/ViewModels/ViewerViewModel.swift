@@ -483,7 +483,8 @@ import simd
                                 kept2Name: segmentation.others.dropFirst().first?.name,
                                 kept3Name: segmentation.others.dropFirst(2).first?.name,
                                 mapNames: ([segmentation.map] + segmentation.others).compactMap { $0?.name },
-                                customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels),
+                                customLabels: segmentation.customLabels.isEmpty ? nil : segmentation.customLabels,
+                                mapLabels: Self.ownLabels(segmentation.maps)),
             water: segmentation.waterCompanion, fat: segmentation.fatCompanion,
             inPhase: segmentation.phaseCompanion[.inPhase], opposed: segmentation.phaseCompanion[.opposed],
             fattyLiver: fattyLiver,
@@ -579,6 +580,15 @@ import simd
                 missing.removeAll { $0 == LabelTable.customMapName }
                 recovered = true
             }
+            if let own = s.segmentation.mapLabels {
+                maps = maps.map { m in
+                    guard let labels = own[m.name] else { return m }
+                    var m = m
+                    m.table = LabelTable(names: LabelTable.custom(labels).names, colors: LabelTable.custom(labels).colors,
+                                         densities: LabelTable.forFile(named: m.name).densities)
+                    return m
+                }
+            }
             segmentation.restore(maps, visible: s.segmentation.visible)
             backedUpDrawing = segmentation.customMap?.id // restored as saved: no new backup needed
             sidecarMapsSaved = missing.isEmpty && !maps.isEmpty
@@ -623,6 +633,19 @@ import simd
             await Task.detached { try? sidecar.save(settings) }.value
             sidecarSavedAt = .now
         }
+    }
+
+    /// Label names of the loaded maps whose table isn't the one their name picks (names from the
+    /// file's header), for the sidecar; nil when there are none.
+    static func ownLabels(_ maps: [SegmentationMap]) -> [String: [CustomLabel]]? {
+        var own: [String: [CustomLabel]] = [:]
+        for m in maps where !m.isCustom && m.table.names != LabelTable.forFile(named: m.name).names {
+            own[m.name] = m.table.names.keys.sorted().map { id in
+                let c = m.table.color(id)
+                return CustomLabel(id: id, name: m.table.names[id]!, color: [c.x, c.y, c.z])
+            }
+        }
+        return own.isEmpty ? nil : own
     }
 
     /// Sidecar file of the i-th map (the shown one first): shown / kept / kept2 / kept3 / kept4…
