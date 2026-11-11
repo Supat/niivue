@@ -317,6 +317,7 @@ the last scan by itself), `-sideBySide YES`, `-showProfile YES`, `-openEditor YE
 | `NiiMono/Resources` | `Organs.mlpackage`, `Muscles.mlpackage`. |
 | `Info.plist`, `NiiMono.entitlements` | Document types (`.nii`, gzip), the iCloud Drive container, iCloud Documents entitlements. |
 | `spike/nifti_check.swift` | Self-check for the reader: decode, scaling, reorientation, slice orientation, labels. |
+| `spike/strip_check.swift` | Self-check for the 3D frame's strip plan: converges under budget on a bottom-heavy cost profile and holds still, through gesture and glide frames; a killed strip is split; snapshots subdivide; degenerate sizes (build line in its header). |
 | `spike/label_export_check.swift` | Round trip of the drawing export on real scans (permuted and flipped orientations): same labels back, scan affine kept, JSON extension intact. |
 | `spike/label_painter_check.swift` | Self-check for the drawing tools: slice addressing, brush, gap-free lines, fill, rectangle, undo round trip (build line in its header). |
 | `spike/mask_file_check.swift` | Round trip of the noise mask and scan repair exports on real scans: same voxels back, repair paint kept and other values dropped, a mask of the other kind refused, an empty one refused. |
@@ -339,11 +340,20 @@ swiftc NiiMono/Models/NIfTI.swift /tmp/ncheck/main.swift -O -o /tmp/ncheck/nchec
 - Any `.gz` is openable in the browser (`.nii.gz` has no file type of its own);
   non-NIfTI files fail with an alert.
 - A 3D frame samples each ray at most 1024 times (longer rays take a longer stride, the
-  compositing's opacity corrected for it), is encoded as horizontal strips of ~400k pixels
-  each in its own command buffer, and only one frame is on the GPU at a time: a fast orbit
-  over a whole-body scan used to queue several frames of over a billion samples each, which
-  outlasted the GPU watchdog ("Caused GPU Hang Error", the frames behind it discarded), and
-  even one such frame could on a 1× display. A strip that takes over 0.5 s is logged.
+  compositing's opacity corrected for it), is encoded as horizontal strips each in its own
+  command buffer, and only one frame is on the GPU at a time: a fast orbit over a whole-body
+  scan used to queue several frames of over a billion samples each, which outlasted the GPU
+  watchdog ("Caused GPU Hang Error", the frames behind it discarded), and even one such
+  frame could on a 1× display. The strips are planned from the previous frames' measured
+  GPU times (`StripPlan`): equal strips of ~400k pixels put the whole body in one buffer,
+  since empty-space skipping makes the rows above and below it free (a bottom third taking
+  0.2 s while the top two took 0.016 s together, and the watchdog killed it), so a strip over
+  50 ms is split and cheap neighbours are merged, with times normalised to the largest
+  drawable at the full stride so gesture and glide frames plan for the full-quality one that
+  follows. A frame that outlasted a display refresh is followed by a gap of a quarter of its
+  length (50 ms at most) before the next, so the compositor gets its share of the GPU:
+  back-to-back 0.15 s frames for seconds on end starved it and the system killed the frame
+  it caught. A strip that takes over 0.1 s is logged, with the strip count.
 - A 3D frame whose command buffer fails (a GPU hang, or a drawable that couldn't be allocated
   under memory pressure) is logged with the free memory and the drawable size, and drawn again
   after a short back-off on a fresh command queue, since Metal ignores everything submitted on

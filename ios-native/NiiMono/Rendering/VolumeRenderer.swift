@@ -515,10 +515,13 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             return
         }
         noDrawable = 0
-        let size = view.drawableSize, strips = Self.strips(for: size)
+        let size = view.drawableSize
+        let rows = stripPlan.rows(width: size.width, height: size.height), strips = rows.count - 1
+        stripFrame = (rows.map { Double($0) / max(1, size.height) }, Double(size.width * size.height), Double(size.height),
+                      glideCoarse ? 4 : 1, [Double](repeating: 0, count: strips), false, CACurrentMediaTime())
         for strip in 0..<strips {
             guard let cmd = queue.makeCommandBuffer() else { break }
-            encode(into: rpd, size: size, strip: strip, of: strips, on: cmd)
+            encode(into: rpd, size: size, rows: rows[strip]..<rows[strip + 1], first: strip == 0, on: cmd)
             if strip == strips - 1 { cmd.present(drawable) }
             inFlight += 1
             cmd.addCompletedHandler { [weak self, weak view] buffer in
@@ -530,17 +533,21 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         onDraw?()
     }
 
-    /// The GPU watchdog kills a command buffer that runs too long, so a frame is encoded as
-    /// horizontal strips of at most ~400k pixels, each its own command buffer: a whole-body
-    /// scan's frame at a large size is well over a billion samples, which a single buffer
-    /// couldn't finish in time on some machines even at the sample cap.
-    private static func strips(for size: CGSize) -> Int {
-        max(1, min(16, Int((size.width * size.height / 400_000).rounded(.up))))
-    }
+    /// Where the frame is cut into strips, each its own command buffer (see StripPlan).
+    private var stripPlan = StripPlan()
+    /// The frame on the GPU: its strip boundaries (fractions), pixels and height, sample-
+    /// stride divisor, the strips' normalised GPU seconds so far, whether a strip was
+    /// killed, and when it was encoded.
+    private var stripFrame: (bounds: [Double], pixels: Double, height: Double, strideDiv: Double,
+                             times: [Double], failed: Bool, start: CFTimeInterval) = ([], 1, 1, 1, [], false, 0)
 
     private func completed(_ buffer: MTLCommandBuffer, strip: Int, of strips: Int, view: MTKView?) {
         inFlight -= 1
         let seconds = buffer.gpuEndTime - buffer.gpuStartTime
+        let budget = StripPlan.budget
+        if strip < stripFrame.times.count {
+            stripFrame.times[strip] = seconds * stripFrame.strideDiv * stripPlan.peakPixels / max(1, stripFrame.pixels)
+        }
         // Slow strips, and every strip for a while after a failure: what the GPU budget looks
         // like on the device (the watchdog's limit isn't published).
         if seconds > 0.1 || diagnosticStrips > 0 {
@@ -548,11 +555,28 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
             MemoryLog.log.notice("3D render: strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) took \(seconds, format: .fixed(precision: 3), privacy: .public) s on the GPU (\(self.settingsSummary, privacy: .public))")
         }
         if let error = buffer.error {
-            MemoryLog.log.error("3D render: the killed strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) ran \(seconds, format: .fixed(precision: 3), privacy: .public) s on the GPU before the watchdog")
-            diagnosticStrips = 40
-            recover(from: error, view: view)
-        } else if strip == strips - 1 { gpuFailures = 0 }
-        if inFlight == 0, redrawWanted { redrawWanted = false; view?.setNeedsDisplay() }
+            if stripFrame.failed {
+                // Discarded behind the killed strip: its time says nothing about its cost.
+                if strip < stripFrame.times.count { stripFrame.times[strip] = budget / 2 }
+            } else {
+                stripFrame.failed = true
+                // The killed strip is split several ways next time whatever its reported time.
+                if strip < stripFrame.times.count { stripFrame.times[strip] = max(stripFrame.times[strip], 4 * budget) }
+                MemoryLog.log.error("3D render: the killed strip \(strip + 1, privacy: .public) of \(strips, privacy: .public) ran \(seconds, format: .fixed(precision: 3), privacy: .public) s on the GPU before the watchdog")
+                diagnosticStrips = 40
+                recover(from: error, view: view)
+            }
+        } else if strip == strips - 1, !stripFrame.failed { gpuFailures = 0 }
+        if strip == strips - 1 { stripPlan.rebalance(bounds: stripFrame.bounds, height: stripFrame.height, times: stripFrame.times) }
+        if inFlight == 0, redrawWanted {
+            redrawWanted = false
+            // Pacing: a frame that outlasted a display refresh is followed by a gap of a
+            // quarter of its length (50 ms at most), so the compositor gets its share of the
+            // GPU. Back-to-back frames of 0.15 s for seconds on end — a long orbit over a
+            // whole-body scan — starved it, and the system killed the frame it caught.
+            let busy = CACurrentMediaTime() - stripFrame.start
+            if busy > 1.0 / 60 { retryDraw(view, after: min(0.05, busy / 4)) } else { view?.setNeedsDisplay() }
+        }
     }
 
     /// Strips still to log after a failure (see `completed`).
@@ -563,7 +587,7 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         let active = clips.prefix(ClipSetting.maxCount).filter(\.enabled).count
         return "mode \(mode == 0 ? "MIP" : mode == 1 ? "Volume" : "Surface"), clips \(active)\(clipCutaway ? " cutaway" : "")\(clipKeepLabels ? " keep-labels" : "")\(clipOnlyLabels.map { " only-labels \($0.count)" } ?? ""), "
             + "overlay \(labelTex == nil ? "off" : "on, ghost \(overlayGhost)"), cutout \(cutout.texture == nil ? "off" : "on"), "
-            + String(format: "camera clip %.2f, zoom %.2f, stride %d, scale %.1f, skip %@", cameraClipFraction, zoom, glideCoarse ? 4 : 1, Double(pointScale), emptySkip ? "on" : "off")
+            + String(format: "camera clip %.2f, zoom %.2f, stride %d, scale %.1f, skip %@, strips %d", cameraClipFraction, zoom, glideCoarse ? 4 : 1, Double(pointScale), emptySkip ? "on" : "off", stripPlan.cuts.count + 1)
     }
 
     /// Frames that failed in a row (a success resets it); after a few, the view waits for
@@ -587,14 +611,13 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in view?.setNeedsDisplay() }
     }
 
-    /// One strip of the frame (rows `strip`/`strips` to `strip + 1`/`strips` of `size`):
-    /// later strips load what the earlier ones drew rather than clearing it.
-    private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, strip: Int, of strips: Int, on cmd: MTLCommandBuffer) {
-        let pass = strip == 0 ? rpd : (rpd.copy() as! MTLRenderPassDescriptor)
-        if strip > 0 { pass.colorAttachments[0].loadAction = .load }
+    /// One strip of the frame (`rows` of `size`): later strips load what the earlier ones
+    /// drew rather than clearing it.
+    private func encode(into rpd: MTLRenderPassDescriptor, size: CGSize, rows: Range<Int>, first: Bool, on cmd: MTLCommandBuffer) {
+        let pass = first ? rpd : (rpd.copy() as! MTLRenderPassDescriptor)
+        if !first { pass.colorAttachments[0].loadAction = .load }
         guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
-        let h = Int(size.height), y0 = h * strip / strips, y1 = h * (strip + 1) / strips
-        enc.setScissorRect(MTLScissorRect(x: 0, y: y0, width: Int(size.width), height: max(0, y1 - y0)))
+        enc.setScissorRect(MTLScissorRect(x: 0, y: rows.lowerBound, width: Int(size.width), height: max(0, rows.count)))
         var u = makeUniforms(aspect: Float(size.width / max(size.height, 1)))
         u.crosshairStep = scaleStep(size: CGSize(width: size.width / max(pointScale, 1), height: size.height / max(pointScale, 1)))
             .map { Float($0.mm) / mmPerUnit } ?? 0
@@ -626,13 +649,13 @@ final class VolumeRenderer: NSObject, MTKViewDelegate {
         rpd.colorAttachments[0].loadAction = .clear
         rpd.colorAttachments[0].storeAction = .store
         rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        let strips = Self.strips(for: size)
+        let rows = stripPlan.rows(width: size.width, height: size.height, onScreen: false), strips = rows.count - 1
         for strip in 0..<strips - 1 { // in strips, as on screen; the queue runs them in order
             guard let c = queue.makeCommandBuffer() else { return nil }
-            encode(into: rpd, size: size, strip: strip, of: strips, on: c)
+            encode(into: rpd, size: size, rows: rows[strip]..<rows[strip + 1], first: strip == 0, on: c)
             c.commit()
         }
-        encode(into: rpd, size: size, strip: strips - 1, of: strips, on: cmd)
+        encode(into: rpd, size: size, rows: rows[strips - 1]..<rows[strips], first: strips == 1, on: cmd)
         cmd.commit()
         cmd.waitUntilCompleted()
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
