@@ -13,6 +13,8 @@ struct SegmentationSection: View {
     var exporting: UUID? = nil
     @State private var importing = false
     @State private var confirmRemove = false
+    @State private var naming = false
+    @State private var presetName = ""
 
     var body: some View {
         Section("Segmentation") {
@@ -49,6 +51,36 @@ struct SegmentationSection: View {
         // ponytail: .gzip admits any .gz and .data any file; a bad pick fails with the reader's error.
         .fileImporter(isPresented: $importing, allowedContentTypes: [.nifti, .gzip, .data]) { result in
             if case .success(let url) = result { Task { await model.load(from: url, scoped: true) } }
+        }
+        // Saved display selections: which labels are shown, the opacity and blend choices,
+        // by label name, for this or any other scan's map with the same labels.
+        if model.map != nil || !model.presets.isEmpty {
+            Section("Segmentation Presets") {
+                if model.map != nil {
+                    Button("Save Current Selection…", systemImage: "square.and.arrow.down") { presetName = model.nextPresetName; naming = true }
+                }
+                ForEach(model.presets) { p in
+                    Button { model.recall(p) } label: {
+                        LabeledContent {
+                            Text("\(p.shown.count) segment\(p.shown.count == 1 ? "" : "s")")
+                        } label: {
+                            Text(p.name)
+                            Text(p.mapName).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .onDelete { model.presets.remove(atOffsets: $0) }
+                if model.presets.isEmpty {
+                    Text("Choose which segments are shown, then save the selection here to recall it on this or any other scan with the same labels. Swipe a preset to remove it.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .alert("Save Selection", isPresented: $naming) {
+                TextField("Name", text: $presetName)
+                Button("Save") { model.savePreset(named: presetName) }
+                Button("Cancel", role: .cancel) {}
+            }
         }
     }
 

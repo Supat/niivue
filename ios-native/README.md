@@ -73,6 +73,11 @@ sidecar; `-clipKeepSegments YES` for checks.
 **Segmentation overlay.** The inspector's Segmentation section loads a label map on the
 scan's grid (`.nii`/`.nii.gz`, integer labels, 0 = background) and colours slices and the
 3D render with it: per-label toggles, opacity, and a "show through tissue" mode for 3D.
+The selection (which labels are shown, the opacity, show-through, mask and hide choices)
+can be saved as a named preset in the Segmentation Presets section and recalled on any
+scan: labels are matched by name, so a selection made on one scan's structures map serves
+every scan's; a label the preset doesn't name is hidden. Presets are kept app-wide, not in
+the sidecar (which remembers the current selection per scan); swipe one to remove it.
 Files named `*tissues*` get the 14 tissue classes/colours of the body-composition pipeline,
 `*total_mr*` TotalSegmentator's 50 structure names, anything else numbered labels. A sibling
 `<scan>_tissues.nii.gz` (also in a `seg/` folder; Dixon suffix `_W/_F/_in/_opp` stripped)

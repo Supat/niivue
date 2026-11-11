@@ -51,6 +51,29 @@ struct ClipPreset: Codable, Equatable, Identifiable {
     }
 }
 
+/// A saved segmentation display selection: which labels are shown, by name, with the
+/// opacity and blend choices. Kept in UserDefaults, not the sidecar: the generated maps
+/// share their label tables, so a selection made on one scan serves every scan. Names
+/// rather than label numbers, so it holds for any map with the same table (and a
+/// drawing whose labels are named the same); a label the map doesn't have is ignored,
+/// and one the preset doesn't name is hidden.
+struct SegmentationPreset: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    /// The map it was made on, shown beside the name as a hint.
+    var mapName: String
+    var shown: [String]
+    var opacity: Float, ghost: Bool, mask: Bool, exclude: Bool
+
+    static let key = "segmentationPresets"
+    static func load() -> [SegmentationPreset] {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode([SegmentationPreset].self, from: $0) } ?? []
+    }
+    static func save(_ presets: [SegmentationPreset]) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(presets), forKey: key)
+    }
+}
+
 extension ClipSetting {
     var saved: SidecarSettings.Viewer.Clip { .init(plane: plane.rawValue, pos: pos, flip: flip, tilt: [tilt.x, tilt.y], enabled: enabled) }
     init?(saved c: SidecarSettings.Viewer.Clip) {

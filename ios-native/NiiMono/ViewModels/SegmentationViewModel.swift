@@ -109,6 +109,33 @@ import Observation
 
     func setAllVisible(_ on: Bool) { visible = visible.map { _ in on } }
 
+    // MARK: - Display presets
+
+    /// Saved display selections, shared by every scan.
+    var presets = SegmentationPreset.load() { didSet { SegmentationPreset.save(presets) } }
+    /// "Selection 3": the next unused number, so removing one doesn't repeat a name.
+    var nextPresetName: String {
+        "Selection \((presets.compactMap { Int($0.name.split(separator: " ").last ?? "") }.max() ?? 0) + 1)"
+    }
+    /// The shown map's visible labels (by name) with the opacity and blend choices.
+    func savePreset(named name: String) {
+        guard let map else { return }
+        let name = name.trimmingCharacters(in: .whitespaces)
+        presets.append(SegmentationPreset(name: name.isEmpty ? nextPresetName : name, mapName: map.name,
+                                          shown: map.labelRange.filter(isVisible).map(map.table.name),
+                                          opacity: opacity, ghost: ghost, mask: mask, exclude: exclude))
+    }
+    /// Apply a preset to the shown map: labels it names are shown, the rest hidden.
+    func recall(_ p: SegmentationPreset) {
+        guard let map else { return }
+        let shown = Set(p.shown)
+        for label in map.labelRange { setVisible(label, shown.contains(map.table.name(label))) }
+        opacity = p.opacity
+        ghost = p.ghost
+        mask = false; exclude = false // each clears the other in didSet; set the wanted one last
+        if p.mask { mask = true } else if p.exclude { exclude = true }
+    }
+
     // MARK: - Drawn segmentation
 
     /// Names and colours of the drawn map's labels (kept in the sidecar settings).
